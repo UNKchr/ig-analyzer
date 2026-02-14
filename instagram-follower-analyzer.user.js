@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Instragram Follower Analyzer
 // @namespace   https://github.com/UNKchr/ig-analyzer
-// @version     1.3.1
+// @version     1.3.2
 // @description Analyze Instagram followers and following lists to identify non-followers and ghost followers.
 // @author      UNKchr
 // @match       https://www.instagram.com/*
@@ -41,7 +41,6 @@
   const panel = document.createElement("div");
   panel.id = "ig-analyzer-panel";
   
-  // 1. Estilos del contenedor: Añadimos Flexbox, Resize y límites de tamaño
   panel.style.cssText = `
     position: fixed;
     top: 80px;
