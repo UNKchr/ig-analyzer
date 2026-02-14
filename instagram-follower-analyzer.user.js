@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Instragram Follower Analyzer
 // @namespace   https://github.com/UNKchr/ig-analyzer
-// @version     1.3.2
+// @version     1.3.3
 // @description Analyze Instagram followers and following lists to identify non-followers and ghost followers.
 // @author      UNKchr
 // @match       https://www.instagram.com/*
@@ -388,5 +388,29 @@ function loadPanelPosition() {
       log("Snapshot reset.");
     };
 
-    log("IG Analyzer loaded.");
+    /* ======================= KEYBOARD SHORTCUTS ======================= */
+    document.addEventListener('keydown', (e) => {
+
+      const activeElement = document.activeElement;
+      if (
+        activeElement.tagName === "INPUT" ||
+        activeElement.tagName === "TEXTAREA" ||
+        activeElement.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.key === 'F9') {
+        const panel = document.getElementById("ig-analyzer-panel");
+        if (panel) {
+          if (panel.style.display === "none") {
+            panel.style.display = "flex";
+          } else {
+            panel.style.display = "none";
+          }
+        }
+      }
+    });
+
+    log("IG Analyzer loaded. Press F9 to toggle panel.");
 })();
