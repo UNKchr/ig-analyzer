@@ -11,6 +11,7 @@
 // @grant       GM_setValue
 // @grant       GM_deleteValue
 // @run-at      document-idle
+// @license     MIT
 // ==/UserScript== 
 
 (function() {
