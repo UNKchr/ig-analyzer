@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Instagram Follower Analyzer
 // @namespace   https://github.com/UNKchr/ig-analyzer
-// @version     2.1.0
+// @version     2.1.1
 // @description Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, and CSV Export.
 // @author      UNKchr
 // @match       https://www.instagram.com/*
@@ -73,6 +73,16 @@
         },
         save: (data) => GM_setValue(CONFIG.STORAGE_KEY, data),
         
+        // FIXED: Re-added missing Whitelist methods
+        getWhitelist: () => GM_getValue(CONFIG.WHITELIST_KEY, []),
+        addToWhitelist: (username) => {
+            const wl = Storage.getWhitelist();
+            if (!wl.includes(username)) {
+                wl.push(username);
+                GM_setValue(CONFIG.WHITELIST_KEY, wl);
+            }
+        },
+
         getHistory: () => GM_getValue(CONFIG.HISTORY_KEY, []),
         addHistoryEntry: (followersCount, followingCount) => {
           const hist = Storage.getHistory();
@@ -124,7 +134,7 @@
                 '  .ig-table th, .ig-table td { padding: 6px; border-bottom: 1px solid #333; }',
                 '</style>',
                 '<div id="ig-header" style="font-weight: 600; font-size: 15px; margin-bottom: 12px; cursor: move; border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between;">',
-                '  <span>IG Pro Analyzer</span>',
+                '  <span>IG Analyzer</span>',
                 '  <span id="ig-status" style="font-size: 11px; background: #333; padding: 3px 8px; border-radius: 12px; color: #bbb;">Inactive</span>',
                 '</div>',
                 '<div style="display: flex; gap: 8px; margin-bottom: 8px;">',
@@ -148,7 +158,6 @@
             UI.loadPosition(panel);
             UI.setupTabs();
             
-            // ADDED: Pre-load history view on initialization
             UI.renderHistory(Storage.getHistory());
         },
 
@@ -200,7 +209,6 @@
 
         hideProgress: () => { document.getElementById("ig-progress-container").style.display = "none"; },
 
-        // MODIFIED: Injected Whitelist buttons and DOM removal logic
         renderResults: (users, title) => {
             const container = document.getElementById("ig-results");
             let html = '<div id="ig-results-title" style="font-weight:bold; margin-bottom:8px;">' + title + ' (' + users.length + ')</div>';
@@ -222,7 +230,6 @@
                     document.getElementById('ig-row-' + targetIdx).style.display = 'none';
                     UI.log("[INFO] " + targetUser + " added to whitelist.");
                     
-                    // Update global results to exclude whitelisted user from CSV
                     if (window.__igLastResults) {
                         window.__igLastResults = window.__igLastResults.filter(u => u.username !== targetUser);
                         document.getElementById('ig-results-title').textContent = title + ' (' + window.__igLastResults.length + ')';
@@ -339,19 +346,17 @@
                 UI.log("User detected. Getting 'Following'...");
                 const following = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following");
                 
-                UI.log("Getting 'Followers' (Followers)...");
+                UI.log("Getting 'Followers'...");
                 const followers = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers");
 
                 UI.hideProgress();
                 UI.setStatus("Calculating...");
 
-                // ADDED: Update and render metrics history immediately after fetching data
                 Storage.addHistoryEntry(followers.length, following.length);
                 UI.renderHistory(Storage.getHistory());
 
                 const notFollowingBackUsernames = Utils.diff(following, followers);
 
-                // ADDED: Filter out whitelisted usernames from the final array
                 const whitelist = Storage.getWhitelist();
                 const filteredUsernames = notFollowingBackUsernames.filter(u => !whitelist.includes(u));
 
@@ -393,14 +398,8 @@
                     UI.log("CSV Exported.");
                 }
             };
-            document.getElementById("ig-reset").onclick = () => {
-                Storage.reset();
-                UI.log("Historical data deleted.");
-                document.getElementById("ig-results").innerHTML = "";
-                document.getElementById("ig-export-csv").disabled = true;
-            };
-
-            // MODIFIED: Updated reset button to invoke Storage.resetAll()
+            
+            // FIXED: Removed duplicated reset declaration and kept only resetAll
             document.getElementById("ig-reset").onclick = () => {
                 Storage.resetAll();
                 UI.log("[INFO] All historical data and whitelists deleted.");
