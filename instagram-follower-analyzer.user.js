@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Instagram Follower Analyzer
 // @namespace   https://github.com/UNKchr/ig-analyzer
-// @version     2.0.1
+// @version     2.0.2
 // @description Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, and CSV Export.
 // @author      UNKchr
 // @match       https://www.instagram.com/*
@@ -100,7 +100,7 @@
                 '</style>',
                 '<div id="ig-header" style="font-weight: 600; font-size: 15px; margin-bottom: 12px; cursor: move; border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between;">',
                 '  <span>IG Analyzer</span>',
-                '  <span id="ig-status" style="font-size: 11px; background: #333; padding: 3px 8px; border-radius: 12px; color: #bbb;">Inactivo</span>',
+                '  <span id="ig-status" style="font-size: 11px; background: #333; padding: 3px 8px; border-radius: 12px; color: #bbb;">Inactive</span>',
                 '</div>',
                 '<div style="display: flex; gap: 8px; margin-bottom: 8px;">',
                 '  <button id="ig-run" class="btn-primary">Run</button>',
@@ -222,7 +222,6 @@
             let totalCount = 0;
 
             while (hasNext) {
-                // Se reemplaza el Template Literal gigante por una concatenación estándar para no marear al editor
                 const vars = encodeURIComponent(JSON.stringify({id: userId, first: CONFIG.PAGE_SIZE, after: cursor}));
                 const url = "https://www.instagram.com/graphql/query/?query_hash=" + hash + "&variables=" + vars;
                 
