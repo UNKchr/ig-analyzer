@@ -1,4 +1,4 @@
-# Instagram Follower Analyzer (Pro Version)
+# Instagram Follower Analyzer
 
 A robust Tampermonkey userscript that safely analyzes your Instagram followers and following lists. By interacting directly with Instagram's GraphQL API, it efficiently identifies users who do not follow you back and tracks follower changes over time.
 
