@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Instagram Follower Analyzer
 // @namespace   https://github.com/UNKchr/ig-analyzer
-// @version     2.0.0
+// @version     2.0.1
 // @description Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, and CSV Export.
 // @author      UNKchr
 // @match       https://www.instagram.com/*
@@ -36,7 +36,6 @@
         now: () => new Date().toISOString(),
         
         getUserId: () => {
-            // Regresamos a tu método original: es más seguro para el resaltado de sintaxis
             const c = document.cookie.split("; ").find(x => x.startsWith("ds_user_id="));
             return c ? c.split("=")[1] : null;
         },
