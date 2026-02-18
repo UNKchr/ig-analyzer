@@ -8,6 +8,21 @@ export const App = {
     run: async () => {
         const btnRun = document.getElementById("ig-run");
         if (btnRun) btnRun.disabled = true;
+
+        // --- LLAMADA AL MODAL: Advertencia de Seguridad ---
+        const userConfirmed = await UI.confirmAction(
+            "Safety Precaution", 
+            "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
+            "Yes, Continue"
+        );
+
+        if (!userConfirmed) {
+            UI.log("Analysis cancelled by user.");
+            console.log("Analysis cancelled by user.");
+            if (btnRun) btnRun.disabled = false;
+            return; 
+        }
+
         UI.setStatus("Analyzing...");
         UI.log("Starting deep analysis...");
         const logTab = document.querySelector('[data-target="ig-log"]');
@@ -104,16 +119,26 @@ export const App = {
         };
         
         const btnReset = document.getElementById("ig-reset");
-        if (btnReset) btnReset.onclick = () => {
-            if (confirm("Are you sure you want to delete all data?")) {
-                Storage.resetAll();
-                UI.log("[INFO] Data reset.");
-                document.querySelectorAll(".ig-view-container").forEach((el) => {
-                    if (el.id !== "ig-log") el.innerHTML = "";
-                });
-                if (btnExport) btnExport.disabled = true;
-            }
-        };
+        if (btnReset) {
+            // Hacemos la función async para poder usar await
+            btnReset.onclick = async () => {
+                // --- LLAMADA AL MODAL: Reset Data ---
+                const confirmed = await UI.confirmAction(
+                    "Delete All Data", 
+                    "This action will wipe all your history, logs, and whitelists.<br><br>Are you sure you want to proceed?",
+                    "Yes, Delete"
+                );
+
+                if (confirmed) {
+                    Storage.resetAll();
+                    UI.log("[INFO] Data reset.");
+                    document.querySelectorAll(".ig-view-container").forEach((el) => {
+                        if (el.id !== "ig-log") el.innerHTML = "";
+                    });
+                    if (btnExport) btnExport.disabled = true;
+                }
+            };
+        }
         
         document.addEventListener("keydown", (e) => {
             const tag = document.activeElement.tagName;

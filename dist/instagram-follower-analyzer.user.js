@@ -18,6 +18,8 @@
 (function () {
   'use strict';
 
+  const d=new Set;const importCSS = async e=>{d.has(e)||(d.add(e),(t=>{typeof GM_addStyle=="function"?GM_addStyle(t):(document.head||document.documentElement).appendChild(document.createElement("style")).append(t);})(e));};
+
   const CONFIG = {
     STORAGE_KEY: "ig_snapshot_v2",
     POSITION_KEY: "ig_panel_position_v2",
@@ -118,42 +120,11 @@
     neutral: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><path d="M5 12h14"/></svg>',
     link: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-left: 4px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>'
   };
+  const mainCss = ":root{--ig-panel-bg: rgba(20, 20, 20, .95);--ig-panel-border: rgba(255, 255, 255, .2);--ig-text-main: #f3f4f6;--ig-text-muted: #9ca3af;--ig-bg-input: #111827;--ig-bg-hover: #4b5563;--ig-scrollbar-thumb: #4b5563;--ig-shadow: rgba(0,0,0,.6);--ig-btn-bg: #1f2937;--ig-btn-border: rgba(255, 255, 255, .2);--ig-btn-text: #f3f4f6}.ig-light-theme{--ig-panel-bg: rgba(255, 255, 255, .95);--ig-panel-border: #a3a3a3;--ig-text-main: #262626;--ig-text-muted: #525252;--ig-bg-input: #ffffff;--ig-bg-hover: #e5e5e5;--ig-scrollbar-thumb: #a3a3a3;--ig-shadow: rgba(0,0,0,.25);--ig-btn-bg: #f5f5f5;--ig-btn-border: #a3a3a3;--ig-btn-text: #262626}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:380px;height:560px;background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);color:var(--ig-text-main);box-shadow:0 10px 40px var(--ig-shadow);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);font-family:system-ui,-apple-system,sans-serif;font-size:13px;padding:16px;z-index:99999999;border-radius:12px;display:flex;flex-direction:column;resize:both;overflow:hidden;transition:background .2s ease,border-color .2s ease}#ig-analyzer-panel *{box-sizing:border-box}#ig-analyzer-panel button{background:var(--ig-btn-bg);color:var(--ig-btn-text);border:1px solid var(--ig-btn-border);border-radius:6px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s ease;flex:1}#ig-analyzer-panel button:hover{background:var(--ig-bg-hover);border-color:var(--ig-text-muted);transform:translateY(-1px)}#ig-analyzer-panel button:disabled{opacity:.5;cursor:not-allowed;transform:none}.btn-primary{background:#0095f6!important;border-color:#0095f6!important;color:#fff!important}.btn-primary:hover{background:#1877f2!important;border-color:#1877f2!important}.btn-success{background:#16a34a!important;border-color:#15803d!important;color:#fff!important}.btn-success:hover{background:#15803d!important}.btn-danger{background:#ed4956!important;border-color:#ed4956!important;color:#fff!important}.btn-danger:hover{background:#c63b46!important}.btn-whitelist{background:var(--ig-btn-bg)!important;border-color:var(--ig-btn-border)!important;color:var(--ig-text-main)!important;padding:4px 8px!important;font-size:10px!important;margin-right:8px;flex:none!important}.btn-whitelist:hover{background:var(--ig-bg-hover)!important;border-color:var(--ig-text-muted)!important}#ig-progress-container{width:100%;background:var(--ig-bg-input);border-radius:999px;height:6px;margin:12px 0;overflow:hidden;display:none;border:1px solid var(--ig-panel-border)}#ig-progress-bar{width:0%;background:#0095f6;height:100%;transition:width .3s ease}.ig-view-container{flex-grow:1;overflow-y:auto;background:var(--ig-bg-input);border:1px solid var(--ig-panel-border);border-radius:8px;padding:12px;font-size:12px;color:var(--ig-text-main);margin-top:8px}.ig-view-container::-webkit-scrollbar{width:6px}.ig-view-container::-webkit-scrollbar-track{background:transparent}.ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:10px}#ig-log{font-family:ui-monospace,monospace;font-size:11px;color:#0095f6;white-space:pre-wrap;word-wrap:break-word}.ig-view{display:none}.ig-view.active{display:block}.ig-user-row{padding:8px 0;border-bottom:1px solid var(--ig-panel-border);display:flex;justify-content:space-between;align-items:center}.ig-user-row:last-child{border-bottom:none}.ig-user-row span{color:var(--ig-text-main)}.ig-user-row a{color:#0095f6;text-decoration:none;font-weight:500;display:flex;align-items:center}.ig-user-row a:hover{text-decoration:underline}.ig-table{width:100%;text-align:left;border-collapse:collapse;margin-top:4px;font-size:11px}.ig-table th{color:var(--ig-text-muted);font-weight:600;padding-bottom:8px;border-bottom:1px solid var(--ig-panel-border)}.ig-table td{padding:8px 4px;border-bottom:1px solid var(--ig-panel-border);color:var(--ig-text-main)}.ig-tabs-container{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}.ig-tab-btn{padding:6px 10px!important;flex:auto!important;background:var(--ig-bg-input)!important;border-color:var(--ig-panel-border)!important;color:var(--ig-text-muted)!important;transition:all .2s ease}.ig-tab-btn:hover{background:var(--ig-bg-hover)!important;color:var(--ig-text-main)!important;border-color:var(--ig-text-muted)!important}.ig-tab-btn.active{background:var(--ig-bg-hover)!important;border-color:var(--ig-text-main)!important;color:var(--ig-text-main)!important;font-weight:700}.ig-badge{background:var(--ig-bg-hover);padding:2px 6px;border-radius:4px;font-size:10px;color:var(--ig-text-main);margin-left:6px;border:1px solid var(--ig-panel-border)}#ig-header{font-weight:600;font-size:15px;margin-bottom:16px;cursor:move;border-bottom:1px solid var(--ig-panel-border);padding-bottom:12px;display:flex;justify-content:space-between;align-items:center;color:var(--ig-text-main)}#ig-status{font-size:11px;background:var(--ig-bg-input);padding:4px 10px;border-radius:999px;color:var(--ig-text-muted);border:1px solid var(--ig-panel-border)}.ig-section-title{font-weight:600;font-size:13px;margin-bottom:12px;color:var(--ig-text-main)}.ig-empty-msg{color:var(--ig-text-muted)}.ig-modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px);z-index:2147483647;display:none;justify-content:center;align-items:center}.ig-modal-content{background:#1f2937;border:1px solid #374151;padding:24px;border-radius:12px;width:360px;text-align:center;color:#f3f4f6;box-shadow:0 20px 25px -5px #00000080;display:flex;flex-direction:column;align-items:center}.ig-modal-icon{width:48px;height:48px;color:#facc15;margin-bottom:16px}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:18px;font-weight:600;margin-bottom:12px;color:#fff}.ig-modal-text{font-size:14px;line-height:1.5;color:#d1d5db;margin-bottom:24px}.ig-modal-actions{display:flex;gap:12px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:10px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:background .2s}.ig-btn-cancel-modal{background:transparent;border:1px solid #4b5563;color:#d1d5db}.ig-btn-cancel-modal:hover{background:#ffffff1a;color:#fff}.ig-btn-confirm-modal{background:#0095f6;border:1px solid #0095f6;color:#fff}.ig-btn-confirm-modal:hover{background:#1877f2}";
+  importCSS(mainCss);
   const UI = {
     init: () => {
       if (document.getElementById("ig-analyzer-panel")) return;
-      GM_addStyle(`
-            #ig-analyzer-panel{position:fixed;top:80px;right:20px;width:380px;height:560px;background:#141414f2;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:#f3f4f6;font-family:system-ui,-apple-system,sans-serif;font-size:13px;padding:16px;z-index:99999999;border-radius:12px;box-shadow:0 10px 40px #00000080;border:1px solid #374151;display:flex;flex-direction:column;resize:both;overflow:hidden}
-            #ig-analyzer-panel *{box-sizing:border-box}
-            #ig-analyzer-panel button{background:#374151;color:#f3f4f6;border:1px solid #4b5563;border-radius:6px;padding:8px 12px;font-size:12px;font-weight:500;cursor:pointer;transition:all .2s;flex:1}
-            #ig-analyzer-panel button:hover{background:#4b5563}
-            #ig-analyzer-panel button:disabled{opacity:.5;cursor:not-allowed}
-            .btn-primary{background:#2563eb!important;border-color:#1d4ed8!important}
-            .btn-primary:hover{background:#1d4ed8!important}
-            .btn-success{background:#16a34a!important;border-color:#15803d!important}
-            .btn-danger{background:#dc2626!important;border-color:#b91c1c!important}
-            .btn-whitelist{background:#374151!important;border-color:#4b5563!important;padding:4px 8px!important;font-size:10px!important;margin-right:8px;flex:none!important}
-            #ig-progress-container{width:100%;background:#1f2937;border-radius:999px;height:6px;margin:12px 0;overflow:hidden;display:none}
-            #ig-progress-bar{width:0%;background:#3b82f6;height:100%;transition:width .3s ease}
-            .ig-view-container{flex-grow:1;overflow-y:auto;background:#111827;border:1px solid #374151;border-radius:8px;padding:12px;font-size:12px;color:#d1d5db;margin-top:8px}
-            .ig-view-container::-webkit-scrollbar{width:6px}
-            .ig-view-container::-webkit-scrollbar-track{background:transparent}
-            .ig-view-container::-webkit-scrollbar-thumb{background:#4b5563;border-radius:10px}
-            #ig-log{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;color:#60a5fa;white-space:pre-wrap;word-wrap:break-word}
-            .ig-view{display:none}.ig-view.active{display:block}
-            .ig-user-row{padding:8px 0;border-bottom:1px solid #374151;display:flex;justify-content:space-between;align-items:center}
-            .ig-user-row:last-child{border-bottom:none}
-            .ig-user-row a{color:#60a5fa;text-decoration:none;font-weight:500;display:flex;align-items:center}
-            .ig-user-row a:hover{color:#93c5fd}
-            .ig-table{width:100%;text-align:left;border-collapse:collapse;margin-top:4px;font-size:11px}
-            .ig-table th{color:#9ca3af;font-weight:600;padding-bottom:8px;border-bottom:1px solid #374151}
-            .ig-table td{padding:8px 4px;border-bottom:1px solid #1f2937}
-            .ig-tabs-container{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
-            .ig-tab-btn{padding:6px 10px!important;flex:auto!important;background:#1f2937!important;border-color:#374151!important}
-            .ig-tab-btn.active{background:#4b5563!important;border-color:#6b7280!important;color:#fff!important}
-            .ig-badge{background:#374151;padding:2px 6px;border-radius:4px;font-size:10px;color:#9ca3af;margin-left:6px}
-            #ig-header{font-weight:600;font-size:15px;margin-bottom:16px;cursor:move;border-bottom:1px solid #374151;padding-bottom:12px;display:flex;justify-content:space-between;align-items:center}
-            #ig-status{font-size:11px;background:#1f2937;padding:4px 10px;border-radius:999px;color:#9ca3af;border:1px solid #374151}
-        `);
       const panel = document.createElement("div");
       panel.id = "ig-analyzer-panel";
       panel.innerHTML = [
@@ -185,14 +156,69 @@
         '<div id="ig-view-deactivated" class="ig-view-container ig-view"></div>'
       ].join("\n");
       document.body.appendChild(panel);
+      const modalHTML = `
+        <div id="ig-safety-modal" class="ig-modal-overlay">
+            <div class="ig-modal-content">
+                <div class="ig-modal-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                    </svg>
+                </div>
+                <div id="ig-modal-title-text" class="ig-modal-title">Attention</div>
+                <div id="ig-modal-body-text" class="ig-modal-text">Are you sure?</div>
+                <div class="ig-modal-actions">
+                    <button id="ig-modal-cancel" class="ig-btn-cancel-modal">Cancel</button>
+                    <button id="ig-modal-confirm" class="ig-btn-confirm-modal">Yes</button>
+                </div>
+            </div>
+        </div>`;
+      document.body.insertAdjacentHTML("beforeend", modalHTML);
       UI.setupDrag(panel, panel.querySelector("#ig-header"));
       UI.loadPosition(panel);
       UI.setupTabs();
+      UI.setupThemeObserver();
       UI.renderHistory(Storage.getHistory());
       UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
       UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
     },
-    setupTabs: () => {
+    setupThemeObserver: () => {
+      const panel = document.getElementById("ig-analyzer-panel");
+      const checkTheme = () => {
+        const bgColor = window.getComputedStyle(document.body).backgroundColor;
+        if (bgColor === "rgb(255, 255, 255)" || bgColor === "#ffffff" || bgColor === "white") {
+          panel.classList.add("ig-light-theme");
+        } else {
+          panel.classList.remove("ig-light-theme");
+        }
+      };
+      checkTheme();
+      const observer = new MutationObserver(() => checkTheme());
+      observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
+      observer.observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
+    },
+confirmAction: (title, message, confirmBtnText = "Yes, Continue") => {
+      return new Promise((resolve) => {
+        const modal = document.getElementById("ig-safety-modal");
+        const titleEl = document.getElementById("ig-modal-title-text");
+        const bodyEl = document.getElementById("ig-modal-body-text");
+        const btnYes = document.getElementById("ig-modal-confirm");
+        const btnNo = document.getElementById("ig-modal-cancel");
+        if (!modal) return resolve(true);
+        titleEl.textContent = title;
+        bodyEl.innerHTML = message;
+        btnYes.textContent = confirmBtnText;
+        modal.style.display = "flex";
+        const closeAndResolve = (value) => {
+          modal.style.display = "none";
+          btnYes.onclick = null;
+          btnNo.onclick = null;
+          resolve(value);
+        };
+        btnYes.onclick = () => closeAndResolve(true);
+        btnNo.onclick = () => closeAndResolve(false);
+      });
+    },
+setupTabs: () => {
       const btns = document.querySelectorAll(".ig-tab-btn");
       btns.forEach((btn) => {
         btn.onclick = (e) => {
@@ -233,8 +259,8 @@
     renderResults: (users, title, containerId, isExportable = false) => {
       const container = document.getElementById(containerId);
       if (!container) return;
-      let html = '<div style="font-weight:600; font-size: 13px; margin-bottom:12px; color:#fff;">' + title + ' <span class="ig-badge">' + users.length + "</span></div>";
-      if (users.length === 0) html += '<div style="color:#9ca3af;">No data available yet.</div>';
+      let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + users.length + "</span></div>";
+      if (users.length === 0) html += '<div class="ig-empty-msg">No data available yet.</div>';
       users.forEach((u, index) => {
         const uniqueId = containerId + "-row-" + index;
         html += '<div class="ig-user-row" id="' + uniqueId + '"><span>' + u.username + "</span> <div>";
@@ -271,13 +297,13 @@
     renderNominalList: (list, containerId, title) => {
       const container = document.getElementById(containerId);
       if (!container) return;
-      let html = '<div style="font-weight:600; font-size: 13px; margin-bottom:12px; color:#fff;">' + title + ' <span class="ig-badge">' + list.length + "</span></div>";
+      let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + list.length + "</span></div>";
       if (!list || list.length === 0) {
-        html += '<div style="color:#9ca3af;">No historical records yet.</div>';
+        html += '<div class="ig-empty-msg">No historical records yet.</div>';
       } else {
         html += '<table class="ig-table"><tr><th>Username</th><th>Detected Date</th><th>Profile</th></tr>';
         list.slice().reverse().forEach((item) => {
-          html += "<tr><td>" + item.username + "</td><td>" + item.date + '</td><td><a href="https://www.instagram.com/' + item.username + '/" target="_blank" style="color:#60a5fa; text-decoration:none;">Link</a></td></tr>';
+          html += "<tr><td>" + item.username + "</td><td>" + item.date + '</td><td><a href="https://www.instagram.com/' + item.username + '/" target="_blank">Link</a></td></tr>';
         });
         html += "</table>";
       }
@@ -286,9 +312,9 @@
     renderHistory: (historyData) => {
       const container = document.getElementById("ig-view-history");
       if (!container) return;
-      let html = '<div style="font-weight:600; font-size: 13px; margin-bottom:12px; color:#fff;">Metrics History</div>';
+      let html = '<div class="ig-section-title">Metrics History</div>';
       if (!historyData || historyData.length === 0) {
-        html += '<div style="color:#9ca3af;">No historical data available.</div>';
+        html += '<div class="ig-empty-msg">No historical data available.</div>';
       } else {
         html += '<table class="ig-table"><tr><th>Date</th><th>Followers</th><th>Following</th></tr>';
         const reversedHistory = historyData.slice().reverse();
@@ -391,6 +417,17 @@
     run: async () => {
       const btnRun = document.getElementById("ig-run");
       if (btnRun) btnRun.disabled = true;
+      const userConfirmed = await UI.confirmAction(
+        "Safety Precaution",
+        "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
+        "Yes, Continue"
+      );
+      if (!userConfirmed) {
+        UI.log("Analysis cancelled by user.");
+        console.log("Analysis cancelled by user.");
+        if (btnRun) btnRun.disabled = false;
+        return;
+      }
       UI.setStatus("Analyzing...");
       UI.log("Starting deep analysis...");
       const logTab = document.querySelector('[data-target="ig-log"]');
@@ -466,16 +503,23 @@
         }
       };
       const btnReset = document.getElementById("ig-reset");
-      if (btnReset) btnReset.onclick = () => {
-        if (confirm("Are you sure you want to delete all data?")) {
-          Storage.resetAll();
-          UI.log("[INFO] Data reset.");
-          document.querySelectorAll(".ig-view-container").forEach((el) => {
-            if (el.id !== "ig-log") el.innerHTML = "";
-          });
-          if (btnExport) btnExport.disabled = true;
-        }
-      };
+      if (btnReset) {
+        btnReset.onclick = async () => {
+          const confirmed = await UI.confirmAction(
+            "Delete All Data",
+            "This action will wipe all your history, logs, and whitelists.<br><br>Are you sure you want to proceed?",
+            "Yes, Delete"
+          );
+          if (confirmed) {
+            Storage.resetAll();
+            UI.log("[INFO] Data reset.");
+            document.querySelectorAll(".ig-view-container").forEach((el) => {
+              if (el.id !== "ig-log") el.innerHTML = "";
+            });
+            if (btnExport) btnExport.disabled = true;
+          }
+        };
+      }
       document.addEventListener("keydown", (e) => {
         const tag = document.activeElement.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) return;
