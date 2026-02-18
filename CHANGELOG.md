@@ -6,16 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **Seguridad Activa (Safety Modal):** Implementación de un modal de advertencia antes de iniciar el análisis para alertar al usuario sobre los límites de peticiones y prevenir bloqueos temporales.
-- **Soporte de Temas (Theme Awareness):** El panel ahora detecta automáticamente si Instagram está en modo Claro u Oscuro (mediante `MutationObserver`) y adapta sus colores instantáneamente sin necesidad de recargar la página.
-- **Confirmación Estilizada:** Reutilización del sistema de modales para las acciones de "Reset Data", reemplazando las alertas nativas del navegador por una interfaz coherente con el diseño.
+- **Active Safety (Safety Modal):** Implemented a warning modal before starting the analysis to alert the user about request limits and prevent temporary account restrictions.
+- **Theme Awareness:** The panel now automatically detects if Instagram is in Light or Dark mode (via `MutationObserver`) and adapts its colors instantly without reloading the page.
+- **Stylized Confirmation:** Reused the custom modal system for critical actions like "Reset Data", replacing native browser alerts with a UI-consistent design.
 
 ### Changed
 
-- **Arquitectura de Estilos:** Refactorización completa del CSS. Se eliminó la inyección de estilos mediante JS (`GM_addStyle`) y se migró a un archivo `main.css` dedicado con variables CSS (`:root`) para facilitar el mantenimiento.
-- **Contraste UI:** Mejoras visuales en los bordes y estados *hover* de los botones para garantizar una visibilidad óptima tanto en fondos claros como oscuros.
-- **Robustez API (Hotfix):** Solución al error crítico `Graph API structure changed`. Se implementó un mapeo dinámico para manejar correctamente las variaciones de nombres de nodos de Instagram (`edge_follow` vs `edge_following`).
-- **Limpieza de Código:** Se eliminaron las funciones experimentales de detección por API REST (Ghost/Deactivated) para priorizar la estabilidad y seguridad del análisis basado en GraphQL.
+- **Style Architecture:** Complete CSS refactoring. Removed JS style injection (`GM_addStyle`) and migrated to a dedicated `main.css` file with CSS variables (`:root`) for easier maintenance and theming.
+- **UI Contrast:** Visual improvements to borders and button hover states to ensure optimal visibility on both light and dark backgrounds.
+- **API Robustness (Hotfix):** Fixed the critical `Graph API structure changed` error. Implemented dynamic mapping to correctly handle Instagram node name variations (`edge_follow` vs `edge_followed_by`).
+- **Code Cleanup:** Removed experimental REST API detection functions (Ghost/Deactivated) to prioritize the stability and safety of the GraphQL-based analysis.
 
 ## [3.0.0] - 2026-02-17
 
