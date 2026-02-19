@@ -12,24 +12,29 @@ export const UI = {
         panel.id = "ig-analyzer-panel";
         panel.innerHTML = [
             '<div id="ig-header">',
-            "  <span>IG Analyzer</span>",
-            '  <span id="ig-status">Inactive</span>',
-            "</div>",
-            '<div style="display: flex; gap: 8px; margin-bottom: 12px;">',
-            '  <button id="ig-run" class="btn-primary">Run Analysis</button>',
-            '  <button id="ig-export-csv" class="btn-success" disabled>Export CSV</button>',
-            '  <button id="ig-reset" class="btn-danger">Reset Data</button>',
-            "</div>",
-            '<div class="ig-tabs-container" id="ig-tabs">',
-            '  <button class="ig-tab-btn active" data-target="ig-log">Logs</button>',
-            '  <button class="ig-tab-btn" data-target="ig-view-history">History</button>',
-            '  <button class="ig-tab-btn" data-target="ig-view-notfollowing">Not Following</button>',
-            '  <button class="ig-tab-btn" data-target="ig-view-fans">Fans</button>',
-            '  <button class="ig-tab-btn" data-target="ig-view-mutuals">Mutuals</button>',
-            '  <button class="ig-tab-btn" data-target="ig-view-unfollowers">Unfollowers</button>',
-            '  <button class="ig-tab-btn" data-target="ig-view-deactivated">Deactivated</button>',
-            "</div>",
+            '  <div class="ig-header-left">',
+            '    <span class="ig-logo">' + Icons.logo + '</span>',
+            '    <span class="ig-title">IG Analyzer</span>',
+            '  </div>',
+            '  <div class="ig-header-right">',
+            '    <span id="ig-status"><span class="ig-status-dot"></span>Inactive</span>',
+            '  </div>',
+            '</div>',
+            '<div class="ig-actions-bar">',
+            '  <button id="ig-run" class="ig-btn ig-btn-primary"><span class="ig-btn-icon">' + Icons.play + '</span>Run Analysis</button>',
+            '  <button id="ig-export-csv" class="ig-btn ig-btn-success" disabled><span class="ig-btn-icon">' + Icons.download + '</span>Export CSV</button>',
+            '  <button id="ig-reset" class="ig-btn ig-btn-danger"><span class="ig-btn-icon">' + Icons.trash + '</span>Reset</button>',
+            '</div>',
             '<div id="ig-progress-container"><div id="ig-progress-bar"></div></div>',
+            '<div class="ig-tabs-container" id="ig-tabs">',
+            '  <button class="ig-tab-btn active" data-target="ig-log"><span class="ig-tab-icon">' + Icons.logs + '</span><span class="ig-tab-label">Logs</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-history"><span class="ig-tab-icon">' + Icons.history + '</span><span class="ig-tab-label">History</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-notfollowing"><span class="ig-tab-icon">' + Icons.notFollowing + '</span><span class="ig-tab-label">Not Following</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-fans"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Fans</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
+            '</div>',
             '<div id="ig-log" class="ig-view-container ig-view active"></div>',
             '<div id="ig-view-history" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-notfollowing" class="ig-view-container ig-view"></div>',
@@ -40,14 +45,11 @@ export const UI = {
         ].join("\n");
         document.body.appendChild(panel);
         
-        // --- CAMBIO AQUÍ: Agregamos IDs dinámicos (ig-modal-title-text, ig-modal-body-text, ig-modal-confirm-btn) ---
         const modalHTML = `
         <div id="ig-safety-modal" class="ig-modal-overlay">
             <div class="ig-modal-content">
                 <div class="ig-modal-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                    </svg>
+                    ${Icons.warning}
                 </div>
                 <div id="ig-modal-title-text" class="ig-modal-title">Attention</div>
                 <div id="ig-modal-body-text" class="ig-modal-text">Are you sure?</div>
@@ -84,7 +86,6 @@ export const UI = {
         observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
     },
     
-    // --- CAMBIO AQUÍ: Función dinámica que acepta textos ---
     confirmAction: (title, message, confirmBtnText = "Yes, Continue") => {
         return new Promise((resolve) => {
             const modal = document.getElementById('ig-safety-modal');
@@ -95,9 +96,8 @@ export const UI = {
 
             if (!modal) return resolve(true);
 
-            // Actualizamos los textos con lo que mande App.js
             titleEl.textContent = title;
-            bodyEl.innerHTML = message; // Usamos innerHTML para permitir <br>
+            bodyEl.innerHTML = message;
             btnYes.textContent = confirmBtnText;
 
             modal.style.display = 'flex';
@@ -114,15 +114,16 @@ export const UI = {
         });
     },
     
-    // ... (El resto de funciones setupTabs, setStatus, etc. sigue igual) ...
     setupTabs: () => {
         const btns = document.querySelectorAll(".ig-tab-btn");
         btns.forEach((btn) => {
             btn.onclick = (e) => {
+                const target = e.target.closest('.ig-tab-btn');
+                if (!target) return;
                 document.querySelectorAll(".ig-tab-btn").forEach((b) => b.classList.remove("active"));
                 document.querySelectorAll(".ig-view").forEach((v) => v.classList.remove("active"));
-                e.target.classList.add("active");
-                const targetId = e.target.getAttribute("data-target");
+                target.classList.add("active");
+                const targetId = target.getAttribute("data-target");
                 document.getElementById(targetId).classList.add("active");
             };
         });
@@ -130,14 +131,21 @@ export const UI = {
     
     setStatus: (text) => {
         const el = document.getElementById("ig-status");
-        if (el) el.textContent = text;
+        if (el) {
+            const dot = el.querySelector('.ig-status-dot');
+            const dotHTML = dot ? dot.outerHTML : '<span class="ig-status-dot"></span>';
+            el.innerHTML = dotHTML + text;
+        }
     },
     
     log: (msg) => {
         const box = document.getElementById("ig-log");
         if (box) {
             const timeStr = Utils.now().split("T")[1].split(".")[0];
-            box.textContent += "[" + timeStr + "] " + msg + "\n";
+            const entry = document.createElement("div");
+            entry.className = "ig-log-entry";
+            entry.innerHTML = '<span class="ig-log-time">[' + timeStr + ']</span> ' + msg;
+            box.appendChild(entry);
             box.scrollTop = box.scrollHeight;
         }
         Utils.log(msg);
@@ -162,15 +170,18 @@ export const UI = {
         const container = document.getElementById(containerId);
         if (!container) return;
         let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + users.length + "</span></div>";
-        if (users.length === 0) html += '<div class="ig-empty-msg">No data available yet.</div>';
+        if (users.length === 0) html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + '</span>No data available yet.</div>';
         
         users.forEach((u, index) => {
             const uniqueId = containerId + "-row-" + index;
-            html += '<div class="ig-user-row" id="' + uniqueId + '"><span>' + u.username + "</span> <div>";
+            html += '<div class="ig-user-row" id="' + uniqueId + '">';
+            html += '<div class="ig-user-info"><span class="ig-user-avatar">' + u.username.charAt(0).toUpperCase() + '</span><span class="ig-username">' + u.username + '</span></div>';
+            html += '<div class="ig-user-actions">';
             if (containerId === "ig-view-notfollowing") {
                 html += '<button class="btn-whitelist" data-user="' + u.username + '" data-idx="' + uniqueId + '">Ignore</button>';
             }
-            html += '<a href="' + u.url + '" target="_blank">View ' + Icons.link + "</a></div></div>";
+            html += '<a href="' + u.url + '" target="_blank" class="ig-view-link">View ' + Icons.link + '</a>';
+            html += '</div></div>';
         });
         
         container.innerHTML = html;
@@ -182,7 +193,12 @@ export const UI = {
                     const targetUser = e.target.getAttribute("data-user");
                     const rowId = e.target.getAttribute("data-idx");
                     Storage.addToWhitelist(targetUser);
-                    document.getElementById(rowId).style.display = "none";
+                    const row = document.getElementById(rowId);
+                    if (row) {
+                        row.style.opacity = "0";
+                        row.style.transform = "translateX(20px)";
+                        setTimeout(() => row.style.display = "none", 300);
+                    }
                     UI.log("[INFO] " + targetUser + " added to whitelist.");
                     if (window.__igLastResults) {
                         window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
@@ -206,13 +222,13 @@ export const UI = {
         if (!container) return;
         let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + list.length + "</span></div>";
         if (!list || list.length === 0) {
-            html += '<div class="ig-empty-msg">No historical records yet.</div>';
+            html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + '</span>No historical records yet.</div>';
         } else {
-            html += '<table class="ig-table"><tr><th>Username</th><th>Detected Date</th><th>Profile</th></tr>';
+            html += '<table class="ig-table"><thead><tr><th>Username</th><th>Detected</th><th>Profile</th></tr></thead><tbody>';
             list.slice().reverse().forEach((item) => {
-                html += "<tr><td>" + item.username + "</td><td>" + item.date + '</td><td><a href="https://www.instagram.com/' + item.username + '/" target="_blank">Link</a></td></tr>';
+                html += "<tr><td><span class='ig-table-user'>" + item.username + "</span></td><td><span class='ig-table-date'>" + item.date + '</span></td><td><a href="https://www.instagram.com/' + item.username + '/" target="_blank" class="ig-table-link">View ' + Icons.link + '</a></td></tr>';
             });
-            html += "</table>";
+            html += "</tbody></table>";
         }
         container.innerHTML = html;
     },
@@ -222,9 +238,9 @@ export const UI = {
         if (!container) return;
         let html = '<div class="ig-section-title">Metrics History</div>';
         if (!historyData || historyData.length === 0) {
-            html += '<div class="ig-empty-msg">No historical data available.</div>';
+            html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.metrics + '</span>No historical data available.</div>';
         } else {
-            html += '<table class="ig-table"><tr><th>Date</th><th>Followers</th><th>Following</th></tr>';
+            html += '<table class="ig-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th></tr></thead><tbody>';
             const reversedHistory = historyData.slice().reverse();
             reversedHistory.forEach((h, index) => {
                 let followerIcon = Icons.neutral;
@@ -236,9 +252,9 @@ export const UI = {
                     if (h.following > prevDay.following) followingIcon = Icons.up;
                     else if (h.following < prevDay.following) followingIcon = Icons.down;
                 }
-                html += "<tr><td>" + h.date + "</td><td>" + h.followers + " " + followerIcon + "</td><td>" + h.following + " " + followingIcon + "</td></tr>";
+                html += "<tr><td><span class='ig-table-date'>" + h.date + "</span></td><td><span class='ig-metric-value'>" + h.followers + " " + followerIcon + "</span></td><td><span class='ig-metric-value'>" + h.following + " " + followingIcon + "</span></td></tr>";
             });
-            html += "</table>";
+            html += "</tbody></table>";
         }
         container.innerHTML = html;
     },

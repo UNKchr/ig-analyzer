@@ -9,7 +9,6 @@ export const App = {
         const btnRun = document.getElementById("ig-run");
         if (btnRun) btnRun.disabled = true;
 
-        // --- LLAMADA AL MODAL: Advertencia de Seguridad ---
         const userConfirmed = await UI.confirmAction(
             "Safety Precaution", 
             "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
