@@ -87,7 +87,7 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
     font-size: 13px;
     padding: 20px;
-    z-index: 99999999;
+    z-index: 999999;
     border-radius: var(--ig-radius-lg);
     display: flex;
     flex-direction: column;
