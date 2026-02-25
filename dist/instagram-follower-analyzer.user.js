@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.2.0
+// @version      3.3.0
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.
 // @license      MIT
@@ -9,9 +9,11 @@
 // @downloadURL  https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
 // @updateURL    https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
 // @match        https://www.instagram.com/*
+// @require      https://raw.githubusercontent.com/UNKchr/tamperguide/refs/heads/main/tamperguide/tamperGuide.js
 // @grant        GM_addStyle
 // @grant        GM_deleteValue
 // @grant        GM_getValue
+// @grant        GM_registerMenuCommand
 // @grant        GM_setValue
 // ==/UserScript==
 
@@ -27,6 +29,7 @@
     HISTORY_KEY: "ig_history_v2",
     CHURN_KEY: "ig_churn_v3",
     DEACTIVATED_KEY: "ig_deactivated_v3",
+    TOUR_KEY: "ig_tour_completed_v1",
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
     PAGE_SIZE: 50,
@@ -561,8 +564,180 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       });
     }
   };
+  const TOUR_SEEN_KEY = "ig_tour_completed_v1";
+  function getTamperGuide() {
+    if (typeof window !== "undefined" && typeof window.tamperGuide === "function") {
+      return window.tamperGuide;
+    }
+    if (typeof globalThis !== "undefined" && typeof globalThis.tamperGuide === "function") {
+      return globalThis.tamperGuide;
+    }
+    return null;
+  }
+  function buildSteps() {
+    return [
+      {
+        popover: {
+          title: "Welcome to IG Analyzer!",
+          description: "This quick tour will walk you through all the features of the panel. It only takes a moment — let's get started!"
+        }
+      },
+      {
+        element: "#ig-header",
+        popover: {
+          title: "Draggable Header",
+          description: "Grab this area to drag the panel anywhere on screen. Your position is saved automatically between sessions.",
+          side: "bottom",
+          align: "center"
+        }
+      },
+      {
+        element: "#ig-status",
+        popover: {
+          title: "Status Indicator",
+          description: "Shows the current state of the analyzer: <b>Inactive</b>, <b>Analyzing...</b>, <b>Completed</b>, or <b>Error</b>.",
+          side: "bottom",
+          align: "end"
+        }
+      },
+      {
+        element: "#ig-run",
+        popover: {
+          title: "Run Analysis",
+          description: "Click here to start scanning your followers and following lists. The process uses Instagram's API with built-in rate limiting to keep your account safe.<br><br><b>Tip:</b> Run it only once per hour to avoid restrictions.",
+          side: "bottom",
+          align: "start"
+        }
+      },
+      {
+        element: "#ig-export-csv",
+        popover: {
+          title: "Export CSV",
+          description: "After an analysis completes, this button lets you download a <b>.csv</b> file with all users who don't follow you back. Ready for Excel or Google Sheets.",
+          side: "bottom",
+          align: "center"
+        }
+      },
+      {
+        element: "#ig-reset",
+        popover: {
+          title: "Reset Data",
+          description: "Wipes all local data: history, snapshots, whitelists, and logs. A confirmation dialog will appear before anything is deleted.",
+          side: "bottom",
+          align: "end"
+        }
+      },
+      {
+        element: "#ig-tabs",
+        popover: {
+          title: "Navigation Tabs",
+          description: "Switch between different views using these tabs:<br>• <b>Logs</b> — Real-time execution log<br>• <b>History</b> — Follower/following trends over time<br>• <b>Not Following</b> — Users who don't follow you back<br>• <b>Fans</b> — Users who follow you but you don't follow<br>• <b>Mutuals</b> — Users you both follow each other<br>• <b>Unfollowers</b> — Users who recently unfollowed you<br>• <b>Deactivated</b> — Accounts that were deactivated or suspended",
+          side: "bottom",
+          align: "center"
+        }
+      },
+      {
+        element: "#ig-log",
+        popover: {
+          title: "Logs View",
+          description: "All actions and API requests are logged here in real time. Useful for monitoring progress and debugging issues.",
+          side: "top",
+          align: "center"
+        }
+      },
+      {
+        popover: {
+          title: "You're all set!",
+          description: `That's everything you need to know. Press <b>F9</b> anytime to toggle the panel visibility.<br><br>Click <b>"Done"</b> to close this tour and start analyzing!`
+        }
+      }
+    ];
+  }
+  function isTourCompleted() {
+    return GM_getValue(TOUR_SEEN_KEY, false) === true;
+  }
+  function markTourCompleted() {
+    GM_setValue(TOUR_SEEN_KEY, true);
+  }
+  function resetTour() {
+    GM_deleteValue(TOUR_SEEN_KEY);
+    console.log("[IG Analyzer] Tour reset. It will show on next page load.");
+  }
+  function startTour(options = {}) {
+    const { force = false } = options;
+    const tg = getTamperGuide();
+    if (!tg) {
+      console.warn(
+        "[IG Analyzer] TamperGuide library not found in global scope. Make sure it is loaded via @require in the userscript header."
+      );
+      return null;
+    }
+    if (!document.getElementById("ig-analyzer-panel")) {
+      console.warn("[IG Analyzer] Panel not found in DOM. Cannot start tour.");
+      return null;
+    }
+    if (!force && isTourCompleted()) {
+      return null;
+    }
+    const blockF9 = (e) => {
+      if (e.key === "F9") {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    };
+    document.addEventListener("keydown", blockF9, true);
+    const panel = document.getElementById("ig-analyzer-panel");
+    if (panel) {
+      panel.style.display = "flex";
+    }
+    const guide = tg({
+      animate: true,
+      overlayColor: "#000",
+      overlayOpacity: 0.65,
+      stagePadding: 6,
+      stageRadius: 10,
+      allowClose: true,
+      allowKeyboardControl: true,
+      showProgress: true,
+      showButtons: ["next", "previous", "close"],
+      progressText: "{{current}} of {{total}}",
+      nextBtnText: "Next &rarr;",
+      prevBtnText: "&larr; Back",
+      doneBtnText: "Done &#10003;",
+      smoothScroll: false,
+popoverOffset: 12,
+      steps: buildSteps(),
+      onDestroyed: () => {
+        document.removeEventListener("keydown", blockF9, true);
+        markTourCompleted();
+        console.log("[IG Analyzer] Tour completed and saved.");
+      },
+      onDestroyStarted: (element, step, opts) => {
+        if (opts.driver.isLastStep()) return;
+        const skip = confirm(
+          "Skip the tour?\n\nYou can restart it anytime from the Tampermonkey menu."
+        );
+        if (skip) {
+          opts.driver.destroy();
+        }
+        return false;
+      }
+    });
+    guide.drive();
+    return guide;
+  }
   UI.init();
   App.bindEvents();
+  setTimeout(() => {
+    startTour();
+  }, 800);
+  if (typeof GM_registerMenuCommand === "function") {
+    GM_registerMenuCommand("Replay IG Analyzer Tour", () => {
+      resetTour();
+      startTour({ force: true });
+    });
+  }
   console.log("IG Analyzer loaded. Press F9.");
 
 })();
