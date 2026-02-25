@@ -19,7 +19,7 @@ export default defineConfig({
         icon: 'https://www.google.com/s2/favicons?sz=64&domain=instagram.com',
         // TamperGuide library loaded as external dependency
         require: [
-          'https://raw.githubusercontent.com/UNKchr/tamperguide/refs/heads/main/tamperguide/tamperGuide.js',
+          'https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@f106cd219d37c7c9d362a896b28ef0ca6cfd8aab/tamperguide/tamperGuide.js',
         ],
         grant: [
           'GM_getValue',
