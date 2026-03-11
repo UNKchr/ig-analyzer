@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.3.3
+// @version      3.4.0
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.
 // @license      MIT
@@ -35,7 +35,9 @@
     PAGE_SIZE: 50,
     BASE_RATE_LIMIT_MS: 1500,
     MAX_RETRIES: 4,
-    DEBUG: false
+    DEBUG: false,
+    MIN_VISIBLE_PX: 50,
+    DEFAULT_POSITION: { top: 80, right: 20 }
   };
   const Utils = {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -371,6 +373,15 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       }
       container.innerHTML = html;
     },
+clampPosition: (panel, x, y) => {
+      const panelWidth = panel.offsetWidth;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const min = CONFIG.MIN_VISIBLE_PX;
+      const clampedX = Math.max(min - panelWidth, Math.min(x, vw - min));
+      const clampedY = Math.max(0, Math.min(y, vh - min));
+      return { x: clampedX, y: clampedY };
+    },
     setupDrag: (panel, handle) => {
       let isDragging = false, offsetX, offsetY;
       handle.addEventListener("mousedown", (e) => {
@@ -381,25 +392,40 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       });
       document.addEventListener("mousemove", (e) => {
         if (!isDragging) return;
-        const x = e.clientX - offsetX;
-        const y = e.clientY - offsetY;
-        panel.style.left = x + "px";
-        panel.style.top = y + "px";
+        const raw = UI.clampPosition(panel, e.clientX - offsetX, e.clientY - offsetY);
+        panel.style.left = raw.x + "px";
+        panel.style.top = raw.y + "px";
         panel.style.right = "auto";
-        GM_setValue(CONFIG.POSITION_KEY, { x, y });
+        GM_setValue(CONFIG.POSITION_KEY, { x: raw.x, y: raw.y });
       });
       document.addEventListener("mouseup", () => {
         isDragging = false;
         document.body.style.userSelect = "";
       });
+      window.addEventListener("resize", () => {
+        const clamped = UI.clampPosition(panel, panel.offsetLeft, panel.offsetTop);
+        panel.style.left = clamped.x + "px";
+        panel.style.top = clamped.y + "px";
+        panel.style.right = "auto";
+        GM_setValue(CONFIG.POSITION_KEY, { x: clamped.x, y: clamped.y });
+      });
     },
     loadPosition: (panel) => {
       const pos = GM_getValue(CONFIG.POSITION_KEY, null);
       if (pos && typeof pos.x === "number") {
-        panel.style.left = pos.x + "px";
-        panel.style.top = pos.y + "px";
+        const clamped = UI.clampPosition(panel, pos.x, pos.y);
+        panel.style.left = clamped.x + "px";
+        panel.style.top = clamped.y + "px";
         panel.style.right = "auto";
       }
+    },
+resetPosition: () => {
+      const panel = document.getElementById("ig-analyzer-panel");
+      if (!panel) return;
+      panel.style.left = "auto";
+      panel.style.top = CONFIG.DEFAULT_POSITION.top + "px";
+      panel.style.right = CONFIG.DEFAULT_POSITION.right + "px";
+      GM_deleteValue(CONFIG.POSITION_KEY);
     },
     togglePanel: () => {
       const p = document.getElementById("ig-analyzer-panel");
@@ -561,6 +587,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         const tag = document.activeElement.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) return;
         if (e.key === "F9") UI.togglePanel();
+        if (e.key === "F8") UI.resetPosition();
       });
     }
   };
@@ -738,6 +765,6 @@ popoverOffset: 12,
       startTour({ force: true });
     });
   }
-  console.log("IG Analyzer loaded. Press F9.");
+  console.log("IG Analyzer loaded. Press F9 to toggle panel, F8 to reset position.");
 
 })();

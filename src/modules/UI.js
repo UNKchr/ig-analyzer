@@ -259,6 +259,23 @@ export const UI = {
         container.innerHTML = html;
     },
     
+    /**
+     * Clamps the given (x, y) coordinates so that at least
+     * CONFIG.MIN_VISIBLE_PX pixels of the panel remain visible
+     * within the current viewport boundaries.
+     */
+    clampPosition: (panel, x, y) => {
+        const panelWidth = panel.offsetWidth;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const min = CONFIG.MIN_VISIBLE_PX;
+
+        const clampedX = Math.max(min - panelWidth, Math.min(x, vw - min));
+        const clampedY = Math.max(0, Math.min(y, vh - min));
+
+        return { x: clampedX, y: clampedY };
+    },
+
     setupDrag: (panel, handle) => {
         let isDragging = false, offsetX, offsetY;
         handle.addEventListener("mousedown", (e) => {
@@ -269,26 +286,47 @@ export const UI = {
         });
         document.addEventListener("mousemove", (e) => {
             if (!isDragging) return;
-            const x = e.clientX - offsetX;
-            const y = e.clientY - offsetY;
-            panel.style.left = x + "px";
-            panel.style.top = y + "px";
+            const raw = UI.clampPosition(panel, e.clientX - offsetX, e.clientY - offsetY);
+            panel.style.left = raw.x + "px";
+            panel.style.top = raw.y + "px";
             panel.style.right = "auto";
-            GM_setValue(CONFIG.POSITION_KEY, { x, y });
+            GM_setValue(CONFIG.POSITION_KEY, { x: raw.x, y: raw.y });
         });
         document.addEventListener("mouseup", () => {
             isDragging = false;
             document.body.style.userSelect = "";
         });
+
+        window.addEventListener("resize", () => {
+            const clamped = UI.clampPosition(panel, panel.offsetLeft, panel.offsetTop);
+            panel.style.left = clamped.x + "px";
+            panel.style.top = clamped.y + "px";
+            panel.style.right = "auto";
+            GM_setValue(CONFIG.POSITION_KEY, { x: clamped.x, y: clamped.y });
+        });
     },
-    
+
     loadPosition: (panel) => {
         const pos = GM_getValue(CONFIG.POSITION_KEY, null);
         if (pos && typeof pos.x === "number") {
-            panel.style.left = pos.x + "px";
-            panel.style.top = pos.y + "px";
+            const clamped = UI.clampPosition(panel, pos.x, pos.y);
+            panel.style.left = clamped.x + "px";
+            panel.style.top = clamped.y + "px";
             panel.style.right = "auto";
         }
+    },
+
+    /**
+     * Resets the panel position to its default location and clears
+     * the stored position from persistent storage.
+     */
+    resetPosition: () => {
+        const panel = document.getElementById("ig-analyzer-panel");
+        if (!panel) return;
+        panel.style.left = "auto";
+        panel.style.top = CONFIG.DEFAULT_POSITION.top + "px";
+        panel.style.right = CONFIG.DEFAULT_POSITION.right + "px";
+        GM_deleteValue(CONFIG.POSITION_KEY);
     },
     
     togglePanel: () => {

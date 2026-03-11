@@ -13,7 +13,7 @@ A robust Tampermonkey userscript that safely analyzes your Instagram followers a
 * **Real-time Progress Tracking:** Calculates total follower and following counts on the initial request and displays an accurate, visual progress bar during the extraction process.
 * **Modern UI Panel:** Features a draggable, modernized glassmorphism interface injected directly into the web page. It includes expanded tabs to monitor execution logs and view compiled lists for all advanced metrics.
 * **Historical Snapshots:** Saves local data snapshots between executions. This allows the script to compare current data with previous runs to alert you of changes.
-* **Keyboard Shortcut:** Toggle the visibility of the analyzer panel seamlessly by pressing `F9`. This feature includes safety checks to prevent accidental triggers while typing in chat boxes or input fields.
+* **Keyboard Shortcut:** Toggle the visibility of the analyzer panel seamlessly by pressing `F9`. Press `F8` to reset the panel to its default position if it ever becomes unreachable. Both shortcuts include safety checks to prevent accidental triggers while typing in chat boxes or input fields.
 
 ---
 
@@ -29,7 +29,7 @@ A robust Tampermonkey userscript that safely analyzes your Instagram followers a
 ## Usage Guide
 
 1. Navigate to `instagram.com` and ensure you are logged into your account.
-2. The analyzer panel should appear on the right side of the screen. If it is hidden, press `F9` on your keyboard to toggle its visibility.
+2. The analyzer panel should appear on the right side of the screen. If it is hidden, press `F9` on your keyboard to toggle its visibility. If the panel is stuck in an unreachable position, press `F8` to reset it to its default location.
 3. Click the **Run** button to begin.
 4. Monitor the process via the **Logs** tab and the progress bar. Depending on the size of your account, this may take a few minutes. Do not refresh or close the tab while the script is running.
 5. Once completed, you can navigate through the new tabs (**Not Following**, **Fans**, **Mutuals**, **Unfollowers**, and **Deactivated**) to view your customized analytics.

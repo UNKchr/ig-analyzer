@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.0] - 2026-03-11
+
+### Added
+
+- **Panel Boundary Detection:** The draggable panel now automatically detects viewport edges and prevents the user from accidentally moving it out of reach. A minimum visible area is enforced on all sides of the screen.
+- **Viewport Resize Handling:** When the browser window is resized, the panel position is automatically re-clamped to remain within the new viewport boundaries.
+- **Position Reset Shortcut (F8):** Added a global keyboard shortcut (`F8`) to instantly reset the panel to its default position. This serves as a safety fallback if the panel ever becomes unreachable.
+- **`resetPosition` method:** New method in the `UI` module to programmatically restore the panel to its default coordinates and clear the stored position.
+- **`clampPosition` helper:** New method in the `UI` module that constrains arbitrary (x, y) coordinates to guarantee panel visibility within the viewport.
+- **`MIN_VISIBLE_PX` constant:** New configuration constant in `Config.js` defining the minimum number of pixels that must remain visible when dragging the panel toward any viewport edge.
+- **`DEFAULT_POSITION` constant:** New configuration constant in `Config.js` defining the default panel position values.
+
+### Changed
+
+- **`setupDrag`:** Updated to use `clampPosition` during every drag movement, preventing the panel from being dragged outside viewport boundaries.
+- **`loadPosition`:** Updated to validate saved coordinates against the current viewport dimensions before applying them, preventing the panel from loading in an unreachable position after a window resize or resolution change.
+
 ## [3.1.0] - 2026-02-18
 
 ### Added

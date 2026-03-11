@@ -143,6 +143,7 @@ export const App = {
             const tag = document.activeElement.tagName;
             if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) return;
             if (e.key === "F9") UI.togglePanel();
+            if (e.key === "F8") UI.resetPosition();
         });
     }
 };
