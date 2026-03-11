@@ -11,5 +11,7 @@ export const CONFIG = {
     PAGE_SIZE: 50,
     BASE_RATE_LIMIT_MS: 1500, 
     MAX_RETRIES: 4,           
-    DEBUG: false
+    DEBUG: false,
+    MIN_VISIBLE_PX: 50,
+    DEFAULT_POSITION: { top: 80, right: 20 }
 };
