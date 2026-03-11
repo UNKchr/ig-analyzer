@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.4.0
+// @version      3.4.1
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.
 // @license      MIT
@@ -765,6 +765,6 @@ popoverOffset: 12,
       startTour({ force: true });
     });
   }
-  console.log("IG Analyzer loaded. Press F9 to toggle panel, F8 to reset position.");
+  UI.log("IG Analyzer loaded. Press F9 to toggle panel, F8 to reset position.");
 
 })();
