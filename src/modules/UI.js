@@ -35,7 +35,12 @@ export const UI = {
             '  <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
             '  <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
             '</div>',
-            '<div id="ig-log" class="ig-view-container ig-view active"></div>',
+            '<div id="ig-log" class="ig-view-container ig-view active">',
+            '  <button class="ig-clear-logs-btn" id="ig-clear-logs-btn" title="Clear logs">',
+            '    <span class="ig-clear-logs-icon">' + Icons.clearLogs + '</span>',
+            '    <span class="ig-clear-logs-label">Clear</span>',
+            '  </button>',
+            '</div>',
             '<div id="ig-view-history" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-notfollowing" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-fans" class="ig-view-container ig-view"></div>',
@@ -68,6 +73,9 @@ export const UI = {
         UI.renderHistory(Storage.getHistory());
         UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
         UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
+
+        const clearBtn = document.getElementById("ig-clear-logs-btn");
+        if (clearBtn) clearBtn.addEventListener("click", UI.clearLogs);
     },
 
     setupThemeObserver: () => {
@@ -145,10 +153,22 @@ export const UI = {
             const entry = document.createElement("div");
             entry.className = "ig-log-entry";
             entry.innerHTML = '<span class="ig-log-time">[' + timeStr + ']</span> ' + msg;
-            box.appendChild(entry);
+            const clearBtn = box.querySelector(".ig-clear-logs-btn");
+            if (clearBtn) {
+                box.insertBefore(entry, clearBtn);
+            } else {
+                box.appendChild(entry);
+            }
             box.scrollTop = box.scrollHeight;
         }
         Utils.log(msg);
+    },
+
+    clearLogs: () => {
+        const box = document.getElementById("ig-log");
+        if (box) {
+            box.querySelectorAll(".ig-log-entry").forEach(el => el.remove());
+        }
     },
     
     setProgress: (current, total, label) => {
