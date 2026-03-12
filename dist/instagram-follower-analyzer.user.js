@@ -9,7 +9,7 @@
 // @downloadURL  https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
 // @updateURL    https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
 // @match        https://www.instagram.com/*
-// @require      https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@c77446fd7b7946328de786bb932f9100e33cad12/tamperguide/tamperGuide.js
+// @require      https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@df759188874072c079c718c0f2cfdf4e5fa51246/tamperguide/tamperGuide.js
 // @grant        GM_addStyle
 // @grant        GM_deleteValue
 // @grant        GM_getValue
