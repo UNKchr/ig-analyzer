@@ -9,7 +9,7 @@ export default defineConfig({
       userscript: {
         name: 'Instagram Follower Analyzer',
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.4.2', 
+        version: '3.4.0', 
         description: 'Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.',
         author: 'UNKchr',
         match: ['https://www.instagram.com/*'],
