@@ -440,6 +440,69 @@
     font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
     font-size: 11px;
     line-height: 1.6;
+    position: relative;
+}
+
+.ig-clear-logs-btn {
+    position: sticky;
+    bottom: 8px;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    height: 32px;
+    width: 32px;
+    padding: 0 8px;
+    border-radius: var(--ig-radius-full);
+    background: var(--ig-btn-bg);
+    border: 1px solid var(--ig-btn-border);
+    color: var(--ig-text-muted);
+    cursor: pointer;
+    z-index: 10;
+    overflow: hidden;
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                background 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                gap 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ig-clear-logs-btn:hover {
+    width: 90px;
+    gap: 6px;
+    background: var(--ig-bg-hover);
+    color: var(--ig-danger);
+    border-color: var(--ig-danger);
+}
+
+.ig-clear-logs-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+}
+
+.ig-clear-logs-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.ig-clear-logs-label {
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    opacity: 0;
+    max-width: 0;
+    overflow: hidden;
+    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: inherit;
+}
+
+.ig-clear-logs-btn:hover .ig-clear-logs-label {
+    opacity: 1;
+    max-width: 60px;
 }
 
 .ig-log-entry {
