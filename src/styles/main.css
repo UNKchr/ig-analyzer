@@ -436,71 +436,10 @@
 /* ============================================================
    Log View
    ============================================================ */
-
 #ig-log {
     font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
     font-size: 11px;
     line-height: 1.6;
-    display: flex !important;
-    flex-direction: column;
-}
-
-
-#ig-log.active {
-    display: flex !important;
-}
-
-
-.ig-clear-logs-btn {
-    position: sticky;
-    bottom: 0;
-    align-self: flex-end;
-    margin-top: auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    min-height: 32px;
-    padding: 0;
-    border-radius: var(--ig-radius-sm);
-    background: var(--ig-btn-bg);
-    border: 1px solid var(--ig-btn-border);
-    color: var(--ig-text-muted);
-    cursor: pointer;
-    z-index: 10;
-    flex-shrink: 0;
-    transition: background 0.2s ease,
-                color 0.2s ease,
-                border-color 0.2s ease;
-}
-
-.ig-clear-logs-btn:hover {
-    background: var(--ig-bg-hover);
-    color: var(--ig-danger);
-    border-color: var(--ig-danger);
-}
-
-.ig-clear-logs-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-}
-
-.ig-clear-logs-icon svg {
-    width: 16px;
-    height: 16px;
-}
-
-.ig-clear-logs-label {
-    display: none;
-}
-
-.ig-clear-logs-btn:hover .ig-clear-logs-label {
-    opacity: 1;
-    max-width: 60px;
 }
 
 .ig-log-entry {
