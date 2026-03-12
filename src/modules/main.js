@@ -21,4 +21,4 @@ if (typeof GM_registerMenuCommand === 'function') {
     });
 }
 
-UI.log("IG Analyzer loaded. Press F9 to toggle panel, F8 to reset position.");
+console.log("IG Analyzer loaded. Press F9 to toggle panel, F8 to reset position.");
