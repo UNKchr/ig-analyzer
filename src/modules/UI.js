@@ -146,6 +146,7 @@ export const UI = {
         }
     },
     
+            
     log: (msg) => {
         const box = document.getElementById("ig-log");
         if (box) {
@@ -168,6 +169,7 @@ export const UI = {
         const box = document.getElementById("ig-log");
         if (box) {
             box.querySelectorAll(".ig-log-entry").forEach(el => el.remove());
+            UI.log("IG Analyzer loaded. Press F9 to toggle panel, F8 to reset position.");
         }
     },
     

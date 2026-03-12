@@ -436,39 +436,46 @@
 /* ============================================================
    Log View
    ============================================================ */
+
 #ig-log {
     font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
     font-size: 11px;
     line-height: 1.6;
-    position: relative;
+    display: flex !important;
+    flex-direction: column;
 }
+
+
+#ig-log.active {
+    display: flex !important;
+}
+
 
 .ig-clear-logs-btn {
     position: sticky;
-    bottom: 8px;
-    margin-left: auto;
+    bottom: 0;
+    align-self: flex-end;
+    margin-top: auto;
     display: flex;
     align-items: center;
-    gap: 0;
-    height: 32px;
+    justify-content: center;
     width: 32px;
-    padding: 0 8px;
-    border-radius: var(--ig-radius-full);
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    border-radius: var(--ig-radius-sm);
     background: var(--ig-btn-bg);
     border: 1px solid var(--ig-btn-border);
     color: var(--ig-text-muted);
     cursor: pointer;
     z-index: 10;
-    overflow: hidden;
-    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                background 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                gap 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    flex-shrink: 0;
+    transition: background 0.2s ease,
+                color 0.2s ease,
+                border-color 0.2s ease;
 }
 
 .ig-clear-logs-btn:hover {
-    width: 90px;
-    gap: 6px;
     background: var(--ig-bg-hover);
     color: var(--ig-danger);
     border-color: var(--ig-danger);
@@ -478,7 +485,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
     width: 16px;
     height: 16px;
 }
@@ -489,15 +495,7 @@
 }
 
 .ig-clear-logs-label {
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
-    opacity: 0;
-    max-width: 0;
-    overflow: hidden;
-    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    font-family: inherit;
+    display: none;
 }
 
 .ig-clear-logs-btn:hover .ig-clear-logs-label {
