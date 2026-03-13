@@ -67,8 +67,24 @@ export const App = {
                 
                 const lostFollowers = Utils.diff(prev.followers, followers);
                 const lostFollowing = Utils.diff(prev.following, following);
-                const newDeactivated = Utils.intersection(lostFollowers, lostFollowing);
-                const newUnfollowers = Utils.diff(lostFollowers, newDeactivated);
+                const missingUsers = Utils.intersection(lostFollowers, lostFollowing);
+                
+                const newDeactivated = [];
+                const newBlocked = [];
+
+                if (missingUsers.length > 0) {
+                    UI.setStatus("Verifying missing accounts...");
+                    for (const username of missingUsers) {
+                        const status = await API.checkBlockStatus(username);
+                        if (status === 'Blocked') {
+                            newBlocked.push(username);
+                        } else {
+                            newDeactivated.push(username);
+                        }
+                    }
+                }
+                
+                const newUnfollowers = Utils.diff(lostFollowers, missingUsers);
                 
                 if (newUnfollowers.length > 0) {
                     UI.log("Identified " + newUnfollowers.length + " new unfollower(s)!");
@@ -78,6 +94,11 @@ export const App = {
                 if (newDeactivated.length > 0) {
                     UI.log("Identified " + newDeactivated.length + " deactivated account(s).");
                     Storage.addNominalEntries(CONFIG.DEACTIVATED_KEY, newDeactivated);
+                }
+
+                if (newBlocked.length > 0) {
+                    UI.log("Identified " + newBlocked.length + " account(s) that blocked you.");
+                    Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked);
                 }
             } else {
                 UI.log("First run: Initial state established.");
@@ -90,6 +111,7 @@ export const App = {
             UI.renderResults(mutualsDetailed, "Mutual Connections", "ig-view-mutuals", false);
             UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
             UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
+            UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
             
             window.__igLastResults = notFollowingBackDetailed;
             UI.setStatus("Completed");
@@ -119,9 +141,9 @@ export const App = {
         
         const btnReset = document.getElementById("ig-reset");
         if (btnReset) {
-            // Hacemos la función async para poder usar await
+            
             btnReset.onclick = async () => {
-                // --- LLAMADA AL MODAL: Reset Data ---
+                
                 const confirmed = await UI.confirmAction(
                     "Delete All Data", 
                     "This action will wipe all your history, logs, and whitelists.<br><br>Are you sure you want to proceed?",

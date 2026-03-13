@@ -109,7 +109,8 @@ function buildSteps() {
                     '• <b>Fans</b> — Users who follow you but you don\'t follow<br>' +
                     '• <b>Mutuals</b> — Users you both follow each other<br>' +
                     '• <b>Unfollowers</b> — Users who recently unfollowed you<br>' +
-                    '• <b>Deactivated</b> — Accounts that were deactivated or suspended',
+                    '• <b>Deactivated</b> — Accounts that were deactivated or suspended<br>' + 
+                    '• <b>Blocked</b> — Accounts that have blocked you' ,
                 side: 'bottom',
                 align: 'center',
             },

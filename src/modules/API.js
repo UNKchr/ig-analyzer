@@ -54,5 +54,19 @@ export const API = {
         
         UI.log("Total " + label + ": " + users.length);
         return users;
+    },
+
+    checkBlockStatus: async (username) => {
+        try {
+            
+            const res = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
+            if (res.status === 404) {
+                return 'Deactivated';
+            }
+            return 'Blocked';
+        } catch (e) {
+            console.error(`Error checking status for ${username}:`, e);
+            return 'Deactivated';
+        }
     }
 };

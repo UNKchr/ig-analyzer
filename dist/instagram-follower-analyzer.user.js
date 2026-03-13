@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.4.2
+// @version      3.4.3
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.
 // @license      MIT
@@ -29,6 +29,7 @@
     HISTORY_KEY: "ig_history_v2",
     CHURN_KEY: "ig_churn_v3",
     DEACTIVATED_KEY: "ig_deactivated_v3",
+    BLOCKED_KEY: "ig_blocked_v1",
     TOUR_KEY: "ig_tour_completed_v1",
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
@@ -131,6 +132,7 @@ logs: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     mutuals: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     unfollowers: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><line x1="20" y1="8" x2="20" y2="14"/></svg>',
     deactivated: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>',
+    blocked: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="18" y1="8" x2="23" y2="13"/><line x1="23" y1="8" x2="18" y2="13"/></svg>',
 logo: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/></svg>',
 warning: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>',
 play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
@@ -170,6 +172,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '  <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
         '  <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
         '  <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
+        '  <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span></button>',
         "</div>",
         '<div id="ig-log" class="ig-view-container ig-view active"></div>',
         '<div id="ig-view-history" class="ig-view-container ig-view"></div>',
@@ -177,7 +180,8 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '<div id="ig-view-fans" class="ig-view-container ig-view"></div>',
         '<div id="ig-view-mutuals" class="ig-view-container ig-view"></div>',
         '<div id="ig-view-unfollowers" class="ig-view-container ig-view"></div>',
-        '<div id="ig-view-deactivated" class="ig-view-container ig-view"></div>'
+        '<div id="ig-view-deactivated" class="ig-view-container ig-view"></div>',
+        '<div id="ig-view-blocked" class="ig-view-container ig-view"></div>'
       ].join("\n");
       document.body.appendChild(panel);
       const modalHTML = `
@@ -202,6 +206,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       UI.renderHistory(Storage.getHistory());
       UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
       UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
+      UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
     },
     setupThemeObserver: () => {
       const panel = document.getElementById("ig-analyzer-panel");
@@ -474,6 +479,18 @@ resetPosition: () => {
       }
       UI.log("Total " + label + ": " + users.length);
       return users;
+    },
+    checkBlockStatus: async (username) => {
+      try {
+        const res = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
+        if (res.status === 404) {
+          return "Deactivated";
+        }
+        return "Blocked";
+      } catch (e) {
+        console.error(`Error checking status for ${username}:`, e);
+        return "Deactivated";
+      }
     }
   };
   const App = {
@@ -524,8 +541,21 @@ resetPosition: () => {
           UI.log("New followers since last run: " + newFollowers.length);
           const lostFollowers = Utils.diff(prev.followers, followers);
           const lostFollowing = Utils.diff(prev.following, following);
-          const newDeactivated = Utils.intersection(lostFollowers, lostFollowing);
-          const newUnfollowers = Utils.diff(lostFollowers, newDeactivated);
+          const missingUsers = Utils.intersection(lostFollowers, lostFollowing);
+          const newDeactivated = [];
+          const newBlocked = [];
+          if (missingUsers.length > 0) {
+            UI.setStatus("Verifying missing accounts...");
+            for (const username of missingUsers) {
+              const status = await API.checkBlockStatus(username);
+              if (status === "Blocked") {
+                newBlocked.push(username);
+              } else {
+                newDeactivated.push(username);
+              }
+            }
+          }
+          const newUnfollowers = Utils.diff(lostFollowers, missingUsers);
           if (newUnfollowers.length > 0) {
             UI.log("Identified " + newUnfollowers.length + " new unfollower(s)!");
             Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers);
@@ -533,6 +563,10 @@ resetPosition: () => {
           if (newDeactivated.length > 0) {
             UI.log("Identified " + newDeactivated.length + " deactivated account(s).");
             Storage.addNominalEntries(CONFIG.DEACTIVATED_KEY, newDeactivated);
+          }
+          if (newBlocked.length > 0) {
+            UI.log("Identified " + newBlocked.length + " account(s) that blocked you.");
+            Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked);
           }
         } else {
           UI.log("First run: Initial state established.");
@@ -543,6 +577,7 @@ resetPosition: () => {
         UI.renderResults(mutualsDetailed, "Mutual Connections", "ig-view-mutuals", false);
         UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
         UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
+        UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
         window.__igLastResults = notFollowingBackDetailed;
         UI.setStatus("Completed");
         UI.log("[OK] Analysis completed successfully.");
@@ -658,7 +693,7 @@ resetPosition: () => {
         element: "#ig-tabs",
         popover: {
           title: "Navigation Tabs",
-          description: "Switch between different views using these tabs:<br>• <b>Logs</b> — Real-time execution log<br>• <b>History</b> — Follower/following trends over time<br>• <b>Not Following</b> — Users who don't follow you back<br>• <b>Fans</b> — Users who follow you but you don't follow<br>• <b>Mutuals</b> — Users you both follow each other<br>• <b>Unfollowers</b> — Users who recently unfollowed you<br>• <b>Deactivated</b> — Accounts that were deactivated or suspended",
+          description: "Switch between different views using these tabs:<br>• <b>Logs</b> — Real-time execution log<br>• <b>History</b> — Follower/following trends over time<br>• <b>Not Following</b> — Users who don't follow you back<br>• <b>Fans</b> — Users who follow you but you don't follow<br>• <b>Mutuals</b> — Users you both follow each other<br>• <b>Unfollowers</b> — Users who recently unfollowed you<br>• <b>Deactivated</b> — Accounts that were deactivated or suspended<br>• <b>Blocked</b> — Accounts that have blocked you",
           side: "bottom",
           align: "center"
         }

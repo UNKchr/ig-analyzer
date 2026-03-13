@@ -34,6 +34,7 @@ export const UI = {
             '  <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
             '  <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
             '  <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span></button>',
             '</div>',
             '<div id="ig-log" class="ig-view-container ig-view active"></div>',
             '<div id="ig-view-history" class="ig-view-container ig-view"></div>',
@@ -41,7 +42,8 @@ export const UI = {
             '<div id="ig-view-fans" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-mutuals" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-unfollowers" class="ig-view-container ig-view"></div>',
-            '<div id="ig-view-deactivated" class="ig-view-container ig-view"></div>'
+            '<div id="ig-view-deactivated" class="ig-view-container ig-view"></div>',
+            '<div id="ig-view-blocked" class="ig-view-container ig-view"></div>'
         ].join("\n");
         document.body.appendChild(panel);
         
@@ -68,6 +70,7 @@ export const UI = {
         UI.renderHistory(Storage.getHistory());
         UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
         UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
+        UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
     },
 
     setupThemeObserver: () => {

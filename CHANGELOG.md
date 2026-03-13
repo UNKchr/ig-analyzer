@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.5.0] - 2026-03-13
+
+### Added
+
+- **Block Detection Feature:** Implemented a new heuristic to accurately identify accounts that have blocked you. The script distinguishes between a deactivated profile and a block action by verifying the public availability of the user's profile via an unauthenticated request.
+- **Blocked Accounts Interface:** Introduced a dedicated "Blocked" tab in the main panel to list and track users who have restricted your access to their profile.
+- **Persistent Block Tracking:** Added a new storage configuration key (`ig_blocked_v1`) to securely save the history of detected block events across multiple sessions.
+- **New UI Iconography:** Integrated a custom SVG icon representing blocked accounts, maintaining visual consistency with the application's design system.
+
 ## [3.4.0] - 2026-03-11
 
 ### Added

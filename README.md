@@ -4,6 +4,7 @@ A robust Tampermonkey userscript that safely analyzes your Instagram followers a
 
 ## Key Features
 
+* **Block Detection:** Uniquely identifies users who have blocked your account. It distinguishes true blocks from deactivated profiles by intelligently verifying the public availability of their account locally and safely.
 * **Advanced Analytics:** Discover your "Fans" (users who follow you, but you don't follow back) and "Mutual connections" instantly.
 * **Churn & Deactivation Tracking:** Keeps a permanent, dated record of users who unfollow you, while intelligently distinguishing between real unfollows and deactivated or suspended accounts.
 * **Visual Trend Indicators:** The History tab features precise SVG icons to help you visualize your account's growth or decline day by day.
@@ -32,7 +33,7 @@ A robust Tampermonkey userscript that safely analyzes your Instagram followers a
 2. The analyzer panel should appear on the right side of the screen. If it is hidden, press `F9` on your keyboard to toggle its visibility. If the panel is stuck in an unreachable position, press `F8` to reset it to its default location.
 3. Click the **Run** button to begin.
 4. Monitor the process via the **Logs** tab and the progress bar. Depending on the size of your account, this may take a few minutes. Do not refresh or close the tab while the script is running.
-5. Once completed, you can navigate through the new tabs (**Not Following**, **Fans**, **Mutuals**, **Unfollowers**, and **Deactivated**) to view your customized analytics.
+5. Once completed, you can navigate through the new tabs (**Not Following**, **Fans**, **Mutuals**, **Unfollowers**, **Deactivated**, and **Blocked**) to view your customized analytics.
 6. In the **Not Following** tab, you can click **Ignore** next to any user to add them to your whitelist.
 7. Click the **Export CSV** button to download the filtered non-followers data to your local machine.
 8. Check the **History** tab at any time to view your past counts with visual growth indicators.
