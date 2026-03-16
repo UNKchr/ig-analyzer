@@ -17,6 +17,7 @@ export const Utils = {
         const setB = new Set(b);
         return a.filter((x) => setB.has(x));
     },
+    unique: (arr) => [...new Set(arr)],
     exportCSV: (data, filename) => {
         if (!data || !data.length) return;
         const csvContent = "Username,Profile URL\n" + data.map((u) => u.username + "," + u.url).join("\n");

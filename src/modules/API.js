@@ -56,17 +56,45 @@ export const API = {
         return users;
     },
 
-    checkBlockStatus: async (username) => {
+    checkAccountStatus: async (username) => {
         try {
             
-            const res = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
-            if (res.status === 404) {
-                return 'Deactivated';
+            const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+                headers: { "X-IG-App-ID": "936619743392459" },
+                credentials: "include"
+            });
+            
+            let authData = null;
+            if (authRes.ok) {
+                const json = await authRes.json();
+                authData = json?.data?.user;
             }
-            return 'Blocked';
+
+            if (authData) {
+                return 'Active'; 
+            }
+
+            const anonRes = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
+            const anonText = await anonRes.text();
+
+
+            const loginRedirectPath = `login/?next=%2F${username}%2F`;
+            
+            const existsPublicly = anonText.includes(loginRedirectPath) || 
+                                   anonText.includes(`"username":"${username}"`);
+
+            const isErrorPage = anonText.includes("page_not_found") || 
+                                anonText.includes("Sorry, this page isn't available.") || 
+                                anonText.includes("Esta página no está disponible.");
+
+            if (existsPublicly && !isErrorPage) {
+                return 'Blocked'; 
+            } else {
+                return 'Deactivated'; 
+            }
         } catch (e) {
-            console.error(`Error checking status for ${username}:`, e);
-            return 'Deactivated';
+            console.error(`Error verificando estado de ${username}:`, e);
+            return 'Active';
         }
     }
 };

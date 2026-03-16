@@ -71,23 +71,29 @@ export const App = {
                 
                 const newDeactivated = [];
                 const newBlocked = [];
+                const newUnfollowers = [];
 
-                if (missingUsers.length > 0) {
-                    UI.setStatus("Verifying missing accounts...");
-                    for (const username of missingUsers) {
-                        const status = await API.checkBlockStatus(username);
-                        if (status === 'Blocked') {
-                            newBlocked.push(username);
-                        } else {
+                const accountsToVerify = Utils.unique([...lostFollowers, ...missingUsers]);
+
+                if (accountsToVerify.length > 0) {
+                    UI.setStatus("Verifying lost accounts...");
+                    for (const username of accountsToVerify) {
+                        const status = await API.checkAccountStatus(username);
+
+                        if (status === 'Deactivated') {
                             newDeactivated.push(username);
+                        } else if (status === 'Blocked') {
+                            newBlocked.push(username);
+                        } else if (status === 'Active') {
+                            if (lostFollowers.includes(username)) {
+                                newUnfollowers.push(username);
+                            }
                         }
                     }
-                }
-                
-                const newUnfollowers = Utils.diff(lostFollowers, missingUsers);
-                
+                }    
+    
                 if (newUnfollowers.length > 0) {
-                    UI.log("Identified " + newUnfollowers.length + " new unfollower(s)!");
+                    UI.log("Identified " + newUnfollowers.length + " new unfollower(s).");
                     Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers);
                 }
                 

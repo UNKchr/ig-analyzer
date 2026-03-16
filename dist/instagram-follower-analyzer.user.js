@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.4.3
+// @version      3.4.4
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.
 // @license      MIT
@@ -57,6 +57,7 @@
       const setB = new Set(b);
       return a.filter((x) => setB.has(x));
     },
+    unique: (arr) => [...new Set(arr)],
     exportCSV: (data, filename) => {
       if (!data || !data.length) return;
       const csvContent = "Username,Profile URL\n" + data.map((u) => u.username + "," + u.url).join("\n");
@@ -480,16 +481,33 @@ resetPosition: () => {
       UI.log("Total " + label + ": " + users.length);
       return users;
     },
-    checkBlockStatus: async (username) => {
+    checkAccountStatus: async (username) => {
       try {
-        const res = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
-        if (res.status === 404) {
+        const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+          headers: { "X-IG-App-ID": "936619743392459" },
+          credentials: "include"
+        });
+        let authData = null;
+        if (authRes.ok) {
+          const json = await authRes.json();
+          authData = json?.data?.user;
+        }
+        if (authData) {
+          return "Active";
+        }
+        const anonRes = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
+        const anonText = await anonRes.text();
+        const loginRedirectPath = `login/?next=%2F${username}%2F`;
+        const existsPublicly = anonText.includes(loginRedirectPath) || anonText.includes(`"username":"${username}"`);
+        const isErrorPage = anonText.includes("page_not_found") || anonText.includes("Sorry, this page isn't available.") || anonText.includes("Esta página no está disponible.");
+        if (existsPublicly && !isErrorPage) {
+          return "Blocked";
+        } else {
           return "Deactivated";
         }
-        return "Blocked";
       } catch (e) {
-        console.error(`Error checking status for ${username}:`, e);
-        return "Deactivated";
+        console.error(`Error verificando estado de ${username}:`, e);
+        return "Active";
       }
     }
   };
@@ -544,20 +562,25 @@ resetPosition: () => {
           const missingUsers = Utils.intersection(lostFollowers, lostFollowing);
           const newDeactivated = [];
           const newBlocked = [];
-          if (missingUsers.length > 0) {
-            UI.setStatus("Verifying missing accounts...");
-            for (const username of missingUsers) {
-              const status = await API.checkBlockStatus(username);
-              if (status === "Blocked") {
-                newBlocked.push(username);
-              } else {
+          const newUnfollowers = [];
+          const accountsToVerify = Utils.unique([...lostFollowers, ...missingUsers]);
+          if (accountsToVerify.length > 0) {
+            UI.setStatus("Verifying lost accounts...");
+            for (const username of accountsToVerify) {
+              const status = await API.checkAccountStatus(username);
+              if (status === "Deactivated") {
                 newDeactivated.push(username);
+              } else if (status === "Blocked") {
+                newBlocked.push(username);
+              } else if (status === "Active") {
+                if (lostFollowers.includes(username)) {
+                  newUnfollowers.push(username);
+                }
               }
             }
           }
-          const newUnfollowers = Utils.diff(lostFollowers, missingUsers);
           if (newUnfollowers.length > 0) {
-            UI.log("Identified " + newUnfollowers.length + " new unfollower(s)!");
+            UI.log("Identified " + newUnfollowers.length + " new unfollower(s).");
             Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers);
           }
           if (newDeactivated.length > 0) {
