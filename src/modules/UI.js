@@ -35,6 +35,7 @@ export const UI = {
             '  <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
             '  <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
             '  <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span></button>',
+            '  <button class="ig-tab-btn" data-target="ig-view-renamed"><span class="ig-tab-icon">' + Icons.renamed + '</span><span class="ig-tab-label">Renamed</span></button>', 
             '</div>',
             '<div id="ig-log" class="ig-view-container ig-view active"></div>',
             '<div id="ig-view-history" class="ig-view-container ig-view"></div>',
@@ -43,7 +44,8 @@ export const UI = {
             '<div id="ig-view-mutuals" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-unfollowers" class="ig-view-container ig-view"></div>',
             '<div id="ig-view-deactivated" class="ig-view-container ig-view"></div>',
-            '<div id="ig-view-blocked" class="ig-view-container ig-view"></div>'
+            '<div id="ig-view-blocked" class="ig-view-container ig-view"></div>',
+            '<div id="ig-view-renamed" class="ig-view-container ig-view"></div>' 
         ].join("\n");
         document.body.appendChild(panel);
         
@@ -71,6 +73,7 @@ export const UI = {
         UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
         UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
         UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
+        UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
     },
 
     setupThemeObserver: () => {
@@ -233,6 +236,37 @@ export const UI = {
             });
             html += "</tbody></table>";
         }
+        container.innerHTML = html;
+    },
+
+    // Change
+    renderRenamedList: (list, containerId, title) => {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        const safeList = Array.isArray(list) ? list : [];
+        let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + safeList.length + "</span></div>";
+
+        if (safeList.length === 0) {
+            html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + '</span>No username changes detected yet.</div>';
+        } else {
+            html += '<table class="ig-table"><thead><tr><th>Previous Username</th><th>Current Username</th><th>Detected</th><th>Profile</th></tr></thead><tbody>';
+            safeList.slice().reverse().forEach((item) => {
+                const oldUsername = item.oldUsername || "-";
+                const newUsername = item.newUsername || item.username || "-";
+                const detectedDate = item.date || "-";
+                const profileUrl = newUsername !== "-" ? ("https://www.instagram.com/" + newUsername + "/") : "#";
+
+                html += "<tr>";
+                html += "<td><span class='ig-table-user'>" + oldUsername + "</span></td>";
+                html += "<td><span class='ig-table-user'>" + newUsername + "</span></td>";
+                html += "<td><span class='ig-table-date'>" + detectedDate + "</span></td>";
+                html += '<td><a href="' + profileUrl + '" target="_blank" class="ig-table-link">View ' + Icons.link + '</a></td>';
+                html += "</tr>";
+            });
+            html += "</tbody></table>";
+        }
+
         container.innerHTML = html;
     },
     

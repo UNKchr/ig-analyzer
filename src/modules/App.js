@@ -32,10 +32,15 @@ export const App = {
             if (!userId) throw new Error("User ID could not be obtained. Are you logged in?");
             
             UI.log("Fetching 'Following'...");
-            const following = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following");
-            
+            const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following"); 
             UI.log("Fetching 'Followers'...");
-            const followers = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers");
+            const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers"); 
+
+            
+            const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw); 
+            const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw); 
+            const following = followingDetailed.map((u) => u.username); 
+            const followers = followersDetailed.map((u) => u.username); 
             
             UI.hideProgress();
             UI.setStatus("Calculating Metrics...");
@@ -62,18 +67,44 @@ export const App = {
             
             const prev = Storage.load();
             if (prev) {
-                const newFollowers = Utils.diff(followers, prev.followers);
+                
+                const prevFollowersDetailed = Utils.toDetailedUserArray(
+                    Array.isArray(prev.followersDetailed) ? prev.followersDetailed : (prev.followers || [])
+                ); 
+                const prevFollowingDetailed = Utils.toDetailedUserArray(
+                    Array.isArray(prev.followingDetailed) ? prev.followingDetailed : (prev.following || [])
+                ); 
+
+                const prevFollowers = prevFollowersDetailed.map((u) => u.username); 
+                const prevFollowing = prevFollowingDetailed.map((u) => u.username); 
+
+                const newFollowers = Utils.diff(followers, prevFollowers);
                 UI.log("New followers since last run: " + newFollowers.length);
                 
-                const lostFollowers = Utils.diff(prev.followers, followers);
-                const lostFollowing = Utils.diff(prev.following, following);
+                const lostFollowers = Utils.diff(prevFollowers, followers);
+                const lostFollowing = Utils.diff(prevFollowing, following);
                 const missingUsers = Utils.intersection(lostFollowers, lostFollowing);
+
                 
+                const prevMutualsDetailed = Utils.intersectionById(prevFollowersDetailed, prevFollowingDetailed); 
+                const currMutualsDetailed = Utils.intersectionById(followersDetailed, followingDetailed); 
+                const renamedEntries = Utils.detectRenamedMutuals(prevMutualsDetailed, currMutualsDetailed); 
+                const renamedOldUsernameSet = new Set(renamedEntries.map((r) => r.oldUsername)); 
+
+                if (renamedEntries.length > 0) {
+                    Storage.addRenamedEntries(renamedEntries); 
+                    UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
+                    UI.log("Detected " + renamedEntries.length + " confirmed username change(s) in mutuals."); 
+                }
+
                 const newDeactivated = [];
                 const newBlocked = [];
                 const newUnfollowers = [];
 
-                const accountsToVerify = Utils.unique([...lostFollowers, ...missingUsers]);
+                
+                const filteredLostFollowers = lostFollowers.filter((u) => !renamedOldUsernameSet.has(u)); 
+                const filteredMissingUsers = missingUsers.filter((u) => !renamedOldUsernameSet.has(u)); 
+                const accountsToVerify = Utils.unique([...filteredLostFollowers, ...filteredMissingUsers]); 
 
                 if (accountsToVerify.length > 0) {
                     UI.setStatus("Verifying lost accounts...");
@@ -85,9 +116,15 @@ export const App = {
                         } else if (status === 'Blocked') {
                             newBlocked.push(username);
                         } else if (status === 'Active') {
-                            if (lostFollowers.includes(username)) {
+                            if (filteredLostFollowers.includes(username)) { // Change
                                 newUnfollowers.push(username);
                             }
+                        } else {
+                            
+                            Utils.logError(
+                                `Unexpected status "${status}" from checkAccountStatus for user "${username}"`,
+                                null
+                            );
                         }
                     }
                 }    
@@ -110,7 +147,14 @@ export const App = {
                 UI.log("First run: Initial state established.");
             }
             
-            Storage.save({ version: 3, lastRun: Utils.now(), followers, following });
+            Storage.save({
+                version: 4, 
+                lastRun: Utils.now(),
+                followers, 
+                following, 
+                followersDetailed, 
+                followingDetailed 
+            });
             
             UI.renderResults(notFollowingBackDetailed, "Not Following You Back", "ig-view-notfollowing", true);
             UI.renderResults(fansDetailed, "Fans (They follow you, you don't)", "ig-view-fans", false);
@@ -118,6 +162,7 @@ export const App = {
             UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY), "ig-view-unfollowers", "Recent Unfollowers");
             UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
             UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
+            UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
             
             window.__igLastResults = notFollowingBackDetailed;
             UI.setStatus("Completed");
@@ -147,9 +192,7 @@ export const App = {
         
         const btnReset = document.getElementById("ig-reset");
         if (btnReset) {
-            
             btnReset.onclick = async () => {
-                
                 const confirmed = await UI.confirmAction(
                     "Delete All Data", 
                     "This action will wipe all your history, logs, and whitelists.<br><br>Are you sure you want to proceed?",

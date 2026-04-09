@@ -45,11 +45,38 @@ export const Storage = {
         });
         GM_setValue(key, list);
     },
+
+    addRenamedEntries: (entries) => {
+        if (!Array.isArray(entries) || entries.length === 0) return;
+        const list = Storage.getNominalList(CONFIG.RENAMED_KEY);
+        const dateStr = Utils.now().split("T")[0];
+
+        entries.forEach((entry) => {
+            if (!entry?.id || !entry?.oldUsername || !entry?.newUsername) return;
+
+            const exists = list.find((x) => x.id === entry.id && x.newUsername === entry.newUsername);
+
+            if (!exists) {
+                list.push({
+                    id: entry.id,
+                    username: entry.newUsername,
+                    oldUsername: entry.oldUsername,
+                    newUsername: entry.newUsername,
+                    date: dateStr
+                });
+            }
+        });
+
+        GM_setValue(CONFIG.RENAMED_KEY, list);
+    },
+
     resetAll: () => {
         GM_deleteValue(CONFIG.STORAGE_KEY);
         GM_deleteValue(CONFIG.WHITELIST_KEY);
         GM_deleteValue(CONFIG.HISTORY_KEY);
         GM_deleteValue(CONFIG.CHURN_KEY);
         GM_deleteValue(CONFIG.DEACTIVATED_KEY);
+        GM_deleteValue(CONFIG.BLOCKED_KEY);
+        GM_deleteValue(CONFIG.RENAMED_KEY);
     }
 };

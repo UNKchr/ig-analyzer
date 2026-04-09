@@ -18,6 +18,52 @@ export const Utils = {
         return a.filter((x) => setB.has(x));
     },
     unique: (arr) => [...new Set(arr)],
+
+    toDetailedUserArray: (arr) => {
+        if (!Array.isArray(arr)) return [];
+        return arr
+            .map((u) => {
+                if (typeof u === "string") return { id: null, username: u };
+                if (u && typeof u.username === "string") {
+                    return { id: u.id ? String(u.id) : null, username: String(u.username) };
+                }
+                return null;
+            })
+            .filter(Boolean);
+    },
+
+    mapById: (arr) => {
+        const map = new Map();
+        (arr || []).forEach((u) => {
+            if (u?.id) map.set(String(u.id), u);
+        });
+        return map;
+    },
+
+    intersectionById: (a, b) => {
+        const bIds = new Set((b || []).map((x) => x?.id).filter(Boolean));
+        return (a || []).filter((x) => x?.id && bIds.has(x.id));
+    },
+
+    detectRenamedMutuals: (prevMutuals, currentMutuals) => {
+        const prevById = Utils.mapById(prevMutuals);
+        const currById = Utils.mapById(currentMutuals);
+
+        const changes = [];
+        prevById.forEach((prevUser, id) => {
+            const currUser = currById.get(id);
+            if (!currUser) return;
+            if (prevUser.username !== currUser.username) {
+                changes.push({ 
+                    id,
+                    oldUsername: prevUser.username,
+                    newUsername: currUser.username,
+                 });
+            }
+        });
+        return changes;
+    },
+
     exportCSV: (data, filename) => {
         if (!data || !data.length) return;
         const csvContent = "Username,Profile URL\n" + data.map((u) => u.username + "," + u.url).join("\n");

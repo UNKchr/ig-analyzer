@@ -7,6 +7,7 @@ export const CONFIG = {
     DEACTIVATED_KEY: "ig_deactivated_v3",
     BLOCKED_KEY: "ig_blocked_v1",
     TOUR_KEY: "ig_tour_completed_v1",
+    RENAMED_KEY: "ig_renamed_v1",
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
     PAGE_SIZE: 50,

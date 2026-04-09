@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.6.0] - 2026-04-09
+
+### Added
+
+- **Confirmed Username Change Detection (Mutuals):** Implemented deterministic username change detection based on Instagram's stable user identifier (`node.id`) obtained from GraphQL responses.
+- **New "Renamed" Tab:** Added a dedicated UI tab to display historical username changes detected among mutual connections.
+- **Persistent Rename History:** Added a new storage key (`ig_renamed_v1`) and persistence flow for renamed-account events, including:
+  - stable account id
+  - previous username
+  - current username
+  - detection date
+- **Detailed Snapshot Model:** Extended snapshot storage to keep both legacy username arrays and enriched user arrays:
+  - `followersDetailed`
+  - `followingDetailed`
+  This enables robust account matching across username updates.
+
+### Changed
+
+- **Analysis Pipeline Migration to Detailed Users:** The core analysis now normalizes fetched users into `{ id, username }` records while preserving backward compatibility with previous snapshots.
+- **Classification Safety Improvements:** Users detected as renamed are now excluded from deactivated/blocked/unfollower classification candidates to prevent false positives.
+- **Tour Content Update:** Updated guided tour tab descriptions to include the new "Renamed" section.
+- **Initial Panel Ergonomics:** Reduced default vertical panel height and improved viewport-fit behavior to avoid first-load overflow and preserve resize handle accessibility on shorter screens.
+
+### Fixed
+
+- **Critical Extraction Regression:** Fixed a logic error in `API.getAllUsers` that skipped valid users and returned zero followers/following.
+- **Rename Detector Naming Consistency:** Corrected utility naming mismatch (`detectRenamedMutuals`) to ensure runtime invocation consistency.
+- **Rename Entry Schema Consistency:** Ensured renamed records persist `newUsername` explicitly for accurate rendering and future-proof data handling.
+
+### Compatibility
+
+- **Backward Compatible Snapshot Reads:** Legacy snapshots containing only username arrays continue to load and are automatically normalized at runtime.
+- **No Breaking UI/Theming Changes:** Existing visual style, tab behavior, and panel architecture remain intact.
+
 ## [3.5.0] - 2026-03-13
 
 ### Added

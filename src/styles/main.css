@@ -77,7 +77,8 @@
     top: 80px;
     right: 20px;
     width: 400px;
-    height: 580px;
+    height: 510px;
+    max-height: calc(100vh - 100px);
     background: var(--ig-panel-bg);
     border: 1px solid var(--ig-panel-border);
     color: var(--ig-text-main);

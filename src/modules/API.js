@@ -13,7 +13,7 @@ export const API = {
                     await Utils.sleep(backoff);
                     backoff *= 2;
                 } else {
-                    throw new Error("HTTP " + res.status);
+                    throw new Error("HTTP " + res.status + " while requesting " + url);
                 }
             } catch (e) {
                 if (i === retries - 1) throw e;
@@ -36,12 +36,21 @@ export const API = {
             const userNode = json?.data?.user;
             const edge = userNode?.edge_follow || userNode?.edge_followed_by;
             
-            if (!edge || !Array.isArray(edge.edges)) throw new Error("Unexpected GraphQL structure. The API may have changed.");
+            if (!edge || !Array.isArray(edge.edges)) throw new Error("Unexpected GraphQL structure while extracting " + label + ". The API shape may have changed.");
             
             if (totalCount === 0 && edge.count) totalCount = edge.count;
             
             edge.edges.forEach((e) => {
-                if (e?.node?.username) users.push(e.node.username);
+                const node = e?.node;
+                const username = node?.username;
+
+                // Fix: skip only invalid nodes without username
+                if (!username) return;
+
+                users.push({
+                    id: node?.id ? String(node.id) : null,
+                    username: String(username)
+                });
             });
             
             hasNext = edge.page_info?.has_next_page === true;
@@ -52,7 +61,9 @@ export const API = {
             if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500);
         }
         
-        UI.log("Total " + label + ": " + users.length);
+        const withIdCount = users.filter((u) => !!u.id).length;
+        UI.log("Total " + label + ": " + users.length + " (with IDs: " + withIdCount + ")");
+
         return users;
     },
 
@@ -93,7 +104,7 @@ export const API = {
                 return 'Deactivated'; 
             }
         } catch (e) {
-            console.error(`Error verificando estado de ${username}:`, e);
+            console.error(`Error verifying account status for "${username}". Defaulting to Active.`, e);
             return 'Active';
         }
     }
