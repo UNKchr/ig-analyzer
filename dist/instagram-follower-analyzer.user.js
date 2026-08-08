@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.6.0
+// @version      3.6.1
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.
 // @license      MIT
@@ -15,6 +15,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_setValue
+// @grant        unsafeWindow
 // ==/UserScript==
 
 (function () {
@@ -32,6 +33,11 @@
     BLOCKED_KEY: "ig_blocked_v1",
     TOUR_KEY: "ig_tour_completed_v1",
     RENAMED_KEY: "ig_renamed_v1",
+    STORY_ANOMALY_KEY: "ig_story_anomaly_v1",
+    STORY_OBS_KEY: "ig_story_observations_v1",
+    STORY_MIN_OBSERVATIONS: 3,
+    STORY_MIN_ANOMALIES_FOR_FLAG: 2,
+    STORY_STREAK_FOR_MEDIUM_CONFIDENCE: 2,
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
     PAGE_SIZE: 50,
@@ -46,9 +52,61 @@
     now: () => ( new Date()).toISOString(),
     log: (msg) => console.log(`[IG Analyzer] ${msg}`),
     logError: (msg, err) => console.error(`[IG Analyzer Error] ${msg}`, err),
+    escapeHtml: (str) => {
+      if (str === null || str === void 0) return "";
+      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    },
+    sanitizeUrl: (username, customUrl) => {
+      if (customUrl) {
+        try {
+          const parsed = new URL(customUrl, window.location.origin);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            return Utils.escapeHtml(parsed.href);
+          }
+        } catch (e) {
+          Utils.logError("Error parsing custom URL", e);
+        }
+      }
+      const safeUser = encodeURIComponent(username || "");
+      return `https://www.instagram.com/${safeUser}/`;
+    },
     getUserId: () => {
-      const c = document.cookie.split("; ").find((x) => x.startsWith("ds_user_id="));
-      return c ? c.split("=")[1] : null;
+      const matchCookie = document.cookie.match(/ds_user_id=([^;]+)/);
+      if (matchCookie && matchCookie[1]) {
+        return matchCookie[1];
+      }
+      try {
+        const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+        if (win._sharedData?.config?.viewerId) {
+          return String(win._sharedData.config.viewerId);
+        }
+        if (win.__initialData?.pending?.viewer?.id) {
+          return String(win.__initialData.pending.viewer.id);
+        }
+        if (win._sharedData?.rawProfileUser?.id) {
+          return String(win._sharedData.rawProfileUser.id);
+        }
+      } catch (e) {
+      }
+      try {
+        const scripts = document.querySelectorAll("script");
+        for (const script of scripts) {
+          const text = script.textContent || "";
+          const viewerMatch = text.match(/"viewerId":"(\d+)"/) || text.match(/"actorID":"(\d+)"/) || text.match(/"ds_user_id":"(\d+)"/) || text.match(/"USER_ID":"(\d+)"/);
+          if (viewerMatch && viewerMatch[1]) {
+            return viewerMatch[1];
+          }
+        }
+      } catch (e) {
+      }
+      try {
+        const metaTag = document.querySelector('meta[property="instapp:owner_user_id"]');
+        if (metaTag && metaTag.content) {
+          return metaTag.content;
+        }
+      } catch (e) {
+      }
+      return null;
     },
     diff: (a, b) => {
       const setB = new Set(b);
@@ -77,8 +135,8 @@
       return map;
     },
     intersectionById: (a, b) => {
-      const bIds = new Set((b || []).map((x) => x?.id).filter(Boolean));
-      return (a || []).filter((x) => x?.id && bIds.has(x.id));
+      const bIDs = new Set((b || []).map((x) => x?.id).filter(Boolean));
+      return (a || []).filter((x) => x?.id && bIDs.has(x.id));
     },
     detectRenamedMutuals: (prevMutuals, currentMutuals) => {
       const prevById = Utils.mapById(prevMutuals);
@@ -329,7 +387,8 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       if (el) {
         const dot = el.querySelector(".ig-status-dot");
         const dotHTML = dot ? dot.outerHTML : '<span class="ig-status-dot"></span>';
-        el.innerHTML = dotHTML + text;
+        const safeText = Utils.escapeHtml(text);
+        el.innerHTML = dotHTML + safeText;
       }
     },
     log: (msg) => {
@@ -338,7 +397,12 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         const timeStr = Utils.now().split("T")[1].split(".")[0];
         const entry = document.createElement("div");
         entry.className = "ig-log-entry";
-        entry.innerHTML = '<span class="ig-log-time">[' + timeStr + "]</span> " + msg;
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "ig-log-time";
+        timeSpan.textContent = "[" + timeStr + "] ";
+        const textNode = document.createTextNode(msg);
+        entry.appendChild(timeSpan);
+        entry.appendChild(textNode);
         box.appendChild(entry);
         box.scrollTop = box.scrollHeight;
       }
@@ -360,17 +424,21 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     renderResults: (users, title, containerId, isExportable = false) => {
       const container = document.getElementById(containerId);
       if (!container) return;
-      let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + users.length + "</span></div>";
+      const safeTitle = Utils.escapeHtml(title);
+      let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + users.length + "</span></div>";
       if (users.length === 0) html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No data available yet.</div>";
       users.forEach((u, index) => {
         const uniqueId = containerId + "-row-" + index;
+        const safeUsername = Utils.escapeHtml(u.username || "");
+        const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : "?";
+        const safeUrl = Utils.sanitizeUrl(u.username, u.url);
         html += '<div class="ig-user-row" id="' + uniqueId + '">';
-        html += '<div class="ig-user-info"><span class="ig-user-avatar">' + u.username.charAt(0).toUpperCase() + '</span><span class="ig-username">' + u.username + "</span></div>";
+        html += '<div class="ig-user-info"><span class="ig-user-avatar">' + safeInitial + '</span><span class="ig-username">' + safeUsername + "</span></div>";
         html += '<div class="ig-user-actions">';
         if (containerId === "ig-view-notfollowing") {
-          html += '<button class="btn-whitelist" data-user="' + u.username + '" data-idx="' + uniqueId + '">Ignore</button>';
+          html += '<button class="btn-whitelist" data-user="' + safeUsername + '" data-idx="' + uniqueId + '">Ignore</button>';
         }
-        html += '<a href="' + u.url + '" target="_blank" class="ig-view-link">View ' + Icons.link + "</a>";
+        html += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
         html += "</div></div>";
       });
       container.innerHTML = html;
@@ -406,23 +474,33 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     renderNominalList: (list, containerId, title) => {
       const container = document.getElementById(containerId);
       if (!container) return;
-      let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + list.length + "</span></div>";
-      if (!list || list.length === 0) {
+      const safeTitle = Utils.escapeHtml(title);
+      const safeList = Array.isArray(list) ? list : [];
+      let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + safeList.length + "</span></div>";
+      if (safeList.length === 0) {
         html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No historical records yet.</div>";
       } else {
         html += '<table class="ig-table"><thead><tr><th>Username</th><th>Detected</th><th>Profile</th></tr></thead><tbody>';
-        list.slice().reverse().forEach((item) => {
-          html += "<tr><td><span class='ig-table-user'>" + item.username + "</span></td><td><span class='ig-table-date'>" + item.date + '</span></td><td><a href="https://www.instagram.com/' + item.username + '/" target="_blank" class="ig-table-link">View ' + Icons.link + "</a></td></tr>";
+        safeList.slice().reverse().forEach((item) => {
+          const safeUsername = Utils.escapeHtml(item.username || "");
+          const safeDate = Utils.escapeHtml(item.date || "");
+          const profileUrl = Utils.sanitizeUrl(item.username);
+          html += "<tr>";
+          html += "<td><span class='ig-table-user'>" + safeUsername + "</span></td>";
+          html += "<td><span class='ig-table-date'>" + safeDate + "</span></td>";
+          html += '<td><a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer" class="ig-table-link">View ' + Icons.link + "</a></td>";
+          html += "</tr>";
         });
         html += "</tbody></table>";
       }
       container.innerHTML = html;
     },
-renderRenamedList: (list, containerId, title) => {
+    renderRenamedList: (list, containerId, title) => {
       const container = document.getElementById(containerId);
       if (!container) return;
       const safeList = Array.isArray(list) ? list : [];
-      let html = '<div class="ig-section-title">' + title + ' <span class="ig-badge">' + safeList.length + "</span></div>";
+      const safeTitle = Utils.escapeHtml(title);
+      let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + safeList.length + "</span></div>";
       if (safeList.length === 0) {
         html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No username changes detected yet.</div>";
       } else {
@@ -430,13 +508,15 @@ renderRenamedList: (list, containerId, title) => {
         safeList.slice().reverse().forEach((item) => {
           const oldUsername = item.oldUsername || "-";
           const newUsername = item.newUsername || item.username || "-";
-          const detectedDate = item.date || "-";
-          const profileUrl = newUsername !== "-" ? "https://www.instagram.com/" + newUsername + "/" : "#";
+          const safeOldUser = Utils.escapeHtml(oldUsername);
+          const safeNewUser = Utils.escapeHtml(newUsername);
+          const safeDate = Utils.escapeHtml(item.date || "-");
+          const profileUrl = newUsername !== "-" ? Utils.sanitizeUrl(newUsername) : "#";
           html += "<tr>";
-          html += "<td><span class='ig-table-user'>" + oldUsername + "</span></td>";
-          html += "<td><span class='ig-table-user'>" + newUsername + "</span></td>";
-          html += "<td><span class='ig-table-date'>" + detectedDate + "</span></td>";
-          html += '<td><a href="' + profileUrl + '" target="_blank" class="ig-table-link">View ' + Icons.link + "</a></td>";
+          html += "<td><span class='ig-table-user'>" + safeOldUser + "</span></td>";
+          html += "<td><span class='ig-table-user'>" + safeNewUser + "</span></td>";
+          html += "<td><span class='ig-table-date'>" + safeDate + "</span></td>";
+          html += '<td><a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer" class="ig-table-link">View ' + Icons.link + "</a></td>";
           html += "</tr>";
         });
         html += "</tbody></table>";
@@ -462,13 +542,16 @@ renderRenamedList: (list, containerId, title) => {
             if (h.following > prevDay.following) followingIcon = Icons.up;
             else if (h.following < prevDay.following) followingIcon = Icons.down;
           }
-          html += "<tr><td><span class='ig-table-date'>" + h.date + "</span></td><td><span class='ig-metric-value'>" + h.followers + " " + followerIcon + "</span></td><td><span class='ig-metric-value'>" + h.following + " " + followingIcon + "</span></td></tr>";
+          const safeDate = Utils.escapeHtml(h.date || "");
+          const safeFollowers = Utils.escapeHtml(String(h.followers ?? ""));
+          const safeFollowing = Utils.escapeHtml(String(h.following ?? ""));
+          html += "<tr><td><span class='ig-table-date'>" + safeDate + "</span></td><td><span class='ig-metric-value'>" + safeFollowers + " " + followerIcon + "</span></td><td><span class='ig-metric-value'>" + safeFollowing + " " + followingIcon + "</span></td></tr>";
         });
         html += "</tbody></table>";
       }
       container.innerHTML = html;
     },
-clampPosition: (panel, x, y) => {
+    clampPosition: (panel, x, y) => {
       const panelWidth = panel.offsetWidth;
       const vw = window.innerWidth;
       const vh = window.innerHeight;
@@ -514,7 +597,7 @@ clampPosition: (panel, x, y) => {
         panel.style.right = "auto";
       }
     },
-resetPosition: () => {
+    resetPosition: () => {
       const panel = document.getElementById("ig-analyzer-panel");
       if (!panel) return;
       panel.style.left = "auto";

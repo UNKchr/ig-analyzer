@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.6.1] - 2026-08-08
+
+### Security
+
+- **Vulnerability Patch:** Addressed and resolved a security vulnerability to ensure safe data handling and script execution.
+
+### Fixed
+
+- **Minor Bug Fixes:** Resolved minor UI rendering edge cases and unexpected runtime exceptions.
+
 ## [3.6.0] - 2026-04-09
 
 ### Added
