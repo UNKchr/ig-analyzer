@@ -111,7 +111,8 @@ function buildSteps() {
                     '• <b>Unfollowers</b> — Users who recently unfollowed you<br>' +
                     '• <b>Deactivated</b> — Accounts that were deactivated or suspended<br>' + 
                     '• <b>Blocked</b> — Accounts that have blocked you<br>' +
-                    '• <b>Renamed</b> — Mutuals that changed their usernames',
+                    '• <b>Renamed</b> — Mutuals that changed their usernames<br>' +
+                    '• <b>Backup</b> — Import or export your data to save or retrieve your previous analysis information',
                 side: 'bottom',
                 align: 'center',
             },

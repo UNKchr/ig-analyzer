@@ -153,7 +153,15 @@ export const App = {
                 followers, 
                 following, 
                 followersDetailed, 
-                followingDetailed 
+                followingDetailed,
+                notFollowingBackDetailed,
+                fansDetailed,
+                mutualsDetailed,
+                unfollowers: Storage.getNominalList(CONFIG.CHURN_KEY),
+                deactivated: Storage.getNominalList(CONFIG.DEACTIVATED_KEY),
+                blocked: Storage.getNominalList(CONFIG.BLOCKED_KEY),
+                renamed: Storage.getNominalList(CONFIG.RENAMED_KEY),
+                history: Storage.getHistory()
             });
             
             UI.renderResults(notFollowingBackDetailed, "Not Following You Back", "ig-view-notfollowing", true);
@@ -163,6 +171,7 @@ export const App = {
             UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
             UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
             UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
+            UI.renderPersistedSnapshot(Storage.load());
             
             window.__igLastResults = notFollowingBackDetailed;
             UI.setStatus("Completed");

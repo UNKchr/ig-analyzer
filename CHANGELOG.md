@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.0] - 2026-08-11
+
+### Added
+
+- **Backup & Restore Feature:** Added a dedicated Backup tab that exports all current analyzer storage into a local JSON file and restores it later if browser data is lost.
+- **Backup Metadata Validation:** The backup format now includes script metadata, schema version, timestamp, and stored key count to improve import safety and compatibility checks.
+- **Backup UI Integration:** Added a new panel action with a custom SVG icon and dedicated popup for export/import actions.
+
+### Changed
+
+- **Userscript Metadata Update:** Updated the release metadata to `3.7.0` and refreshed the script description to include backup and restore capabilities.
+- **Documentation Refresh:** Updated the README to describe the new backup workflow and recovery behavior.
+
 ## [3.6.1] - 2026-08-08
 
 ### Security

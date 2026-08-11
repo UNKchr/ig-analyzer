@@ -1,6 +1,7 @@
 import { CONFIG } from './Config.js';
 import { Utils } from './Utils.js';
 import { Storage } from './Storage.js';
+import { createBackupUI } from './Backup.js';
 import { Icons } from '../assets/Icons.js';
 import '../styles/main.css'; 
 
@@ -48,6 +49,7 @@ export const UI = {
             '<div id="ig-view-renamed" class="ig-view-container ig-view"></div>' 
         ].join("\n");
         document.body.appendChild(panel);
+        createBackupUI(panel);
         
         const modalHTML = `
         <div id="ig-safety-modal" class="ig-modal-overlay">
@@ -74,6 +76,7 @@ export const UI = {
         UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
         UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
         UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
+        UI.renderPersistedSnapshot(Storage.load());
     },
 
     setupThemeObserver: () => {
@@ -126,13 +129,51 @@ export const UI = {
             btn.onclick = (e) => {
                 const target = e.target.closest('.ig-tab-btn');
                 if (!target) return;
+                const targetId = target.getAttribute("data-target");
+                if (!targetId) return;
                 document.querySelectorAll(".ig-tab-btn").forEach((b) => b.classList.remove("active"));
                 document.querySelectorAll(".ig-view").forEach((v) => v.classList.remove("active"));
                 target.classList.add("active");
-                const targetId = target.getAttribute("data-target");
                 document.getElementById(targetId).classList.add("active");
             };
         });
+    },
+
+    renderPersistedSnapshot: (snapshot) => {
+        if (!snapshot || typeof snapshot !== 'object') return;
+
+        if (Array.isArray(snapshot.notFollowingBackDetailed)) {
+            UI.renderResults(snapshot.notFollowingBackDetailed, "Not Following You Back", "ig-view-notfollowing", true);
+            window.__igLastResults = snapshot.notFollowingBackDetailed;
+        }
+
+        if (Array.isArray(snapshot.fansDetailed)) {
+            UI.renderResults(snapshot.fansDetailed, "Fans (They follow you, you don't)", "ig-view-fans", false);
+        }
+
+        if (Array.isArray(snapshot.mutualsDetailed)) {
+            UI.renderResults(snapshot.mutualsDetailed, "Mutual Connections", "ig-view-mutuals", false);
+        }
+
+        if (Array.isArray(snapshot.unfollowers)) {
+            UI.renderNominalList(snapshot.unfollowers, "ig-view-unfollowers", "Recent Unfollowers");
+        }
+
+        if (Array.isArray(snapshot.deactivated)) {
+            UI.renderNominalList(snapshot.deactivated, "ig-view-deactivated", "Deactivated Accounts");
+        }
+
+        if (Array.isArray(snapshot.blocked)) {
+            UI.renderNominalList(snapshot.blocked, "ig-view-blocked", "Blocked Accounts");
+        }
+
+        if (Array.isArray(snapshot.renamed)) {
+            UI.renderRenamedList(snapshot.renamed, "ig-view-renamed", "Username Changes");
+        }
+
+        if (Array.isArray(snapshot.history)) {
+            UI.renderHistory(snapshot.history);
+        }
     },
     
     setStatus: (text) => {

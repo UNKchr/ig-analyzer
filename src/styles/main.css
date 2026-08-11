@@ -170,8 +170,15 @@
 }
 
 @keyframes ig-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
 }
 
 
@@ -220,6 +227,85 @@
 
 
 /* ============================================================
+   Local Backup Tools
+   ============================================================ */
+.ig-backup-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--ig-panel-border);
+    border-radius: var(--ig-radius-md);
+    background: var(--ig-bg-input);
+}
+
+.ig-backup-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ig-text-muted);
+}
+
+.ig-backup-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.ig-backup-btn {
+    flex: 1;
+    min-width: 0;
+}
+
+.ig-backup-btn-export {
+    border-color: rgba(59, 130, 246, 0.45);
+    color: var(--ig-text-bright);
+}
+
+.ig-backup-btn-export:hover:not(:disabled) {
+    background: rgba(59, 130, 246, 0.14);
+    border-color: rgba(59, 130, 246, 0.7);
+}
+
+.ig-backup-btn-import {
+    border-color: rgba(245, 158, 11, 0.45);
+    color: var(--ig-text-bright);
+}
+
+.ig-backup-btn-import:hover:not(:disabled) {
+    background: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.7);
+}
+
+.ig-backup-status {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--ig-text-muted);
+    min-height: 16px;
+}
+
+.ig-backup-status[data-state="success"] {
+    color: var(--ig-success);
+}
+
+.ig-backup-status[data-state="error"] {
+    color: var(--ig-danger);
+}
+
+.ig-backup-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+}
+
+
+/* ============================================================
    Action Buttons — Variant: Primary (Run Analysis)
    ============================================================ */
 .ig-btn.ig-btn-primary {
@@ -227,6 +313,7 @@
     border-color: var(--ig-accent);
     color: #fff;
 }
+
 .ig-btn.ig-btn-primary:hover:not(:disabled) {
     background: var(--ig-accent-hover);
     border-color: var(--ig-accent-hover);
@@ -276,6 +363,7 @@
     border-color: var(--ig-danger);
     color: var(--ig-danger);
 }
+
 .ig-btn.ig-btn-danger:hover:not(:disabled) {
     background: var(--ig-danger);
     border-color: var(--ig-danger);
@@ -336,8 +424,13 @@
 }
 
 @keyframes ig-shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
+    0% {
+        transform: translateX(-100%);
+    }
+
+    100% {
+        transform: translateX(100%);
+    }
 }
 
 
@@ -377,6 +470,138 @@
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;
+}
+
+.ig-backup-tab-btn {
+    min-width: 0;
+    color: var(--ig-text-muted) !important;
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+}
+
+.ig-backup-tab-btn:hover {
+    color: var(--ig-text-bright) !important;
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+}
+
+.ig-backup-tab-btn.active {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    color: var(--ig-text-muted) !important;
+}
+
+.ig-backup-tab-btn svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+
+.ig-backup-tab-btn .ig-backup-tab-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    line-height: 0;
+}
+
+.ig-backup-tab-btn .ig-backup-tab-icon svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+
+/* ============================================================
+   Backup Popup
+   ============================================================ */
+.ig-backup-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 1000000;
+}
+
+.ig-backup-overlay.is-open {
+    display: flex;
+}
+
+.ig-backup-dialog {
+    width: min(520px, 100%);
+    border-radius: var(--ig-radius-lg);
+    background: var(--ig-panel-bg);
+    border: 1px solid var(--ig-panel-border);
+    box-shadow: var(--ig-shadow);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    color: var(--ig-text-main);
+}
+
+.ig-backup-dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.ig-backup-dialog-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--ig-text-bright);
+}
+
+.ig-backup-close-btn {
+    border: 0;
+    background: transparent;
+    color: var(--ig-text-muted);
+    border-radius: 0;
+    padding: 0;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.18s ease, color 0.18s ease;
+}
+
+.ig-backup-close-btn:hover {
+    color: var(--ig-text-bright);
+    transform: scale(1.08);
+}
+
+.ig-backup-close-btn svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+
+.ig-backup-dialog-description {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ig-text-muted);
+}
+
+.ig-backup-dialog-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.ig-backup-dialog .ig-backup-btn {
+    flex: 1;
 }
 
 .ig-tab-label {
@@ -422,13 +647,16 @@
 .ig-view-container::-webkit-scrollbar {
     width: 5px;
 }
+
 .ig-view-container::-webkit-scrollbar-track {
     background: transparent;
 }
+
 .ig-view-container::-webkit-scrollbar-thumb {
     background: var(--ig-scrollbar-thumb);
     border-radius: 10px;
 }
+
 .ig-view-container::-webkit-scrollbar-thumb:hover {
     background: var(--ig-scrollbar-thumb-hover);
 }
@@ -619,7 +847,7 @@
     background: var(--ig-bg-hover) !important;
     border-color: var(--ig-text-muted) !important;
     color: var(--ig-text-main) !important;
-    
+
 }
 
 
@@ -719,8 +947,13 @@
 }
 
 @keyframes ig-fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 .ig-modal-content {
@@ -744,6 +977,7 @@
         opacity: 0;
         transform: scale(0.95) translateY(10px);
     }
+
     to {
         opacity: 1;
         transform: scale(1) translateY(0);

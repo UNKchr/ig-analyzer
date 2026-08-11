@@ -12,6 +12,7 @@ A robust Tampermonkey userscript that safely analyzes your Instagram followers a
 * **Visual Trend Indicators:** The History tab uses SVG indicators to visualize daily follower and following growth or decline.
 * **Anti-Rate-Limit Retry Logic:** Implements exponential backoff to handle HTTP 429 responses more safely and reduce request pressure.
 * **Direct CSV Export:** Download a `.csv` file containing usernames and profile URLs for non-followers, ready for Excel or Google Sheets.
+* **Backup & Restore:** Export all current analyzer data to a local JSON backup and import it later to recover history, lists, and persistent state if the browser data is lost.
 * **Whitelist System:** Exclude selected users from non-followers results and CSV output; ignored users remain filtered in future scans.
 * **Real-time Progress Tracking:** Displays progress based on total count and processed records during extraction.
 * **Modern UI Panel:** Draggable panel with tabbed analytics, real-time logs, and persistent local state.
@@ -42,6 +43,7 @@ A robust Tampermonkey userscript that safely analyzes your Instagram followers a
 7. In **Not Following**, click **Ignore** to add users to your whitelist.
 8. Click **Export CSV** to download filtered non-followers data.
 9. Use **History** to inspect follower/following trends across runs.
+10. Open **Backup** to export a complete JSON snapshot of the analyzer state or import one later to restore it after data loss.
 
 ---
 
@@ -94,6 +96,8 @@ Typical keys include:
 * `ig_renamed_v1`
 * `ig_panel_position_v2`
 * `ig_tour_completed_v1`
+
+The **Backup** tool exports all current analyzer storage entries into a single JSON file with metadata, and the same file can be imported later to restore the saved state into the browser.
 
 Use the **Reset** button to clear persisted analyzer data.
 

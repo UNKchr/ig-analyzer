@@ -1,4 +1,7 @@
 export const CONFIG = {
+    SCRIPT_ID: "ig-analyzer",
+    SCRIPT_NAME: "Instagram Follower Analyzer",
+    BACKUP_SCHEMA_VERSION: 1,
     STORAGE_KEY: "ig_snapshot_v2",
     POSITION_KEY: "ig_panel_position_v2",
     WHITELIST_KEY: "ig_whitelist_v2",

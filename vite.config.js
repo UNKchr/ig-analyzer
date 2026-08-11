@@ -9,8 +9,8 @@ export default defineConfig({
       userscript: {
         name: 'Instagram Follower Analyzer',
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.6.1', 
-        description: 'Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, and Advanced Metrics.',
+        version: '3.7.0', 
+        description: 'Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.',
         author: 'UNKchr',
         match: ['https://www.instagram.com/*'],
         updateURL: 'https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js',
@@ -22,10 +22,13 @@ export default defineConfig({
           'https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@df759188874072c079c718c0f2cfdf4e5fa51246/tamperguide/tamperGuide.js',
         ],
         grant: [
-          'GM_getValue',
-          'GM_setValue',
+          'GM_addStyle',
           'GM_deleteValue',
+          'GM_getValue',
+          'GM_listValues',
+          'GM_setValue',
           'GM_registerMenuCommand',
+          'unsafeWindow',
         ],
       },
       build: {
