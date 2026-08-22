@@ -9,7 +9,7 @@ export default defineConfig({
       userscript: {
         name: 'Instagram Follower Analyzer',
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.7.0', 
+        version: '3.7.1', 
         description: 'Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.',
         author: 'UNKchr',
         match: ['https://www.instagram.com/*'],
@@ -19,7 +19,7 @@ export default defineConfig({
         icon: 'https://www.google.com/s2/favicons?sz=64&domain=instagram.com',
         // TamperGuide library loaded as external dependency
         require: [
-          'https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@df759188874072c079c718c0f2cfdf4e5fa51246/tamperguide/tamperGuide.js',
+          'https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@e7907fd8af1af0bc3af0abdcdc756d38818c217c/tamperguide/tamperGuide.js',
         ],
         grant: [
           'GM_addStyle',

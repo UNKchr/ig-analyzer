@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.7.0
+// @version      3.7.1
 // @author       UNKchr
 // @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.
 // @license      MIT
@@ -9,7 +9,7 @@
 // @downloadURL  https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
 // @updateURL    https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
 // @match        https://www.instagram.com/*
-// @require      https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@df759188874072c079c718c0f2cfdf4e5fa51246/tamperguide/tamperGuide.js
+// @require      https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@e7907fd8af1af0bc3af0abdcdc756d38818c217c/tamperguide/tamperGuide.js
 // @grant        GM_addStyle
 // @grant        GM_deleteValue
 // @grant        GM_getValue
