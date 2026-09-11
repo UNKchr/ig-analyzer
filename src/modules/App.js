@@ -122,7 +122,9 @@ export const App = {
 
                 if (accountsToVerify.length > 0) {
                     UI.setStatus("Verifying lost accounts...");
-                    for (const username of accountsToVerify) {
+                    for (let i = 0; i < accountsToVerify.length; i++) {
+                        const username = accountsToVerify[i];
+                        UI.setStatus(`Verifying lost account (${i + 1}/${accountsToVerify.length}): @${username}`);
                         const status = await API.checkAccountStatus(username);
 
                         if (status === 'Deactivated') {
@@ -130,15 +132,25 @@ export const App = {
                         } else if (status === 'Blocked') {
                             newBlocked.push(username);
                         } else if (status === 'Active') {
-                            if (filteredLostFollowers.includes(username)) { // Change
+                            if (filteredLostFollowers.includes(username)) {
                                 newUnfollowers.push(username);
                             }
+                            // Auto-heal: If an account was previously misclassified as Blocked, remove it!
+                            let currentBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
+                            if (currentBlocked.some((b) => b.username === username)) {
+                                currentBlocked = currentBlocked.filter((b) => b.username !== username);
+                                GM_setValue(CONFIG.BLOCKED_KEY, currentBlocked);
+                                UI.renderNominalList(currentBlocked, "ig-view-blocked", "Blocked Accounts");
+                            }
                         } else {
-                            
                             Utils.logError(
                                 `Unexpected status "${status}" from checkAccountStatus for user "${username}"`,
                                 null
                             );
+                        }
+
+                        if (i < accountsToVerify.length - 1) {
+                            await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS);
                         }
                     }
                 }    
@@ -156,6 +168,15 @@ export const App = {
                 if (newBlocked.length > 0) {
                     UI.log("Identified " + newBlocked.length + " account(s) that blocked you.");
                     Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked);
+                }
+
+                // Auto-cleanup: remove any account from BLOCKED_KEY if currently present in following or followers
+                const activeHandles = new Set([...following, ...followers]);
+                let storedBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
+                const cleanedBlocked = storedBlocked.filter((b) => !activeHandles.has(b.username));
+                if (cleanedBlocked.length !== storedBlocked.length) {
+                    GM_setValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
+                    UI.renderNominalList(cleanedBlocked, "ig-view-blocked", "Blocked Accounts");
                 }
             } else {
                 UI.log("First run: Initial state established.");

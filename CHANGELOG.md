@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.8.1] - 2026-09-10
+
+### Fixed
+
+- **False-Positive "Blocked" Classifications:** Resolved an issue where accounts that simply unfollowed you and removed you from their followers (soft-block or manual follower removal) were being misdiagnosed as having blocked you:
+  - Added required `X-Requested-With: XMLHttpRequest` and `Accept: */*` headers to `web_profile_info` requests to prevent HTTP 400 rejection.
+  - Handled HTTP 429 (Rate Limit) explicitly to guarantee that rate-limited responses are never interpreted as a block.
+  - Implemented dual-stage authenticated verification with HTML profile fallback (`https://www.instagram.com/${cleanUser}/`) to ensure that accessible public and private profiles are recognized as Active.
+  - Enforced that an account is only flagged as `Blocked` if the authenticated session receives a confirmed 404 or "Page Not Found" error while the anonymous guest session confirms the account exists.
+  - Added safe pagination delays (`BASE_RATE_LIMIT_MS`) between each lost account verification to prevent rate limits.
+  - Added automatic healing to clear previously misclassified accounts from the Blocked list when they are confirmed Active or present in following/followers.
+- **CSS Safari Compatibility & Vendor Prefix Order:** Corrected all 5 Edge Tools / webhint diagnostics in `main.css`:
+  - Added `-webkit-user-select: none;` before `user-select: none;` in `#ig-header` and `.btn-spy-story` for Safari/iOS compatibility.
+  - Reordered `-webkit-backdrop-filter` before `backdrop-filter` in `#ig-analyzer-panel`, `.ig-backup-overlay`, and `.ig-modal-overlay`.
+
 ## [3.8.0] - 2026-09-10
 
 ### Added

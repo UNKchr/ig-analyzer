@@ -160,41 +160,116 @@ export const API = {
     },
 
     checkAccountStatus: async (username) => {
+        const cleanUser = String(username || '').replace(/^@/, '').trim();
+        if (!cleanUser) return 'Active';
+
         try {
-            
-            const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
-                headers: { "X-IG-App-ID": "936619743392459" },
-                credentials: "include"
-            });
-            
-            let authData = null;
-            if (authRes.ok) {
-                const json = await authRes.json();
-                authData = json?.data?.user;
+            // 1. Check Authenticated Web Profile Info API
+            let authStatus = 0;
+
+            try {
+                const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`, {
+                    headers: {
+                        "X-IG-App-ID": "936619743392459",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "*/*"
+                    },
+                    credentials: "include"
+                });
+
+                authStatus = authRes.status;
+
+                if (authRes.ok) {
+                    const json = await authRes.json();
+                    const authData = json?.data?.user;
+                    if (authData?.username) {
+                        return 'Active'; // Definitely active and not blocked!
+                    }
+                } else if (authStatus === 429) {
+                    console.warn(`[IG Analyzer] Rate limit (429) checking account status for ${cleanUser}. Defaulting to Active.`);
+                    return 'Active'; // Rate limited, never assume blocked!
+                }
+            } catch (err) {
+                console.warn(`[IG Analyzer] Error in auth web_profile_info for ${cleanUser}:`, err);
             }
 
-            if (authData) {
-                return 'Active'; 
+            // 2. Fallback: Check Authenticated Profile HTML
+            let authIsErrorPage = false;
+            let authProfileFound = false;
+
+            try {
+                const authHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, {
+                    credentials: "include"
+                });
+
+                if (authHtmlRes.status === 429) {
+                    return 'Active';
+                }
+
+                if (authHtmlRes.ok) {
+                    const authHtml = await authHtmlRes.text();
+                    authIsErrorPage = authHtml.includes("Sorry, this page isn't available.") || 
+                                      authHtml.includes("Esta página no está disponible.") || 
+                                      authHtml.includes("page_not_found");
+
+                    authProfileFound = authHtml.includes(`"username":"${cleanUser}"`) || 
+                                       authHtml.includes(`/${cleanUser}/`) ||
+                                       authHtml.includes('"is_private":');
+
+                    // If authenticated HTML is not an error page and profile content exists, they did NOT block you!
+                    if (authProfileFound && !authIsErrorPage) {
+                        return 'Active';
+                    }
+                } else if (authHtmlRes.status === 404) {
+                    authIsErrorPage = true;
+                }
+            } catch (err) {
+                console.warn(`[IG Analyzer] Error in auth HTML for ${cleanUser}:`, err);
             }
 
-            const anonRes = await fetch(`https://www.instagram.com/${username}/`, { credentials: "omit" });
-            const anonText = await anonRes.text();
-
-
-            const loginRedirectPath = `login/?next=%2F${username}%2F`;
-            
-            const existsPublicly = anonText.includes(loginRedirectPath) || 
-                                   anonText.includes(`"username":"${username}"`);
-
-            const isErrorPage = anonText.includes("page_not_found") || 
-                                anonText.includes("Sorry, this page isn't available.") || 
-                                anonText.includes("Esta página no está disponible.");
-
-            if (existsPublicly && !isErrorPage) {
-                return 'Blocked'; 
-            } else {
-                return 'Deactivated'; 
+            // If the authenticated request was NOT explicitly a 404 or error page, default to Active!
+            if (!authIsErrorPage && authStatus !== 404) {
+                return 'Active';
             }
+
+            // 3. Authenticated session explicitly received 404 / Error Page.
+            // Check Anonymous (Guest) view to distinguish Blocked vs Deactivated.
+            await Utils.sleep(800);
+
+            try {
+                const anonRes = await fetch(`https://www.instagram.com/${cleanUser}/`, {
+                    credentials: "omit"
+                });
+
+                if (anonRes.status === 429) {
+                    return 'Active';
+                }
+
+                const anonHtml = await anonRes.text();
+
+                const anonIsErrorPage = anonRes.status === 404 ||
+                                        anonHtml.includes("page_not_found") || 
+                                        anonHtml.includes("Sorry, this page isn't available.") || 
+                                        anonHtml.includes("Esta página no está disponible.");
+
+                const loginRedirectPath = `login/?next=%2F${cleanUser}%2F`;
+                const anonExistsPublicly = anonHtml.includes(loginRedirectPath) || 
+                                           anonHtml.includes(`"username":"${cleanUser}"`) ||
+                                           anonHtml.includes(`/${cleanUser}/`);
+
+                // A user has BLOCKED you ONLY IF:
+                // They are inaccessible to your authenticated session (404 / error page),
+                // BUT they are accessible publicly / anonymously and NOT an error page.
+                if (anonExistsPublicly && !anonIsErrorPage) {
+                    return 'Blocked';
+                } else {
+                    return 'Deactivated';
+                }
+            } catch (err) {
+                console.warn(`[IG Analyzer] Error in anon check for ${cleanUser}:`, err);
+                return 'Active';
+            }
+
         } catch (e) {
             console.error(`Error verifying account status for "${username}". Defaulting to Active.`, e);
             return 'Active';
