@@ -32,51 +32,123 @@ export const Utils =  {
     },
 
     getUserId: () => {
-        
-        const matchCookie = document.cookie.match(/ds_user_id=([^;]+)/);
-        if (matchCookie && matchCookie[1]) {
+        // 1. Check document.cookie (strictly non-zero)
+        const matchCookie = document.cookie.match(/ds_user_id=([1-9][0-9]*)/);
+        if (matchCookie && matchCookie[1] && matchCookie[1] !== "0") {
             return matchCookie[1];
         }
 
-        
+        // 2. Check window / unsafeWindow objects
         try {
             const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-            
-            if (win._sharedData?.config?.viewerId) {
-                return String(win._sharedData.config.viewerId);
-            }
-            if (win.__initialData?.pending?.viewer?.id) {
-                return String(win.__initialData.pending.viewer.id);
-            }
-            if (win._sharedData?.rawProfileUser?.id) {
-                return String(win._sharedData.rawProfileUser.id);
+            const viewerId = win._sharedData?.config?.viewerId || 
+                             win.__initialData?.pending?.viewer?.id || 
+                             win._sharedData?.rawProfileUser?.id;
+            if (viewerId && String(viewerId) !== "0" && /^[1-9][0-9]*$/.test(String(viewerId))) {
+                return String(viewerId);
             }
         } catch (e) {
-            
         }
 
-        
+        // 3. Search script tags for real, non-zero IDs
         try {
             const scripts = document.querySelectorAll('script');
             for (const script of scripts) {
                 const text = script.textContent || '';
-                const viewerMatch = text.match(/"viewerId":"(\d+)"/) || 
-                                    text.match(/"actorID":"(\d+)"/) || 
-                                    text.match(/"ds_user_id":"(\d+)"/) ||
-                                    text.match(/"USER_ID":"(\d+)"/);
-                if (viewerMatch && viewerMatch[1]) {
-                    return viewerMatch[1];
-                }
+                if (!text) continue;
+
+                // Priority A: viewer object id
+                const viewerObj = text.match(/"viewer"\s*:\s*\{\s*"id"\s*:\s*"([1-9][0-9]*)"/);
+                if (viewerObj && viewerObj[1] && viewerObj[1] !== "0") return viewerObj[1];
+
+                // Priority B: viewerId or ds_user_id (strictly non-zero)
+                const vIdMatch = text.match(/"(?:viewerId|ds_user_id)"\s*:\s*"([1-9][0-9]*)"/);
+                if (vIdMatch && vIdMatch[1] && vIdMatch[1] !== "0") return vIdMatch[1];
+
+                // Priority C: USER_ID or actorID (strictly non-zero)
+                const userMatch = text.match(/"(?:USER_ID|actorID)"\s*:\s*"([1-9][0-9]*)"/);
+                if (userMatch && userMatch[1] && userMatch[1] !== "0") return userMatch[1];
             }
         } catch (e) {
         }
 
+        // 4. Meta tag (owner_user_id)
         try {
             const metaTag = document.querySelector('meta[property="instapp:owner_user_id"]');
-            if (metaTag && metaTag.content) {
+            if (metaTag && metaTag.content && metaTag.content !== "0" && /^[1-9][0-9]*$/.test(metaTag.content)) {
                 return metaTag.content;
             }
         } catch (e) {
+        }
+
+        return null;
+    },
+
+    getUserIdAsync: async () => {
+        // First try synchronous resolution
+        const syncId = Utils.getUserId();
+        if (syncId && syncId !== "0") {
+            return syncId;
+        }
+
+        // Fallback A: Fetch account edit form data to get the active username
+        try {
+            const res = await fetch("https://www.instagram.com/api/v1/accounts/edit/web_form_data/", {
+                headers: { 
+                    "X-IG-App-ID": "936619743392459",
+                    "X-Requested-With": "XMLHttpRequest"
+                },
+                credentials: "include"
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const username = data?.form_data?.username;
+                if (username) {
+                    const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+                        headers: { 
+                            "X-IG-App-ID": "936619743392459",
+                            "X-Requested-With": "XMLHttpRequest"
+                        },
+                        credentials: "include"
+                    });
+                    if (profileRes.ok) {
+                        const profileJson = await profileRes.json();
+                        const id = profileJson?.data?.user?.id;
+                        if (id && String(id) !== "0") return String(id);
+                    }
+                }
+            }
+        } catch (e) {
+            Utils.logError("Async user ID detection fallback A failed", e);
+        }
+
+        // Fallback B: Scan DOM for the profile link in navigation
+        try {
+            const links = Array.from(document.querySelectorAll('a[href^="/"]'));
+            for (const link of links) {
+                const href = link.getAttribute('href') || '';
+                const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
+                if (match) {
+                    const candidate = match[1];
+                    const systemRoutes = ['explore', 'reels', 'direct', 'stories', 'your_activity', 'settings', 'accounts', 'developer', 'about'];
+                    if (!systemRoutes.includes(candidate.toLowerCase()) && (link.querySelector('img') || link.querySelector('svg'))) {
+                        const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${candidate}`, {
+                            headers: { 
+                                "X-IG-App-ID": "936619743392459",
+                                "X-Requested-With": "XMLHttpRequest"
+                            },
+                            credentials: "include"
+                        });
+                        if (profileRes.ok) {
+                            const profileJson = await profileRes.json();
+                            const id = profileJson?.data?.user?.id;
+                            if (id && String(id) !== "0") return String(id);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            Utils.logError("Async user ID detection fallback B failed", e);
         }
 
         return null;
@@ -95,9 +167,17 @@ export const Utils =  {
         if (!Array.isArray(arr)) return [];
         return arr
         .map((u) => {
-            if (typeof u === "string") return {  id: null, username: u };
+            if (typeof u === "string") return { id: null, username: u };
             if (u && typeof u.username === "string") {
-                return { id: u.id ? String(u.id) : null, username: String(u.username) };
+                return { 
+                    id: u.id ? String(u.id) : null, 
+                    username: String(u.username),
+                    fullName: u.fullName || u.full_name || "",
+                    isPrivate: Boolean(u.isPrivate ?? u.is_private),
+                    isVerified: Boolean(u.isVerified ?? u.is_verified),
+                    profilePicUrl: u.profilePicUrl || u.profile_pic_url || null,
+                    latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0
+                };
             }
             return null;
         })

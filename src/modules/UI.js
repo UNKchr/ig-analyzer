@@ -95,13 +95,14 @@ export const UI = {
         observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
     },
     
-    confirmAction: (title, message, confirmBtnText = "Yes, Continue") => {
+    confirmAction: (title, message, confirmBtnText = "Yes, Continue", showCancel = true, customIcon = null) => {
         return new Promise((resolve) => {
             const modal = document.getElementById('ig-safety-modal');
             const titleEl = document.getElementById('ig-modal-title-text');
             const bodyEl = document.getElementById('ig-modal-body-text');
             const btnYes = document.getElementById('ig-modal-confirm');
             const btnNo = document.getElementById('ig-modal-cancel');
+            const iconEl = modal ? modal.querySelector('.ig-modal-icon') : null;
 
             if (!modal) return resolve(true);
 
@@ -109,17 +110,27 @@ export const UI = {
             bodyEl.innerHTML = message;
             btnYes.textContent = confirmBtnText;
 
+            if (iconEl && customIcon) {
+                iconEl.innerHTML = customIcon;
+            }
+
+            if (btnNo) {
+                btnNo.style.display = showCancel ? 'inline-block' : 'none';
+            }
+
             modal.style.display = 'flex';
 
             const closeAndResolve = (value) => {
                 modal.style.display = 'none';
+                if (btnNo) btnNo.style.display = 'inline-block';
+                if (iconEl) iconEl.innerHTML = Icons.warning;
                 btnYes.onclick = null;
-                btnNo.onclick = null;
+                if (btnNo) btnNo.onclick = null;
                 resolve(value);
             };
 
             btnYes.onclick = () => closeAndResolve(true);
-            btnNo.onclick = () => closeAndResolve(false);
+            if (btnNo) btnNo.onclick = () => closeAndResolve(false);
         });
     },
     
@@ -235,25 +246,61 @@ export const UI = {
             const safeUsername = Utils.escapeHtml(u.username || '');
             const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : '?';
             const safeUrl = Utils.sanitizeUrl(u.username, u.url);
+            const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : '';
+            const isVerified = Boolean(u.isVerified);
+            const hasStory = Boolean(u.latestReelMedia && u.latestReelMedia > 0);
+
+            const avatarHtml = u.profilePicUrl
+                ? '<img class="ig-user-avatar" src="' + Utils.escapeHtml(u.profilePicUrl) + '" alt="' + safeUsername + '" style="object-fit:cover;' + (hasStory ? ' outline: 2px solid #e1306c; outline-offset: 1px;' : '') + '" />'
+                : '<span class="ig-user-avatar"' + (hasStory ? ' style="outline: 2px solid #e1306c; outline-offset: 1px;"' : '') + '>' + safeInitial + '</span>';
 
             html += '<div class="ig-user-row" id="' + uniqueId + '">';
-            html += '<div class="ig-user-info"><span class="ig-user-avatar">' + safeInitial + '</span><span class="ig-username">' + safeUsername + '</span></div>';
+            html += '<div class="ig-user-info">' + avatarHtml;
+            html += '<div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
+            html += '<span class="ig-username">' + safeUsername + (isVerified ? ' <span title="Verified" style="color:#0095f6; font-size:11px;">✓</span>' : '') + '</span>';
+            if (safeFullName) {
+                html += '<span style="font-size:11px; color:#8e8e8e; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeFullName + '</span>';
+            }
+            html += '</div></div>';
             html += '<div class="ig-user-actions">';
             if (containerId === "ig-view-notfollowing") {
                 html += '<button class="btn-whitelist" data-user="' + safeUsername + '" data-idx="' + uniqueId + '">Ignore</button>';
+            }
+            if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing") {
+                html += '<button class="btn-spy-story" data-user="' + safeUsername + '">' + Icons.spy + ' Check Story</button>';
             }
             html += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + '</a>';
             html += '</div></div>';
         });
         
         container.innerHTML = html;
+
+        // Bind Spy Buttons
+        const spyBtns = container.querySelectorAll(".btn-spy-story");
+        spyBtns.forEach((btn) => {
+            btn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const btnEl = e.currentTarget || e.target.closest('.btn-spy-story') || btn;
+                const targetUser = btnEl ? btnEl.getAttribute("data-user") : null;
+                if (!targetUser) return;
+
+                if (window.App && typeof window.App.runStorySpy === 'function') {
+                    await window.App.runStorySpy(targetUser, btnEl);
+                } else {
+                    console.error("[IG Analyzer] window.App.runStorySpy is not available");
+                }
+            };
+        });
         
         if (containerId === "ig-view-notfollowing") {
             const whitelistBtns = container.querySelectorAll(".btn-whitelist");
             whitelistBtns.forEach((btn) => {
                 btn.onclick = (e) => {
-                    const targetUser = e.target.getAttribute("data-user");
-                    const rowId = e.target.getAttribute("data-idx");
+                    const btnEl = e.currentTarget || btn;
+                    const targetUser = btnEl.getAttribute("data-user");
+                    const rowId = btnEl.getAttribute("data-idx");
+                    if (!targetUser) return;
                     Storage.addToWhitelist(targetUser);
                     const row = document.getElementById(rowId);
                     if (row) {

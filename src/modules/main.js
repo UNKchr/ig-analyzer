@@ -6,6 +6,8 @@ import { startTour, resetTour } from './Tour.js';
 
 UI.init();
 
+window.App = App;
+
 App.bindEvents();
 
 // Start the first-time tour after the DOM is fully rendered

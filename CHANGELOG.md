@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.8.0] - 2026-09-10
+
+### Added
+
+- **Story Anomaly Detection ("Story Spy Module"):**
+  - Added an independent, manual per-user check (`[SVG] Check Story`) available in Mutuals, Fans, and Not Following lists.
+  - Multi-source story and highlights detection analyzing profile canvas element signatures (`<canvas height="84" width="84">` for highlights, `<canvas height="115" width="115">` for active stories), initial SSR state script regex (`"highlight_reel_count"` and `"latest_reel_media"`), and REST API endpoints.
+  - **Public Accounts Detection:** Performs an anonymous guest check (`credentials: "omit"`) to compare against authenticated visibility. If highlights or stories are detectable anonymously but missing in authenticated session, a 100% hiding probability is confirmed.
+  - **Private Accounts Chronological Baseline:** Tracks highlight availability over time (`ig_story_observations_v1`), calculating a 75% probability if previously visible highlights abruptly disappear to 0.
+  - Interactive alert modal displaying hiding probability, diagnostic rationale, account details, and a dedicated spy SVG icon with clean dark/light theme integration (strict SVG, no emojis).
+- **Rich User Profile Rows:**
+  - Added user profile photo avatars (`profile_pic_url`) with fallback to initial letter badge.
+  - Added full names (`fullName`) under usernames in list views.
+  - Added verified account blue checkmarks (`isVerified`).
+  - Added active story ring visual indicator around avatars when a user has a recent story (`latestReelMedia > 0`).
+- **Icons & UI Enhancements:**
+  - Added custom `Icons.spy` SVG icon.
+  - Styled `.btn-spy-story` with smooth hover states, purple spy accent, and loading indicators (`Scanning...`).
+
+### Changed
+
+- **Core Extraction Engine Migration (Native Friendships REST API):**
+  - Migrated the primary follower and following extraction pipeline from Instagram's legacy GraphQL query hashes (`edge_follow` / `edge_followed_by`) to Instagram's official REST API (`/api/v1/friendships/${userId}/${endpoint}/?count=50&search_surface=follow_list_page`).
+  - Implemented automatic fallback to legacy GraphQL query hashes if the REST API endpoint is blocked or returns an empty payload.
+  - Normalized user entities to capture `pk` / `id`, `username`, `fullName`, `isPrivate`, `isVerified`, `profilePicUrl`, and `latestReelMedia`.
+- **Deliberate Pacing & Rate-Limit Hardening:**
+  - Native REST endpoints are subject to stricter rate limits and behavioral scrutiny by Instagram compared to legacy GraphQL.
+  - Increased base pagination delay (`BASE_RATE_LIMIT_MS`) from 1500ms to 2000ms with expanded random jitter (+0-800ms) to simulate human pacing, reduce automated traffic signatures, and avoid account restrictions.
+
+### Security & Safety
+
+- **Rate-Limit & Account Restriction Advisory:**
+  - Instagram's native REST endpoints are significantly more sensitive to automation patterns than older GraphQL endpoints.
+  - To mitigate risk of temporary account blocks, challenges, or restrictions, extraction pacing is intentionally slower.
+  - Users are advised to run scans at reasonable intervals (no more than once per hour) and avoid rapid repeated scans.
+
+### Fixed
+
+- **Story Spy Event Bubbling:** Resolved event target bubbling where clicking child `<svg>` or `<path>` elements of `.btn-spy-story` caused `e.target.getAttribute('data-user')` to return `null`. Implemented centralized event delegation with `e.target.closest('.btn-spy-story')`.
+- **Module Bundling Scope:** Corrected global `window.App` exposure in Vite's IIFE output so UI actions can reliably call `App.runStorySpy`.
+- **Action Modal UX:** Improved `confirmAction` to support custom icons (`customIcon`) and hide the redundant cancel button on notification/alert modals (`showCancel = false`).
+
 ## [3.7.0] - 2026-08-11
 
 ### Added

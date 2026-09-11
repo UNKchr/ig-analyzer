@@ -70,6 +70,27 @@ export const Storage = {
         GM_setValue(CONFIG.RENAMED_KEY, list);
     },
 
+    getStoryObservations: (username) => {
+        const obs = GM_getValue(CONFIG.STORY_OBS_KEY, {});
+        return obs[username] || [];
+    },
+
+    addStoryObservation: (username, data) => {
+        const obs = GM_getValue(CONFIG.STORY_OBS_KEY, {});
+        if (!obs[username]) obs[username] = [];
+        
+        // Add current timestamp
+        data.timestamp = Utils.now();
+        obs[username].push(data);
+        
+        // Keep only last 10 observations to prevent bloat
+        if (obs[username].length > 10) {
+            obs[username].shift();
+        }
+        
+        GM_setValue(CONFIG.STORY_OBS_KEY, obs);
+    },
+
     resetAll: () => {
         GM_deleteValue(CONFIG.STORAGE_KEY);
         GM_deleteValue(CONFIG.WHITELIST_KEY);
@@ -78,5 +99,6 @@ export const Storage = {
         GM_deleteValue(CONFIG.DEACTIVATED_KEY);
         GM_deleteValue(CONFIG.BLOCKED_KEY);
         GM_deleteValue(CONFIG.RENAMED_KEY);
+        GM_deleteValue(CONFIG.STORY_OBS_KEY);
     }
 };

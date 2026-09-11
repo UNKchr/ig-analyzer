@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Instagram Follower Analyzer
 // @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.7.1
+// @version      3.8.0
 // @author       UNKchr
-// @description  Analyze Instagram followers and following lists with Anti-Ban retry logic, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.
+// @description  Analyze Instagram followers and following lists with native REST API, Anti-Ban retry logic, Story Anomaly Spy, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=instagram.com
 // @downloadURL  https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
@@ -46,8 +46,8 @@
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
     PAGE_SIZE: 50,
-    BASE_RATE_LIMIT_MS: 1500,
-    MAX_RETRIES: 4,
+    BASE_RATE_LIMIT_MS: 2e3,
+MAX_RETRIES: 4,
     DEBUG: false,
     MIN_VISIBLE_PX: 50,
     DEFAULT_POSITION: { top: 80, right: 20 }
@@ -76,20 +76,15 @@
       return `https://www.instagram.com/${safeUser}/`;
     },
     getUserId: () => {
-      const matchCookie = document.cookie.match(/ds_user_id=([^;]+)/);
-      if (matchCookie && matchCookie[1]) {
+      const matchCookie = document.cookie.match(/ds_user_id=([1-9][0-9]*)/);
+      if (matchCookie && matchCookie[1] && matchCookie[1] !== "0") {
         return matchCookie[1];
       }
       try {
         const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-        if (win._sharedData?.config?.viewerId) {
-          return String(win._sharedData.config.viewerId);
-        }
-        if (win.__initialData?.pending?.viewer?.id) {
-          return String(win.__initialData.pending.viewer.id);
-        }
-        if (win._sharedData?.rawProfileUser?.id) {
-          return String(win._sharedData.rawProfileUser.id);
+        const viewerId = win._sharedData?.config?.viewerId || win.__initialData?.pending?.viewer?.id || win._sharedData?.rawProfileUser?.id;
+        if (viewerId && String(viewerId) !== "0" && /^[1-9][0-9]*$/.test(String(viewerId))) {
+          return String(viewerId);
         }
       } catch (e) {
       }
@@ -97,19 +92,85 @@
         const scripts = document.querySelectorAll("script");
         for (const script of scripts) {
           const text = script.textContent || "";
-          const viewerMatch = text.match(/"viewerId":"(\d+)"/) || text.match(/"actorID":"(\d+)"/) || text.match(/"ds_user_id":"(\d+)"/) || text.match(/"USER_ID":"(\d+)"/);
-          if (viewerMatch && viewerMatch[1]) {
-            return viewerMatch[1];
-          }
+          if (!text) continue;
+          const viewerObj = text.match(/"viewer"\s*:\s*\{\s*"id"\s*:\s*"([1-9][0-9]*)"/);
+          if (viewerObj && viewerObj[1] && viewerObj[1] !== "0") return viewerObj[1];
+          const vIdMatch = text.match(/"(?:viewerId|ds_user_id)"\s*:\s*"([1-9][0-9]*)"/);
+          if (vIdMatch && vIdMatch[1] && vIdMatch[1] !== "0") return vIdMatch[1];
+          const userMatch = text.match(/"(?:USER_ID|actorID)"\s*:\s*"([1-9][0-9]*)"/);
+          if (userMatch && userMatch[1] && userMatch[1] !== "0") return userMatch[1];
         }
       } catch (e) {
       }
       try {
         const metaTag = document.querySelector('meta[property="instapp:owner_user_id"]');
-        if (metaTag && metaTag.content) {
+        if (metaTag && metaTag.content && metaTag.content !== "0" && /^[1-9][0-9]*$/.test(metaTag.content)) {
           return metaTag.content;
         }
       } catch (e) {
+      }
+      return null;
+    },
+    getUserIdAsync: async () => {
+      const syncId = Utils.getUserId();
+      if (syncId && syncId !== "0") {
+        return syncId;
+      }
+      try {
+        const res = await fetch("https://www.instagram.com/api/v1/accounts/edit/web_form_data/", {
+          headers: {
+            "X-IG-App-ID": "936619743392459",
+            "X-Requested-With": "XMLHttpRequest"
+          },
+          credentials: "include"
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const username = data?.form_data?.username;
+          if (username) {
+            const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+              headers: {
+                "X-IG-App-ID": "936619743392459",
+                "X-Requested-With": "XMLHttpRequest"
+              },
+              credentials: "include"
+            });
+            if (profileRes.ok) {
+              const profileJson = await profileRes.json();
+              const id = profileJson?.data?.user?.id;
+              if (id && String(id) !== "0") return String(id);
+            }
+          }
+        }
+      } catch (e) {
+        Utils.logError("Async user ID detection fallback A failed", e);
+      }
+      try {
+        const links = Array.from(document.querySelectorAll('a[href^="/"]'));
+        for (const link of links) {
+          const href = link.getAttribute("href") || "";
+          const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
+          if (match) {
+            const candidate = match[1];
+            const systemRoutes = ["explore", "reels", "direct", "stories", "your_activity", "settings", "accounts", "developer", "about"];
+            if (!systemRoutes.includes(candidate.toLowerCase()) && (link.querySelector("img") || link.querySelector("svg"))) {
+              const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${candidate}`, {
+                headers: {
+                  "X-IG-App-ID": "936619743392459",
+                  "X-Requested-With": "XMLHttpRequest"
+                },
+                credentials: "include"
+              });
+              if (profileRes.ok) {
+                const profileJson = await profileRes.json();
+                const id = profileJson?.data?.user?.id;
+                if (id && String(id) !== "0") return String(id);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        Utils.logError("Async user ID detection fallback B failed", e);
       }
       return null;
     },
@@ -127,7 +188,15 @@
       return arr.map((u) => {
         if (typeof u === "string") return { id: null, username: u };
         if (u && typeof u.username === "string") {
-          return { id: u.id ? String(u.id) : null, username: String(u.username) };
+          return {
+            id: u.id ? String(u.id) : null,
+            username: String(u.username),
+            fullName: u.fullName || u.full_name || "",
+            isPrivate: Boolean(u.isPrivate ?? u.is_private),
+            isVerified: Boolean(u.isVerified ?? u.is_verified),
+            profilePicUrl: u.profilePicUrl || u.profile_pic_url || null,
+            latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0
+          };
         }
         return null;
       }).filter(Boolean);
@@ -234,6 +303,20 @@
       });
       GM_setValue(CONFIG.RENAMED_KEY, list);
     },
+    getStoryObservations: (username) => {
+      const obs = GM_getValue(CONFIG.STORY_OBS_KEY, {});
+      return obs[username] || [];
+    },
+    addStoryObservation: (username, data) => {
+      const obs = GM_getValue(CONFIG.STORY_OBS_KEY, {});
+      if (!obs[username]) obs[username] = [];
+      data.timestamp = Utils.now();
+      obs[username].push(data);
+      if (obs[username].length > 10) {
+        obs[username].shift();
+      }
+      GM_setValue(CONFIG.STORY_OBS_KEY, obs);
+    },
     resetAll: () => {
       GM_deleteValue(CONFIG.STORAGE_KEY);
       GM_deleteValue(CONFIG.WHITELIST_KEY);
@@ -242,6 +325,7 @@
       GM_deleteValue(CONFIG.DEACTIVATED_KEY);
       GM_deleteValue(CONFIG.BLOCKED_KEY);
       GM_deleteValue(CONFIG.RENAMED_KEY);
+      GM_deleteValue(CONFIG.STORY_OBS_KEY);
     }
   };
   const BACKUP_MAX_DEPTH = 20;
@@ -696,10 +780,12 @@ warning: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24
 play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
     download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
     trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+    minimize: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     mailbox: '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 6H17.2C18.8802 6 19.7202 6 20.362 6.32698C20.9265 6.6146 21.3854 7.07354 21.673 7.63803C22 8.27976 22 9.11984 22 10.8V18H11M7 6C9.20914 6 11 7.79086 11 10V18M7 6C4.79086 6 3 7.79086 3 10V18H11M17 3H14V12M10 18V21H14V18M7 12H7.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
-    metrics: '<svg fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" xml:space="preserve"><g><path d="M72,22H28c-3.3,0-6,2.7-6,6v44c0,3.3,2.7,6,6,6h44c3.3,0,6-2.7,6-6V28C78,24.7,75.3,22,72,22z M38,66 c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V55c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M48,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V40 c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M58,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V34c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M68,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V47c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z"></path></g></svg>'
+    metrics: '<svg fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" xml:space="preserve"><g><path d="M72,22H28c-3.3,0-6,2.7-6,6v44c0,3.3,2.7,6,6,6h44c3.3,0,6-2.7,6-6V28C78,24.7,75.3,22,72,22z M38,66 c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V55c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M48,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V40 c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M58,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V34c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M68,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V47c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z"></path></g></svg>',
+    spy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M11 8a3 3 0 0 0-3 3"/></svg>'
   };
-  const mainCss = ':root{--ig-panel-bg: rgba(15, 15, 20, .92);--ig-panel-border: rgba(255, 255, 255, .08);--ig-text-main: #e5e7eb;--ig-text-muted: #6b7280;--ig-text-bright: #f9fafb;--ig-bg-input: rgba(255, 255, 255, .04);--ig-bg-hover: rgba(255, 255, 255, .08);--ig-bg-active: rgba(255, 255, 255, .12);--ig-scrollbar-thumb: rgba(255, 255, 255, .12);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .5);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .3);--ig-accent: #3b82f6;--ig-accent-hover: #2563eb;--ig-accent-soft: rgba(59, 130, 246, .12);--ig-success: #22c55e;--ig-success-hover: #16a34a;--ig-danger: #ef4444;--ig-danger-hover: #dc2626;--ig-warning: #f59e0b;--ig-btn-bg: rgba(255, 255, 255, .06);--ig-btn-border: rgba(255, 255, 255, .1);--ig-btn-text: #d1d5db;--ig-btn-disabled-bg: rgba(255, 255, 255, .04);--ig-btn-disabled-border: rgba(255, 255, 255, .06);--ig-btn-disabled-text: rgba(255, 255, 255, .3);--ig-radius-sm: 6px;--ig-radius-md: 10px;--ig-radius-lg: 16px;--ig-radius-full: 999px}.ig-light-theme{--ig-panel-bg: rgba(255, 255, 255, .92);--ig-panel-border: rgba(0, 0, 0, .08);--ig-text-main: #374151;--ig-text-muted: #9ca3af;--ig-text-bright: #111827;--ig-bg-input: rgba(0, 0, 0, .03);--ig-bg-hover: rgba(0, 0, 0, .05);--ig-bg-active: rgba(0, 0, 0, .08);--ig-scrollbar-thumb: rgba(0, 0, 0, .12);--ig-scrollbar-thumb-hover: rgba(0, 0, 0, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .15);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .08);--ig-accent-soft: rgba(59, 130, 246, .08);--ig-btn-bg: rgba(0, 0, 0, .04);--ig-btn-border: rgba(0, 0, 0, .1);--ig-btn-text: #4b5563;--ig-btn-disabled-bg: rgba(0, 0, 0, .04);--ig-btn-disabled-border: rgba(0, 0, 0, .08);--ig-btn-disabled-text: rgba(0, 0, 0, .35)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:400px;height:510px;max-height:calc(100vh - 100px);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);color:var(--ig-text-main);box-shadow:var(--ig-shadow);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica Neue,sans-serif;font-size:13px;padding:20px;z-index:999999;border-radius:var(--ig-radius-lg);display:flex;flex-direction:column;resize:both;overflow:hidden;transition:background .3s ease,border-color .3s ease,box-shadow .3s ease}#ig-analyzer-panel *{box-sizing:border-box}#ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--ig-panel-border);cursor:move;-webkit-user-select:none;user-select:none}.ig-header-left{display:flex;align-items:center;gap:10px}.ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--ig-accent-soft);border-radius:var(--ig-radius-md);color:var(--ig-accent)}.ig-title{font-size:15px;font-weight:700;color:var(--ig-text-bright);letter-spacing:-.3px}.ig-header-right{display:flex;align-items:center}#ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--ig-bg-input);padding:5px 12px;border-radius:var(--ig-radius-full);color:var(--ig-text-muted);border:1px solid var(--ig-panel-border);transition:all .2s ease}.ig-status-dot{width:6px;height:6px;border-radius:50%;background:var(--ig-text-muted);display:inline-block;flex-shrink:0;animation:ig-pulse 2s ease-in-out infinite}@keyframes ig-pulse{0%,to{opacity:1}50%{opacity:.4}}.ig-actions-bar{display:flex;gap:8px;margin-bottom:14px}.ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:var(--ig-radius-sm);font-size:12px;font-weight:600;cursor:pointer;background:var(--ig-btn-bg);color:var(--ig-btn-text);border:1px solid var(--ig-btn-border);transition:all .2s cubic-bezier(.4,0,.2,1);flex:1;white-space:nowrap;line-height:1}.ig-btn-icon{display:inline-flex;align-items:center;opacity:.9}.ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--ig-shadow-sm)}.ig-btn:active:not(:disabled){transform:translateY(0)}.ig-backup-tools{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;padding:10px 12px;border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);background:var(--ig-bg-input)}.ig-backup-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--ig-text-muted)}.ig-backup-actions{display:flex;gap:8px}.ig-backup-btn{flex:1;min-width:0}.ig-backup-btn-export{border-color:#3b82f673;color:var(--ig-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:#3b82f624;border-color:#3b82f6b3}.ig-backup-btn-import{border-color:#f59e0b73;color:var(--ig-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:#f59e0b24;border-color:#f59e0bb3}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--ig-text-muted);min-height:16px}.ig-backup-status[data-state=success]{color:var(--ig-success)}.ig-backup-status[data-state=error]{color:var(--ig-danger)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}.ig-btn.ig-btn-primary{background:var(--ig-accent);border-color:var(--ig-accent);color:#fff}.ig-btn.ig-btn-primary:hover:not(:disabled){background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);color:#fff}#ig-export-csv:not(:disabled){background:#22c55e!important;border-color:#22c55e!important;color:#fff!important}#ig-export-csv:not(:disabled):hover{background:#16a34a!important;border-color:#16a34a!important;color:#fff!important}#ig-export-csv:disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;cursor:not-allowed!important;transform:none!important;box-shadow:none!important}#ig-export-csv:disabled .ig-btn-icon{opacity:.4}.ig-btn.ig-btn-danger{background:transparent;border-color:var(--ig-danger);color:var(--ig-danger)}.ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--ig-danger);border-color:var(--ig-danger);color:#fff}.ig-btn.ig-btn-primary:disabled,.ig-btn.ig-btn-danger:disabled{background:var(--ig-btn-disabled-bg);border-color:var(--ig-btn-disabled-border);color:var(--ig-btn-disabled-text);cursor:not-allowed;transform:none;box-shadow:none}.ig-btn:disabled .ig-btn-icon{opacity:.4}#ig-progress-container{width:100%;background:var(--ig-bg-input);border-radius:var(--ig-radius-full);height:4px;margin-bottom:14px;overflow:hidden;display:none;border:none}#ig-progress-bar{width:0%;background:linear-gradient(90deg,var(--ig-accent),#8b5cf6);height:100%;border-radius:var(--ig-radius-full);transition:width .4s cubic-bezier(.4,0,.2,1);position:relative}#ig-progress-bar:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.2),transparent);animation:ig-shimmer 1.5s infinite}@keyframes ig-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}.ig-tabs-container{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:0;padding:4px;background:var(--ig-bg-input);border-radius:var(--ig-radius-md)}.ig-tab-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:5px!important;padding:7px 10px!important;flex:auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--ig-text-muted)!important;font-size:11px!important;font-weight:500!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer!important;transition:all .2s ease!important;white-space:nowrap!important;line-height:1!important}.ig-tab-icon{display:inline-flex;align-items:center;flex-shrink:0}.ig-backup-tab-btn{min-width:0;color:var(--ig-text-muted)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn:hover{color:var(--ig-text-bright)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--ig-text-muted)!important}.ig-backup-tab-btn svg{width:14px;height:14px;display:block}.ig-backup-tab-btn .ig-backup-tab-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;line-height:0}.ig-backup-tab-btn .ig-backup-tab-icon svg{width:100%;height:100%;display:block}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#0000008c;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:1000000}.ig-backup-overlay.is-open{display:flex}.ig-backup-dialog{width:min(520px,100%);border-radius:var(--ig-radius-lg);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);box-shadow:var(--ig-shadow);padding:18px;display:flex;flex-direction:column;gap:14px;color:var(--ig-text-main)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--ig-text-bright)}.ig-backup-close-btn{border:0;background:transparent;color:var(--ig-text-muted);border-radius:0;padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .18s ease,color .18s ease}.ig-backup-close-btn:hover{color:var(--ig-text-bright);transform:scale(1.08)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--ig-text-muted)}.ig-backup-dialog-actions{display:flex;gap:8px}.ig-backup-dialog .ig-backup-btn{flex:1}.ig-tab-label{pointer-events:none}.ig-tab-btn:hover{color:var(--ig-text-main)!important;background:var(--ig-bg-hover)!important}.ig-tab-btn.active{background:var(--ig-bg-active)!important;color:var(--ig-text-bright)!important;font-weight:600!important;box-shadow:var(--ig-shadow-sm)!important}.ig-view{display:none}.ig-view.active{display:block}.ig-view-container{flex-grow:1;overflow-y:auto;background:var(--ig-bg-input);border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);padding:14px;font-size:12px;color:var(--ig-text-main);margin-top:8px}.ig-view-container::-webkit-scrollbar{width:5px}.ig-view-container::-webkit-scrollbar-track{background:transparent}.ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:10px}.ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}#ig-log{font-family:SF Mono,Cascadia Code,Fira Code,ui-monospace,monospace;font-size:11px;line-height:1.6}.ig-log-entry{padding:3px 0;color:var(--ig-text-main);border-bottom:1px solid var(--ig-panel-border);transition:background .15s ease}.ig-log-entry:last-child{border-bottom:none}.ig-log-entry:hover{background:var(--ig-bg-hover);border-radius:4px;padding-left:6px}.ig-log-time{color:var(--ig-accent);font-weight:500}.ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--ig-text-bright);letter-spacing:-.2px}.ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--ig-accent-soft);color:var(--ig-accent);padding:0 7px;border-radius:var(--ig-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:none}.ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--ig-text-muted);font-size:12px;padding:32px 16px;text-align:center}.ig-empty-icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;color:var(--ig-text-muted);opacity:.5}.ig-empty-icon svg{width:100%;height:100%}.ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-sm);transition:all .3s cubic-bezier(.4,0,.2,1)}.ig-user-row:last-child{border-bottom:none}.ig-user-row:hover{background:var(--ig-bg-hover)}.ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}.ig-user-avatar{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--ig-accent-soft);color:var(--ig-accent);font-size:11px;font-weight:700;flex-shrink:0}.ig-username{color:var(--ig-text-bright);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-view-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:12px;padding:4px 8px;border-radius:var(--ig-radius-sm);transition:all .15s ease}.ig-view-link:hover{background:var(--ig-accent-soft);text-decoration:none}.btn-whitelist{background:var(--ig-btn-bg)!important;border:1px solid var(--ig-btn-border)!important;color:var(--ig-text-muted)!important;padding:4px 10px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer}.btn-whitelist:hover{background:var(--ig-bg-hover)!important;border-color:var(--ig-text-muted)!important;color:var(--ig-text-main)!important}.ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:12px}.ig-table thead th{color:var(--ig-text-muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 8px 10px;border-bottom:1px solid var(--ig-panel-border);position:sticky;top:0;background:var(--ig-bg-input)}.ig-table td{padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);color:var(--ig-text-main)}.ig-table tbody tr{transition:background .15s ease}.ig-table tbody tr:hover{background:var(--ig-bg-hover)}.ig-table tbody tr:last-child td{border-bottom:none}.ig-table-user{font-weight:500;color:var(--ig-text-bright)}.ig-table-date{color:var(--ig-text-muted);font-size:11px;font-variant-numeric:tabular-nums}.ig-table-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:11px}.ig-table-link:hover{text-decoration:underline}.ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:500}.ig-modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:ig-fade-in .2s ease}@keyframes ig-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:#1a1a2e;border:1px solid rgba(255,255,255,.08);padding:32px 28px;border-radius:var(--ig-radius-lg);width:380px;max-width:90vw;text-align:center;color:#f3f4f6;box-shadow:0 25px 50px -12px #0009;display:flex;flex-direction:column;align-items:center;animation:ig-modal-slide-in .3s cubic-bezier(.4,0,.2,1)}@keyframes ig-modal-slide-in{0%{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:56px;height:56px;color:var(--ig-warning);margin-bottom:20px;padding:12px;background:#f59e0b1a;border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:18px;font-weight:700;margin-bottom:10px;color:#fff;letter-spacing:-.3px}.ig-modal-text{font-size:14px;line-height:1.6;color:#9ca3af;margin-bottom:28px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:11px 16px;border-radius:var(--ig-radius-sm);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)}.ig-btn-cancel-modal{background:transparent;border:1px solid rgba(255,255,255,.1);color:#9ca3af}.ig-btn-cancel-modal:hover{background:#ffffff0f;border-color:#fff3;color:#fff}.ig-btn-confirm-modal{background:var(--ig-accent);border:1px solid var(--ig-accent);color:#fff}.ig-btn-confirm-modal:hover{background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);transform:translateY(-1px)}';
+  const mainCss = ':root{--ig-panel-bg: rgba(15, 15, 20, .92);--ig-panel-border: rgba(255, 255, 255, .08);--ig-text-main: #e5e7eb;--ig-text-muted: #6b7280;--ig-text-bright: #f9fafb;--ig-bg-input: rgba(255, 255, 255, .04);--ig-bg-hover: rgba(255, 255, 255, .08);--ig-bg-active: rgba(255, 255, 255, .12);--ig-scrollbar-thumb: rgba(255, 255, 255, .12);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .5);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .3);--ig-accent: #3b82f6;--ig-accent-hover: #2563eb;--ig-accent-soft: rgba(59, 130, 246, .12);--ig-success: #22c55e;--ig-success-hover: #16a34a;--ig-danger: #ef4444;--ig-danger-hover: #dc2626;--ig-warning: #f59e0b;--ig-btn-bg: rgba(255, 255, 255, .06);--ig-btn-border: rgba(255, 255, 255, .1);--ig-btn-text: #d1d5db;--ig-btn-disabled-bg: rgba(255, 255, 255, .04);--ig-btn-disabled-border: rgba(255, 255, 255, .06);--ig-btn-disabled-text: rgba(255, 255, 255, .3);--ig-radius-sm: 6px;--ig-radius-md: 10px;--ig-radius-lg: 16px;--ig-radius-full: 999px}.ig-light-theme{--ig-panel-bg: rgba(255, 255, 255, .92);--ig-panel-border: rgba(0, 0, 0, .08);--ig-text-main: #374151;--ig-text-muted: #9ca3af;--ig-text-bright: #111827;--ig-bg-input: rgba(0, 0, 0, .03);--ig-bg-hover: rgba(0, 0, 0, .05);--ig-bg-active: rgba(0, 0, 0, .08);--ig-scrollbar-thumb: rgba(0, 0, 0, .12);--ig-scrollbar-thumb-hover: rgba(0, 0, 0, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .15);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .08);--ig-accent-soft: rgba(59, 130, 246, .08);--ig-btn-bg: rgba(0, 0, 0, .04);--ig-btn-border: rgba(0, 0, 0, .1);--ig-btn-text: #4b5563;--ig-btn-disabled-bg: rgba(0, 0, 0, .04);--ig-btn-disabled-border: rgba(0, 0, 0, .08);--ig-btn-disabled-text: rgba(0, 0, 0, .35)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:400px;height:510px;max-height:calc(100vh - 100px);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);color:var(--ig-text-main);box-shadow:var(--ig-shadow);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica Neue,sans-serif;font-size:13px;padding:20px;z-index:999999;border-radius:var(--ig-radius-lg);display:flex;flex-direction:column;resize:both;overflow:hidden;transition:background .3s ease,border-color .3s ease,box-shadow .3s ease}#ig-analyzer-panel *{box-sizing:border-box}#ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--ig-panel-border);cursor:move;-webkit-user-select:none;user-select:none}.ig-header-left{display:flex;align-items:center;gap:10px}.ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--ig-accent-soft);border-radius:var(--ig-radius-md);color:var(--ig-accent)}.ig-title{font-size:15px;font-weight:700;color:var(--ig-text-bright);letter-spacing:-.3px}.ig-header-right{display:flex;align-items:center}#ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--ig-bg-input);padding:5px 12px;border-radius:var(--ig-radius-full);color:var(--ig-text-muted);border:1px solid var(--ig-panel-border);transition:all .2s ease}.ig-status-dot{width:6px;height:6px;border-radius:50%;background:var(--ig-text-muted);display:inline-block;flex-shrink:0;animation:ig-pulse 2s ease-in-out infinite}@keyframes ig-pulse{0%,to{opacity:1}50%{opacity:.4}}.ig-actions-bar{display:flex;gap:8px;margin-bottom:14px}.ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:var(--ig-radius-sm);font-size:12px;font-weight:600;cursor:pointer;background:var(--ig-btn-bg);color:var(--ig-btn-text);border:1px solid var(--ig-btn-border);transition:all .2s cubic-bezier(.4,0,.2,1);flex:1;white-space:nowrap;line-height:1}.ig-btn-icon{display:inline-flex;align-items:center;opacity:.9}.ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--ig-shadow-sm)}.ig-btn:active:not(:disabled){transform:translateY(0)}.ig-backup-tools{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;padding:10px 12px;border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);background:var(--ig-bg-input)}.ig-backup-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--ig-text-muted)}.ig-backup-actions{display:flex;gap:8px}.ig-backup-btn{flex:1;min-width:0}.ig-backup-btn-export{border-color:#3b82f673;color:var(--ig-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:#3b82f624;border-color:#3b82f6b3}.ig-backup-btn-import{border-color:#f59e0b73;color:var(--ig-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:#f59e0b24;border-color:#f59e0bb3}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--ig-text-muted);min-height:16px}.ig-backup-status[data-state=success]{color:var(--ig-success)}.ig-backup-status[data-state=error]{color:var(--ig-danger)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}.ig-btn.ig-btn-primary{background:var(--ig-accent);border-color:var(--ig-accent);color:#fff}.ig-btn.ig-btn-primary:hover:not(:disabled){background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);color:#fff}#ig-export-csv:not(:disabled){background:#22c55e!important;border-color:#22c55e!important;color:#fff!important}#ig-export-csv:not(:disabled):hover{background:#16a34a!important;border-color:#16a34a!important;color:#fff!important}#ig-export-csv:disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;cursor:not-allowed!important;transform:none!important;box-shadow:none!important}#ig-export-csv:disabled .ig-btn-icon{opacity:.4}.ig-btn.ig-btn-danger{background:transparent;border-color:var(--ig-danger);color:var(--ig-danger)}.ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--ig-danger);border-color:var(--ig-danger);color:#fff}.ig-btn.ig-btn-primary:disabled,.ig-btn.ig-btn-danger:disabled{background:var(--ig-btn-disabled-bg);border-color:var(--ig-btn-disabled-border);color:var(--ig-btn-disabled-text);cursor:not-allowed;transform:none;box-shadow:none}.ig-btn:disabled .ig-btn-icon{opacity:.4}#ig-progress-container{width:100%;background:var(--ig-bg-input);border-radius:var(--ig-radius-full);height:4px;margin-bottom:14px;overflow:hidden;display:none;border:none}#ig-progress-bar{width:0%;background:linear-gradient(90deg,var(--ig-accent),#8b5cf6);height:100%;border-radius:var(--ig-radius-full);transition:width .4s cubic-bezier(.4,0,.2,1);position:relative}#ig-progress-bar:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.2),transparent);animation:ig-shimmer 1.5s infinite}@keyframes ig-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}.ig-tabs-container{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:0;padding:4px;background:var(--ig-bg-input);border-radius:var(--ig-radius-md)}.ig-tab-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:5px!important;padding:7px 10px!important;flex:auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--ig-text-muted)!important;font-size:11px!important;font-weight:500!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer!important;transition:all .2s ease!important;white-space:nowrap!important;line-height:1!important}.ig-tab-icon{display:inline-flex;align-items:center;flex-shrink:0}.ig-backup-tab-btn{min-width:0;color:var(--ig-text-muted)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn:hover{color:var(--ig-text-bright)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--ig-text-muted)!important}.ig-backup-tab-btn svg{width:14px;height:14px;display:block}.ig-backup-tab-btn .ig-backup-tab-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;line-height:0}.ig-backup-tab-btn .ig-backup-tab-icon svg{width:100%;height:100%;display:block}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#0000008c;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:1000000}.ig-backup-overlay.is-open{display:flex}.ig-backup-dialog{width:min(520px,100%);border-radius:var(--ig-radius-lg);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);box-shadow:var(--ig-shadow);padding:18px;display:flex;flex-direction:column;gap:14px;color:var(--ig-text-main)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--ig-text-bright)}.ig-backup-close-btn{border:0;background:transparent;color:var(--ig-text-muted);border-radius:0;padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .18s ease,color .18s ease}.ig-backup-close-btn:hover{color:var(--ig-text-bright);transform:scale(1.08)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--ig-text-muted)}.ig-backup-dialog-actions{display:flex;gap:8px}.ig-backup-dialog .ig-backup-btn{flex:1}.ig-tab-label{pointer-events:none}.ig-tab-btn:hover{color:var(--ig-text-main)!important;background:var(--ig-bg-hover)!important}.ig-tab-btn.active{background:var(--ig-bg-active)!important;color:var(--ig-text-bright)!important;font-weight:600!important;box-shadow:var(--ig-shadow-sm)!important}.ig-view{display:none}.ig-view.active{display:block}.ig-view-container{flex-grow:1;overflow-y:auto;background:var(--ig-bg-input);border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);padding:14px;font-size:12px;color:var(--ig-text-main);margin-top:8px}.ig-view-container::-webkit-scrollbar{width:5px}.ig-view-container::-webkit-scrollbar-track{background:transparent}.ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:10px}.ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}#ig-log{font-family:SF Mono,Cascadia Code,Fira Code,ui-monospace,monospace;font-size:11px;line-height:1.6}.ig-log-entry{padding:3px 0;color:var(--ig-text-main);border-bottom:1px solid var(--ig-panel-border);transition:background .15s ease}.ig-log-entry:last-child{border-bottom:none}.ig-log-entry:hover{background:var(--ig-bg-hover);border-radius:4px;padding-left:6px}.ig-log-time{color:var(--ig-accent);font-weight:500}.ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--ig-text-bright);letter-spacing:-.2px}.ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--ig-accent-soft);color:var(--ig-accent);padding:0 7px;border-radius:var(--ig-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:none}.ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--ig-text-muted);font-size:12px;padding:32px 16px;text-align:center}.ig-empty-icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;color:var(--ig-text-muted);opacity:.5}.ig-empty-icon svg{width:100%;height:100%}.ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-sm);transition:all .3s cubic-bezier(.4,0,.2,1)}.ig-user-row:last-child{border-bottom:none}.ig-user-row:hover{background:var(--ig-bg-hover)}.ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}.ig-user-avatar{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--ig-accent-soft);color:var(--ig-accent);font-size:11px;font-weight:700;flex-shrink:0}.ig-username{color:var(--ig-text-bright);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-view-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:12px;padding:4px 8px;border-radius:var(--ig-radius-sm);transition:all .15s ease}.ig-view-link:hover{background:var(--ig-accent-soft);text-decoration:none}.btn-whitelist{background:var(--ig-btn-bg)!important;border:1px solid var(--ig-btn-border)!important;color:var(--ig-text-muted)!important;padding:4px 10px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer}.btn-whitelist:hover{background:var(--ig-bg-hover)!important;border-color:var(--ig-text-muted)!important;color:var(--ig-text-main)!important}.btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#8b5cf61a!important;border:1px solid rgba(139,92,246,.3)!important;color:#a78bfa!important;padding:4px 8px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)!important;-webkit-user-select:none!important;user-select:none!important}.btn-spy-story:hover:not(:disabled){background:#8b5cf638!important;border-color:#a78bfa!important;color:#f3f4f6!important;transform:translateY(-1px)}.btn-spy-story:active:not(:disabled){transform:translateY(0)}.btn-spy-story:disabled{opacity:.6!important;cursor:not-allowed!important}.btn-spy-story svg{width:12px;height:12px;flex-shrink:0}.ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:12px}.ig-table thead th{color:var(--ig-text-muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 8px 10px;border-bottom:1px solid var(--ig-panel-border);position:sticky;top:0;background:var(--ig-bg-input)}.ig-table td{padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);color:var(--ig-text-main)}.ig-table tbody tr{transition:background .15s ease}.ig-table tbody tr:hover{background:var(--ig-bg-hover)}.ig-table tbody tr:last-child td{border-bottom:none}.ig-table-user{font-weight:500;color:var(--ig-text-bright)}.ig-table-date{color:var(--ig-text-muted);font-size:11px;font-variant-numeric:tabular-nums}.ig-table-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:11px}.ig-table-link:hover{text-decoration:underline}.ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:500}.ig-modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:ig-fade-in .2s ease}@keyframes ig-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:#1a1a2e;border:1px solid rgba(255,255,255,.08);padding:32px 28px;border-radius:var(--ig-radius-lg);width:380px;max-width:90vw;text-align:center;color:#f3f4f6;box-shadow:0 25px 50px -12px #0009;display:flex;flex-direction:column;align-items:center;animation:ig-modal-slide-in .3s cubic-bezier(.4,0,.2,1)}@keyframes ig-modal-slide-in{0%{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:56px;height:56px;color:var(--ig-warning);margin-bottom:20px;padding:12px;background:#f59e0b1a;border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:18px;font-weight:700;margin-bottom:10px;color:#fff;letter-spacing:-.3px}.ig-modal-text{font-size:14px;line-height:1.6;color:#9ca3af;margin-bottom:28px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:11px 16px;border-radius:var(--ig-radius-sm);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)}.ig-btn-cancel-modal{background:transparent;border:1px solid rgba(255,255,255,.1);color:#9ca3af}.ig-btn-cancel-modal:hover{background:#ffffff0f;border-color:#fff3;color:#fff}.ig-btn-confirm-modal{background:var(--ig-accent);border:1px solid var(--ig-accent);color:#fff}.ig-btn-confirm-modal:hover{background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);transform:translateY(-1px)}';
   importCSS(mainCss);
   const UI = {
     init: () => {
@@ -786,26 +872,35 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
       observer.observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
     },
-    confirmAction: (title, message, confirmBtnText = "Yes, Continue") => {
+    confirmAction: (title, message, confirmBtnText = "Yes, Continue", showCancel = true, customIcon = null) => {
       return new Promise((resolve) => {
         const modal = document.getElementById("ig-safety-modal");
         const titleEl = document.getElementById("ig-modal-title-text");
         const bodyEl = document.getElementById("ig-modal-body-text");
         const btnYes = document.getElementById("ig-modal-confirm");
         const btnNo = document.getElementById("ig-modal-cancel");
+        const iconEl = modal ? modal.querySelector(".ig-modal-icon") : null;
         if (!modal) return resolve(true);
         titleEl.textContent = title;
         bodyEl.innerHTML = message;
         btnYes.textContent = confirmBtnText;
+        if (iconEl && customIcon) {
+          iconEl.innerHTML = customIcon;
+        }
+        if (btnNo) {
+          btnNo.style.display = showCancel ? "inline-block" : "none";
+        }
         modal.style.display = "flex";
         const closeAndResolve = (value) => {
           modal.style.display = "none";
+          if (btnNo) btnNo.style.display = "inline-block";
+          if (iconEl) iconEl.innerHTML = Icons.warning;
           btnYes.onclick = null;
-          btnNo.onclick = null;
+          if (btnNo) btnNo.onclick = null;
           resolve(value);
         };
         btnYes.onclick = () => closeAndResolve(true);
-        btnNo.onclick = () => closeAndResolve(false);
+        if (btnNo) btnNo.onclick = () => closeAndResolve(false);
       });
     },
     setupTabs: () => {
@@ -901,22 +996,52 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         const safeUsername = Utils.escapeHtml(u.username || "");
         const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : "?";
         const safeUrl = Utils.sanitizeUrl(u.username, u.url);
+        const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : "";
+        const isVerified = Boolean(u.isVerified);
+        const hasStory = Boolean(u.latestReelMedia && u.latestReelMedia > 0);
+        const avatarHtml = u.profilePicUrl ? '<img class="ig-user-avatar" src="' + Utils.escapeHtml(u.profilePicUrl) + '" alt="' + safeUsername + '" style="object-fit:cover;' + (hasStory ? " outline: 2px solid #e1306c; outline-offset: 1px;" : "") + '" />' : '<span class="ig-user-avatar"' + (hasStory ? ' style="outline: 2px solid #e1306c; outline-offset: 1px;"' : "") + ">" + safeInitial + "</span>";
         html += '<div class="ig-user-row" id="' + uniqueId + '">';
-        html += '<div class="ig-user-info"><span class="ig-user-avatar">' + safeInitial + '</span><span class="ig-username">' + safeUsername + "</span></div>";
+        html += '<div class="ig-user-info">' + avatarHtml;
+        html += '<div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
+        html += '<span class="ig-username">' + safeUsername + (isVerified ? ' <span title="Verified" style="color:#0095f6; font-size:11px;">✓</span>' : "") + "</span>";
+        if (safeFullName) {
+          html += '<span style="font-size:11px; color:#8e8e8e; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeFullName + "</span>";
+        }
+        html += "</div></div>";
         html += '<div class="ig-user-actions">';
         if (containerId === "ig-view-notfollowing") {
           html += '<button class="btn-whitelist" data-user="' + safeUsername + '" data-idx="' + uniqueId + '">Ignore</button>';
+        }
+        if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing") {
+          html += '<button class="btn-spy-story" data-user="' + safeUsername + '">' + Icons.spy + " Check Story</button>";
         }
         html += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
         html += "</div></div>";
       });
       container.innerHTML = html;
+      const spyBtns = container.querySelectorAll(".btn-spy-story");
+      spyBtns.forEach((btn) => {
+        btn.onclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const btnEl = e.currentTarget || e.target.closest(".btn-spy-story") || btn;
+          const targetUser = btnEl ? btnEl.getAttribute("data-user") : null;
+          if (!targetUser) return;
+          if (window.App && typeof window.App.runStorySpy === "function") {
+            await window.App.runStorySpy(targetUser, btnEl);
+          } else {
+            console.error("[IG Analyzer] window.App.runStorySpy is not available");
+          }
+        };
+      });
       if (containerId === "ig-view-notfollowing") {
         const whitelistBtns = container.querySelectorAll(".btn-whitelist");
         whitelistBtns.forEach((btn) => {
           btn.onclick = (e) => {
-            const targetUser = e.target.getAttribute("data-user");
-            const rowId = e.target.getAttribute("data-idx");
+            const btnEl = e.currentTarget || btn;
+            const targetUser = btnEl.getAttribute("data-user");
+            const rowId = btnEl.getAttribute("data-idx");
+            if (!targetUser) return;
             Storage.addToWhitelist(targetUser);
             const row = document.getElementById(rowId);
             if (row) {
@@ -1080,10 +1205,27 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     }
   };
   const API = {
-    fetchWithRetry: async (url, retries = CONFIG.MAX_RETRIES, backoff = 3e3) => {
+    fetchWithRetry: async (url, options = {}, retries = CONFIG.MAX_RETRIES, backoff = 3e3) => {
+      if (typeof options === "number") {
+        retries = options;
+        options = {};
+      }
+      const defaultHeaders = {
+        "X-IG-App-ID": "936619743392459",
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "*/*"
+      };
+      const fetchOptions = {
+        credentials: "include",
+        ...options,
+        headers: {
+          ...defaultHeaders,
+          ...options.headers || {}
+        }
+      };
       for (let i = 0; i < retries; i++) {
         try {
-          const res = await fetch(url, { credentials: "include" });
+          const res = await fetch(url, fetchOptions);
           if (res.ok) return await res.json();
           if (res.status === 429) {
             UI.log("Request limit (429). Retrying in " + backoff / 1e3 + "s... (Attempt " + (i + 1) + "/" + retries + ")");
@@ -1098,7 +1240,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       }
       throw new Error("Maximum retries achieved.");
     },
-    getAllUsers: async (userId, hash, label) => {
+    getAllUsersViaGraphQL: async (userId, hash, label) => {
       const users = [];
       let cursor = null;
       let hasNext = true;
@@ -1109,7 +1251,10 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         const json = await API.fetchWithRetry(url);
         const userNode = json?.data?.user;
         const edge = userNode?.edge_follow || userNode?.edge_followed_by;
-        if (!edge || !Array.isArray(edge.edges)) throw new Error("Unexpected GraphQL structure while extracting " + label + ". The API shape may have changed.");
+        if (!edge || !Array.isArray(edge.edges)) {
+          console.warn(`[IG Analyzer] Unexpected GraphQL structure for ${label}:`, json);
+          return [];
+        }
         if (totalCount === 0 && edge.count) totalCount = edge.count;
         edge.edges.forEach((e) => {
           const node = e?.node;
@@ -1122,8 +1267,64 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         });
         hasNext = edge.page_info?.has_next_page === true;
         cursor = edge.page_info?.end_cursor || null;
-        UI.setProgress(users.length, totalCount, "Extracting " + label + "...");
+        if (totalCount > 0) {
+          UI.setProgress(users.length, totalCount, "Extracting " + label + " (GraphQL)...");
+        }
         if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500);
+      }
+      return users;
+    },
+    getAllUsersViaFriendships: async (userId, label) => {
+      const users = [];
+      let maxId = null;
+      let hasNext = true;
+      const endpoint = label === "following" ? "following" : "followers";
+      while (hasNext) {
+        let url = `https://www.instagram.com/api/v1/friendships/${userId}/${endpoint}/?count=50&search_surface=follow_list_page`;
+        if (maxId) {
+          url += `&max_id=${encodeURIComponent(maxId)}`;
+        }
+        const json = await API.fetchWithRetry(url);
+        const list = json?.users;
+        if (!Array.isArray(list)) {
+          console.warn(`[IG Analyzer] Friendships API returned non-array for ${label}:`, json);
+          break;
+        }
+        list.forEach((u) => {
+          const username = u?.username;
+          if (!username) return;
+          users.push({
+            id: u?.pk ? String(u.pk) : u?.id ? String(u.id) : null,
+            username: String(username),
+            fullName: u?.full_name || "",
+            isPrivate: Boolean(u?.is_private),
+            isVerified: Boolean(u?.is_verified),
+            profilePicUrl: u?.profile_pic_url || null,
+            latestReelMedia: u?.latest_reel_media || 0
+          });
+        });
+        maxId = json?.next_max_id || null;
+        hasNext = Boolean(maxId);
+        UI.setProgress(users.length, 0, `Extracting ${label}... (${users.length})`);
+        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800);
+      }
+      return users;
+    },
+    getAllUsers: async (userId, hash, label) => {
+      let users = [];
+      try {
+        users = await API.getAllUsersViaFriendships(userId, label);
+      } catch (e) {
+        console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e);
+        users = [];
+      }
+      if (users.length === 0 && hash) {
+        UI.log(`Friendships returned 0 for '${label}'. Falling back to legacy GraphQL...`);
+        try {
+          users = await API.getAllUsersViaGraphQL(userId, hash, label);
+        } catch (e) {
+          Utils.logError(`GraphQL fallback failed for ${label}`, e);
+        }
       }
       const withIdCount = users.filter((u) => !!u.id).length;
       UI.log("Total " + label + ": " + users.length + " (with IDs: " + withIdCount + ")");
@@ -1157,6 +1358,127 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         console.error(`Error verifying account status for "${username}". Defaulting to Active.`, e);
         return "Active";
       }
+    },
+    checkStoryStatus: async (username) => {
+      const cleanUser = String(username || "").replace(/^@/, "").trim();
+      if (!cleanUser) return null;
+      try {
+        let authHtml = "";
+        let authHasStoryCanvas = false;
+        let authHasHighlightsCanvas = false;
+        let authHighlightsCount = 0;
+        let authHasStory = false;
+        let isPrivate = false;
+        try {
+          const authHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, { credentials: "include" });
+          if (authHtmlRes.ok) {
+            authHtml = await authHtmlRes.text();
+            authHasStoryCanvas = authHtml.includes('height="115" width="115"') || authHtml.includes("x1upo8f9 xpdipgo x87ps6o");
+            authHasHighlightsCanvas = authHtml.includes('height="84" width="84"') || authHtml.includes("height: 67px") || authHtml.includes("left: -5.5px");
+            const authHighlightMatch = authHtml.match(/"highlight_reel_count"\s*:\s*([0-9]+)/);
+            if (authHighlightMatch) {
+              authHighlightsCount = parseInt(authHighlightMatch[1], 10);
+            }
+            const authStoryMatch = authHtml.match(/"latest_reel_media"\s*:\s*([1-9][0-9]*)/);
+            if (authStoryMatch) {
+              authHasStory = true;
+            }
+            if (authHtml.includes('"is_private":true')) {
+              isPrivate = true;
+            }
+          }
+        } catch (err) {
+          console.warn("[IG Analyzer] Error fetching auth profile HTML:", err);
+        }
+        try {
+          const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`, {
+            headers: {
+              "X-IG-App-ID": "936619743392459",
+              "X-Requested-With": "XMLHttpRequest"
+            },
+            credentials: "include"
+          });
+          if (authRes.ok) {
+            const json = await authRes.json();
+            const authData = json?.data?.user;
+            if (authData) {
+              if (typeof authData.is_private === "boolean") {
+                isPrivate = authData.is_private;
+              }
+              if (typeof authData.highlight_reel_count === "number") {
+                authHighlightsCount = Math.max(authHighlightsCount, authData.highlight_reel_count);
+              }
+              if (authData.latest_reel_media && authData.latest_reel_media > 0) {
+                authHasStory = true;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("[IG Analyzer] Error fetching auth web_profile_info:", err);
+        }
+        if (authHasStoryCanvas) authHasStory = true;
+        if (authHasHighlightsCanvas && authHighlightsCount === 0) authHighlightsCount = 1;
+        let anonHighlightsCount = 0;
+        let anonHasStory = false;
+        let anonHasHighlightsCanvas = false;
+        if (!isPrivate) {
+          try {
+            const anonHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, { credentials: "omit" });
+            if (anonHtmlRes.ok) {
+              const anonHtml = await anonHtmlRes.text();
+              anonHasStory = anonHtml.includes('height="115" width="115"') || anonHtml.includes("x1upo8f9 xpdipgo x87ps6o");
+              anonHasHighlightsCanvas = anonHtml.includes('height="84" width="84"') || anonHtml.includes("height: 67px") || anonHtml.includes("left: -5.5px");
+              const anonHighlightMatch = anonHtml.match(/"highlight_reel_count"\s*:\s*([0-9]+)/);
+              if (anonHighlightMatch) {
+                anonHighlightsCount = parseInt(anonHighlightMatch[1], 10);
+              }
+              const anonStoryMatch = anonHtml.match(/"latest_reel_media"\s*:\s*([1-9][0-9]*)/);
+              if (anonStoryMatch) {
+                anonHasStory = true;
+              }
+            }
+          } catch (e) {
+            console.warn("[IG Analyzer] Anon HTML fetch failed for", cleanUser, e);
+          }
+          try {
+            const anonRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`, {
+              headers: {
+                "X-IG-App-ID": "936619743392459",
+                "X-Requested-With": "XMLHttpRequest"
+              },
+              credentials: "omit"
+            });
+            if (anonRes.ok) {
+              const anonJson = await anonRes.json();
+              const anonData = anonJson?.data?.user;
+              if (anonData) {
+                if (typeof anonData.highlight_reel_count === "number") {
+                  anonHighlightsCount = Math.max(anonHighlightsCount, anonData.highlight_reel_count);
+                }
+                if (anonData.latest_reel_media && anonData.latest_reel_media > 0) {
+                  anonHasStory = true;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[IG Analyzer] Anon API fetch failed for", cleanUser, e);
+          }
+          if (anonHasHighlightsCanvas && anonHighlightsCount === 0) {
+            anonHighlightsCount = 1;
+          }
+        }
+        return {
+          username: cleanUser,
+          isPrivate,
+          authHighlightsCount,
+          anonHighlightsCount,
+          anonHasStory,
+          authHasStory
+        };
+      } catch (e) {
+        console.error(`Error checking story status for "${username}"`, e);
+        return null;
+      }
     }
   };
   const App = {
@@ -1179,8 +1501,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       const logTab = document.querySelector('[data-target="ig-log"]');
       if (logTab) logTab.click();
       try {
-        const userId = Utils.getUserId();
-        if (!userId) throw new Error("User ID could not be obtained. Are you logged in?");
+        const userId = await Utils.getUserIdAsync();
+        if (!userId || userId === "0") throw new Error("User ID could not be obtained. Are you logged in?");
+        UI.log("User ID detected: " + userId);
         UI.log("Fetching 'Following'...");
         const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following");
         UI.log("Fetching 'Followers'...");
@@ -1198,7 +1521,18 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         const mutualsUsernames = Utils.intersection(followers, following);
         const whitelist = Storage.getWhitelist();
         const filteredNotFollowing = notFollowingBackUsernames.filter((u) => !whitelist.includes(u));
-        const mapToDetailed = (arr) => arr.map((u) => ({ username: u, url: "https://www.instagram.com/" + u + "/" }));
+        const allUsersMap = new Map();
+        [...followingDetailed, ...followersDetailed].forEach((u) => {
+          if (u?.username) allUsersMap.set(u.username, u);
+        });
+        const mapToDetailed = (arr) => arr.map((u) => {
+          const userObj = allUsersMap.get(u) || {};
+          return {
+            ...userObj,
+            username: u,
+            url: "https://www.instagram.com/" + u + "/"
+          };
+        });
         const notFollowingBackDetailed = mapToDetailed(filteredNotFollowing);
         const fansDetailed = mapToDetailed(fansUsernames);
         const mutualsDetailed = mapToDetailed(mutualsUsernames);
@@ -1305,6 +1639,86 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         if (btnRun) btnRun.disabled = false;
       }
     },
+    runStorySpy: async (username, btnElement) => {
+      if (btnElement) {
+        if (btnElement.disabled) return;
+        btnElement.disabled = true;
+        btnElement.innerHTML = '<span style="opacity:0.7;">Scanning...</span>';
+      }
+      try {
+        UI.log(`[Spy Module] Checking story visibility for @${username}...`);
+        const status = await API.checkStoryStatus(username);
+        if (!status) {
+          await UI.confirmAction("Error", `Could not fetch data for @${username}. The profile might be unavailable or rate-limited.`, "Close", false);
+          return;
+        }
+        let probability = 0;
+        let reason = "";
+        if (!status.isPrivate) {
+          if ((status.anonHighlightsCount > 0 || status.anonHasStory) && (status.authHighlightsCount === 0 && !status.authHasStory)) {
+            probability = 100;
+            reason = "We detected highlights or stories anonymously (guest session), but <b>NONE</b> while logged in with your account. This user is actively hiding stories from you.";
+          } else if (status.authHighlightsCount > 0 || status.authHasStory) {
+            probability = 0;
+            reason = "Highlights or active stories are visible to you normally. No anomaly detected.";
+          } else {
+            probability = 0;
+            reason = "No active stories or highlights detected either logged in or anonymously. The user currently has no stories/highlights published.";
+          }
+        } else {
+          Storage.addStoryObservation(username, {
+            highlights: status.authHighlightsCount,
+            hasStory: status.authHasStory
+          });
+          const history = Storage.getStoryObservations(username);
+          if (history.length > 1) {
+            const previous = history[history.length - 2];
+            const current = history[history.length - 1];
+            if (previous.highlights > 0 && current.highlights === 0) {
+              probability = 75;
+              reason = `On ${previous.timestamp.split("T")[0]} this private account had visible highlights. In this scan they show 0. They might have hidden you from stories, or deleted/archived their highlights.`;
+            } else if (current.highlights > 0 || current.hasStory) {
+              probability = 0;
+              reason = "Highlights or stories are visible to you normally. No anomaly detected.";
+            } else {
+              probability = 0;
+              reason = "No highlights currently detected. Need more chronological observation points to detect changes.";
+            }
+          } else {
+            probability = 0;
+            reason = "First observation recorded for this private account. Future checks will compare against this baseline to detect if highlights vanish.";
+          }
+        }
+        let statusColor = "#22c55e";
+        if (probability >= 75) statusColor = "#ef4444";
+        else if (probability > 0) statusColor = "#eab308";
+        let resultHtml = `
+                <div style="text-align:center; margin-bottom: 14px;">
+                    <div style="font-size: 26px; font-weight: bold; color: ${statusColor};">${probability}% Probability</div>
+                    <div style="font-size: 13px; color: #8e8e8e; margin-top: 2px;">Story / Highlight Hiding Detected</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.06); padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.4; border: 1px solid rgba(255,255,255,0.1);">
+                    ${reason}
+                </div>
+                <div style="margin-top: 14px; font-size: 12px; color: #8e8e8e; line-height: 1.6; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
+                    <b>Target:</b> @${username} (${status.isPrivate ? "Private" : "Public"})<br>
+                    <b>Highlights (Logged In):</b> ${status.authHighlightsCount > 0 ? `Visible (${status.authHighlightsCount})` : "None detected"}<br>
+                    <b>Story (Logged In):</b> ${status.authHasStory ? "Active Story" : "None"}<br>
+                    ${!status.isPrivate ? `<b>Highlights (Guest):</b> ${status.anonHighlightsCount > 0 ? `Visible (${status.anonHighlightsCount})` : "None"}<br><b>Story (Guest):</b> ${status.anonHasStory ? "Active Story" : "None"}` : "<i>Guest check not applicable to private accounts.</i>"}
+                </div>
+            `;
+        UI.log(`[Spy Module] @${username}: ${probability}% anomaly probability (${status.isPrivate ? "Private" : "Public"}).`);
+        await UI.confirmAction(`Story Spy: @${username}`, resultHtml, "Close", false, Icons.spy);
+      } catch (e) {
+        Utils.logError("Error in runStorySpy", e);
+        await UI.confirmAction("Error", "An unexpected error occurred while running the spy check.", "Close", false);
+      } finally {
+        if (btnElement) {
+          btnElement.disabled = false;
+          btnElement.innerHTML = `${Icons.spy} Check Story`;
+        }
+      }
+    },
     bindEvents: () => {
       const btnRun = document.getElementById("ig-run");
       if (btnRun) btnRun.onclick = App.run;
@@ -1334,6 +1748,19 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           }
         };
       }
+      const panel = document.getElementById("ig-analyzer-panel");
+      if (panel) {
+        panel.addEventListener("click", async (e) => {
+          const btnSpy = e.target.closest(".btn-spy-story");
+          if (!btnSpy) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (btnSpy.disabled) return;
+          const username = btnSpy.getAttribute("data-user");
+          if (!username) return;
+          await App.runStorySpy(username, btnSpy);
+        });
+      }
       document.addEventListener("keydown", (e) => {
         const tag = document.activeElement.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) return;
@@ -1342,6 +1769,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       });
     }
   };
+  window.App = App;
   const TOUR_SEEN_KEY = "ig_tour_completed_v1";
   function getTamperGuide() {
     if (typeof window !== "undefined" && typeof window.tamperGuide === "function") {
@@ -1506,6 +1934,7 @@ popoverOffset: 12,
     return guide;
   }
   UI.init();
+  window.App = App;
   App.bindEvents();
   setTimeout(() => {
     startTour();

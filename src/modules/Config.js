@@ -19,7 +19,7 @@ export const CONFIG = {
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
     PAGE_SIZE: 50,
-    BASE_RATE_LIMIT_MS: 1500, 
+    BASE_RATE_LIMIT_MS: 2000, // Increased pacing for native REST API sensitivity
     MAX_RETRIES: 4,           
     DEBUG: false,
     MIN_VISIBLE_PX: 50,
