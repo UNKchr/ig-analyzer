@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.8.2] - 2026-09-10
+
+### Added
+
+- **Multilingual Userscript Metadata (Localization):**
+  - Added localized `@name` and `@description` userscript tags to expand global visibility and accessibility across script repositories (Greasyfork, Sleazyfork, OpenUserJS) and browser userscript managers.
+  - Supported locales:
+    - Spanish (`es`, `es-419`): *"Analizador de seguidores de Instagram"* / *"Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos."*
+    - Portuguese (`pt`, `pt-BR`, `pt-PT`): *"Analisador de seguidores do Instagram"* / *"Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados."*
+  - Configured seamlessly through Vite's `LocaleType` structure in `vite.config.js`.
+
 ## [3.8.1] - 2026-09-10
 
 ### Fixed

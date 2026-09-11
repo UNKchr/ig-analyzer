@@ -1,23 +1,33 @@
 // ==UserScript==
-// @name         Instagram Follower Analyzer
-// @namespace    https://github.com/UNKchr/ig-analyzer
-// @version      3.8.1
-// @author       UNKchr
-// @description  Analyze Instagram followers and following lists with native REST API, Anti-Ban retry logic, Story Anomaly Spy, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.
-// @license      MIT
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=instagram.com
-// @downloadURL  https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
-// @updateURL    https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
-// @match        https://www.instagram.com/*
-// @require      https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@e7907fd8af1af0bc3af0abdcdc756d38818c217c/tamperguide/tamperGuide.js
-// @grant        GM_addStyle
-// @grant        GM_deleteValue
-// @grant        GM_getValue
-// @grant        GM_info
-// @grant        GM_listValues
-// @grant        GM_registerMenuCommand
-// @grant        GM_setValue
-// @grant        unsafeWindow
+// @name                Instagram Follower Analyzer
+// @name:es             Analizador de seguidores de Instagram
+// @name:es-419         Analizador de seguidores de Instagram
+// @name:pt             Analisador de seguidores do Instagram
+// @name:pt-BR          Analisador de seguidores do Instagram
+// @name:pt-PT          Analisador de seguidores do Instagram
+// @namespace           https://github.com/UNKchr/ig-analyzer
+// @version             3.8.2
+// @author              UNKchr
+// @description         Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
+// @description:es      Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.
+// @description:es-419  Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.
+// @description:pt      Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados.
+// @description:pt-BR   Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados.
+// @description:pt-PT   Analisa seguidores e quem não te segue de volta no Instagram, deteta anomalias em stories e exporte dados.
+// @license             MIT
+// @icon                https://www.google.com/s2/favicons?sz=64&domain=instagram.com
+// @downloadURL         https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
+// @updateURL           https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js
+// @match               https://www.instagram.com/*
+// @require             https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@e7907fd8af1af0bc3af0abdcdc756d38818c217c/tamperguide/tamperGuide.js
+// @grant               GM_addStyle
+// @grant               GM_deleteValue
+// @grant               GM_getValue
+// @grant               GM_info
+// @grant               GM_listValues
+// @grant               GM_registerMenuCommand
+// @grant               GM_setValue
+// @grant               unsafeWindow
 // ==/UserScript==
 
 (function () {

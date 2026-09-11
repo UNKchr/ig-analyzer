@@ -7,10 +7,24 @@ export default defineConfig({
     monkey({
       entry: 'src/modules/main.js',
       userscript: {
-        name: 'Instagram Follower Analyzer',
+        name: {
+          '': 'Instagram Follower Analyzer',
+          es: 'Analizador de seguidores de Instagram',
+          'es-419': 'Analizador de seguidores de Instagram',
+          pt: 'Analisador de seguidores do Instagram',
+          'pt-BR': 'Analisador de seguidores do Instagram',
+          'pt-PT': 'Analisador de seguidores do Instagram',
+        },
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.8.1', 
-        description: 'Analyze Instagram followers and following lists with native REST API, Anti-Ban retry logic, Story Anomaly Spy, Progress Bar, CSV Export, Advanced Metrics, and Backup/Restore.',
+        version: '3.8.2', 
+        description: {
+          '': 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',
+          es: 'Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.',
+          'es-419': 'Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.',
+          pt: 'Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados.',
+          'pt-BR': 'Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados.',
+          'pt-PT': 'Analisa seguidores e quem não te segue de volta no Instagram, deteta anomalias em stories e exporte dados.',
+        },
         author: 'UNKchr',
         match: ['https://www.instagram.com/*'],
         updateURL: 'https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js',
