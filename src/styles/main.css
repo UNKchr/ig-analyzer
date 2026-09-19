@@ -226,6 +226,49 @@
     transform: translateY(0);
 }
 
+.ig-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: var(--ig-btn-disabled-bg) !important;
+    border-color: var(--ig-btn-disabled-border) !important;
+    color: var(--ig-btn-disabled-text) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+.ig-btn-primary {
+    background: var(--ig-accent);
+    border-color: var(--ig-accent);
+    color: #fff;
+}
+
+.ig-btn-primary:hover:not(:disabled) {
+    background: var(--ig-accent-hover);
+    border-color: var(--ig-accent-hover);
+}
+
+.ig-btn-danger {
+    background: var(--ig-danger);
+    border-color: var(--ig-danger);
+    color: #fff;
+}
+
+.ig-btn-danger:hover:not(:disabled) {
+    background: var(--ig-danger-hover);
+    border-color: var(--ig-danger-hover);
+}
+
+.ig-btn-success {
+    background: var(--ig-success);
+    border-color: var(--ig-success);
+    color: #fff;
+}
+
+.ig-btn-success:hover:not(:disabled) {
+    background: var(--ig-success-hover);
+    border-color: var(--ig-success-hover);
+}
+
 
 /* ============================================================
    Local Backup Tools
@@ -831,7 +874,8 @@
 /* ============================================================
    Whitelist Button
    ============================================================ */
-.btn-whitelist {
+.btn-whitelist,
+.ig-btn-whitelist {
     background: var(--ig-btn-bg) !important;
     border: 1px solid var(--ig-btn-border) !important;
     color: var(--ig-text-muted) !important;
@@ -844,7 +888,8 @@
     cursor: pointer;
 }
 
-.btn-whitelist:hover {
+.btn-whitelist:hover,
+.ig-btn-whitelist:hover {
     background: var(--ig-bg-hover) !important;
     border-color: var(--ig-text-muted) !important;
     color: var(--ig-text-main) !important;
@@ -853,7 +898,8 @@
 /* ============================================================
    Story Spy Button
    ============================================================ */
-.btn-spy-story {
+.btn-spy-story,
+.ig-btn-spy-story {
     display: inline-flex !important;
     align-items: center !important;
     gap: 4px !important;
@@ -1097,4 +1143,49 @@
     background: var(--ig-accent-hover);
     border-color: var(--ig-accent-hover);
     transform: translateY(-1px);
+}
+
+/* ============================================================
+   Pagination Controls
+   ============================================================ */
+.ig-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 4px 4px 4px;
+    margin-top: 10px;
+    border-top: 1px solid var(--ig-panel-border);
+    font-size: 11px;
+    color: var(--ig-text-muted);
+}
+
+.ig-page-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 10px;
+    border-radius: var(--ig-radius-sm);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--ig-btn-bg);
+    color: var(--ig-btn-text);
+    border: 1px solid var(--ig-btn-border);
+    transition: all 0.2s ease;
+}
+
+.ig-page-btn:hover:not(:disabled) {
+    background: var(--ig-bg-hover);
+    color: var(--ig-text-bright);
+    border-color: var(--ig-accent);
+}
+
+.ig-page-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.ig-page-info {
+    font-weight: 500;
+    letter-spacing: 0.02em;
 }

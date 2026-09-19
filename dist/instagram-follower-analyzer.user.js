@@ -6,7 +6,7 @@
 // @name:pt-BR          Analisador de seguidores do Instagram
 // @name:pt-PT          Analisador de seguidores do Instagram
 // @namespace           https://github.com/UNKchr/ig-analyzer
-// @version             3.8.2
+// @version             3.9.0
 // @author              UNKchr
 // @description         Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
 // @description:es      Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.
@@ -28,6 +28,7 @@
 // @grant               GM_registerMenuCommand
 // @grant               GM_setValue
 // @grant               unsafeWindow
+// @noframes
 // ==/UserScript==
 
 (function () {
@@ -58,12 +59,30 @@
     PAGE_SIZE: 50,
     BASE_RATE_LIMIT_MS: 2e3,
 MAX_RETRIES: 4,
-    DEBUG: false,
+    COOLDOWN_429_MS: 6e4,
+MAX_AUTO_VERIFY_ACCOUNTS: 5,
+ASBD_ID: "359341",
+DEBUG: false,
     MIN_VISIBLE_PX: 50,
     DEFAULT_POSITION: { top: 80, right: 20 }
   };
   const Utils = {
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    sleep: (ms, signal = null) => new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        return reject(new DOMException("Aborted", "AbortError"));
+      }
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      const timer = setTimeout(() => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }),
     now: () => ( new Date()).toISOString(),
     log: (msg) => console.log(`[IG Analyzer] ${msg}`),
     logError: (msg, err) => console.error(`[IG Analyzer Error] ${msg}`, err),
@@ -85,16 +104,36 @@ MAX_RETRIES: 4,
       const safeUser = encodeURIComponent(username || "");
       return `https://www.instagram.com/${safeUser}/`;
     },
+    sanitizeImageUrl: (url) => {
+      if (!url || typeof url !== "string") return null;
+      try {
+        const parsed = new URL(url, window.location.origin);
+        if (parsed.protocol === "https:") {
+          return Utils.escapeHtml(parsed.href);
+        }
+      } catch (e) {
+        Utils.logError("Error parsing image URL", e);
+      }
+      return null;
+    },
+    getCsrfToken: () => {
+      const match = document.cookie.match(/(?:^|;\s*)csrftoken=([a-zA-Z0-9_-]+)/);
+      return match ? match[1] : "";
+    },
     getUserId: () => {
-      const matchCookie = document.cookie.match(/ds_user_id=([1-9][0-9]*)/);
+      const matchCookie = document.cookie.match(/(?:^|;\s*)ds_user_id=([1-9][0-9]*)/);
       if (matchCookie && matchCookie[1] && matchCookie[1] !== "0") {
         return matchCookie[1];
       }
       try {
         const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-        const viewerId = win._sharedData?.config?.viewerId || win.__initialData?.pending?.viewer?.id || win._sharedData?.rawProfileUser?.id;
+        const viewerId = win._sharedData?.config?.viewerId || win.__initialData?.pending?.viewer?.id || win.__initialData?.data?.viewer?.id || win._sharedData?.rawProfileUser?.id;
         if (viewerId && String(viewerId) !== "0" && /^[1-9][0-9]*$/.test(String(viewerId))) {
           return String(viewerId);
+        }
+        const lsId = win.localStorage?.getItem("ds_user_id") || win.sessionStorage?.getItem("ds_user_id");
+        if (lsId && String(lsId) !== "0" && /^[1-9][0-9]*$/.test(String(lsId))) {
+          return String(lsId);
         }
       } catch (e) {
       }
@@ -121,65 +160,71 @@ MAX_RETRIES: 4,
       }
       return null;
     },
-    getUserIdAsync: async () => {
+    getUserIdAsync: async (signal = null) => {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       const syncId = Utils.getUserId();
       if (syncId && syncId !== "0") {
         return syncId;
       }
+      const csrf = Utils.getCsrfToken();
+      const baseHeaders = {
+        "X-IG-App-ID": "936619743392459",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-ASBD-ID": CONFIG.ASBD_ID,
+        ...csrf ? { "X-CSRFToken": csrf } : {}
+      };
       try {
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const res = await fetch("https://www.instagram.com/api/v1/accounts/edit/web_form_data/", {
-          headers: {
-            "X-IG-App-ID": "936619743392459",
-            "X-Requested-With": "XMLHttpRequest"
-          },
-          credentials: "include"
+          headers: baseHeaders,
+          credentials: "include",
+          signal
         });
         if (res.ok) {
           const data = await res.json();
           const username = data?.form_data?.username;
           if (username) {
-            const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
-              headers: {
-                "X-IG-App-ID": "936619743392459",
-                "X-Requested-With": "XMLHttpRequest"
-              },
-              credentials: "include"
+            if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+            const profileRes = await fetch(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
+              credentials: "include",
+              signal
             });
             if (profileRes.ok) {
-              const profileJson = await profileRes.json();
-              const id = profileJson?.data?.user?.id;
-              if (id && String(id) !== "0") return String(id);
+              const html = await profileRes.text();
+              const idMatch = html.match(/"id"\s*:\s*"([1-9][0-9]*)"/) || html.match(/"user_id"\s*:\s*"([1-9][0-9]*)"/) || html.match(/"pk"\s*:\s*"([1-9][0-9]*)"/);
+              if (idMatch && idMatch[1] && idMatch[1] !== "0") return idMatch[1];
             }
           }
         }
       } catch (e) {
+        if (e.name === "AbortError" || signal?.aborted) throw e;
         Utils.logError("Async user ID detection fallback A failed", e);
       }
       try {
-        const links = Array.from(document.querySelectorAll('a[href^="/"]'));
-        for (const link of links) {
-          const href = link.getAttribute("href") || "";
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const navLink = document.querySelector('nav a[href^="/"][role="link"], a[href^="/"][aria-label*="Profile" i], a[href^="/"][aria-label*="Perfil" i]');
+        if (navLink) {
+          const href = navLink.getAttribute("href") || "";
           const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
           if (match) {
             const candidate = match[1];
-            const systemRoutes = ["explore", "reels", "direct", "stories", "your_activity", "settings", "accounts", "developer", "about"];
-            if (!systemRoutes.includes(candidate.toLowerCase()) && (link.querySelector("img") || link.querySelector("svg"))) {
-              const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${candidate}`, {
-                headers: {
-                  "X-IG-App-ID": "936619743392459",
-                  "X-Requested-With": "XMLHttpRequest"
-                },
-                credentials: "include"
+            const systemRoutes = ["explore", "reels", "direct", "stories", "your_activity", "settings", "accounts", "developer", "about", "p", "reel"];
+            if (!systemRoutes.includes(candidate.toLowerCase())) {
+              if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+              const profileRes = await fetch(`https://www.instagram.com/${encodeURIComponent(candidate)}/`, {
+                credentials: "include",
+                signal
               });
               if (profileRes.ok) {
-                const profileJson = await profileRes.json();
-                const id = profileJson?.data?.user?.id;
-                if (id && String(id) !== "0") return String(id);
+                const html = await profileRes.text();
+                const idMatch = html.match(/"id"\s*:\s*"([1-9][0-9]*)"/) || html.match(/"user_id"\s*:\s*"([1-9][0-9]*)"/) || html.match(/"pk"\s*:\s*"([1-9][0-9]*)"/);
+                if (idMatch && idMatch[1] && idMatch[1] !== "0") return idMatch[1];
               }
             }
           }
         }
       } catch (e) {
+        if (e.name === "AbortError" || signal?.aborted) throw e;
         Utils.logError("Async user ID detection fallback B failed", e);
       }
       return null;
@@ -241,7 +286,16 @@ MAX_RETRIES: 4,
     },
     exportCSV: (data, filename) => {
       if (!data || !data.length) return;
-      const csvContent = "Username,Profile URL\n" + data.map((u) => u.username + "," + u.url).join("\n");
+      const sanitizeCell = (val) => {
+        let text = String(val ?? "");
+        if (/^[=+\-@\t\r]/.test(text)) {
+          text = "'" + text;
+        }
+        return `"${text.replace(/"/g, '""')}"`;
+      };
+      const header = ["Username", "Profile URL"].map(sanitizeCell).join(",");
+      const rows = data.map((u) => [u.username, u.url].map(sanitizeCell).join(","));
+      const csvContent = "\uFEFF" + [header, ...rows].join("\r\n");
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
@@ -249,30 +303,82 @@ MAX_RETRIES: 4,
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
     }
   };
+  let currentUserId = null;
   const Storage = {
-    load: () => {
+    setCurrentUserId: (id) => {
+      if (id && String(id) !== "0") {
+        currentUserId = String(id);
+      }
+    },
+    getCurrentUserId: () => {
+      if (!currentUserId) {
+        const detected = Utils.getUserId();
+        if (detected && String(detected) !== "0") {
+          currentUserId = String(detected);
+        }
+      }
+      return currentUserId;
+    },
+    getKey: (baseKey, userId = null) => {
+      const id = userId || Storage.getCurrentUserId();
+      return id ? `${baseKey}_${id}` : baseKey;
+    },
+    getScopedValue: (baseKey, defaultValue = null, userId = null) => {
+      const id = userId || Storage.getCurrentUserId();
+      if (id) {
+        const scopedKey = `${baseKey}_${id}`;
+        const val = GM_getValue(scopedKey, void 0);
+        if (val !== void 0 && val !== null) {
+          return val;
+        }
+        const legacyVal = GM_getValue(baseKey, void 0);
+        if (legacyVal !== void 0 && legacyVal !== null) {
+          try {
+            GM_setValue(scopedKey, legacyVal);
+            Utils.log(`[Storage] Migrated legacy data for "${baseKey}" to account key "${scopedKey}".`);
+          } catch (e) {
+            Utils.logError("Error migrating legacy storage key", e);
+          }
+          return legacyVal;
+        }
+      }
+      return GM_getValue(baseKey, defaultValue);
+    },
+    setScopedValue: (baseKey, value, userId = null) => {
+      const id = userId || Storage.getCurrentUserId();
+      const key = id ? `${baseKey}_${id}` : baseKey;
+      GM_setValue(key, value);
+    },
+    load: (userId = null) => {
       try {
-        const snap = GM_getValue(CONFIG.STORAGE_KEY, null);
+        const snap = Storage.getScopedValue(CONFIG.STORAGE_KEY, null, userId);
         return snap && Array.isArray(snap.followers) ? snap : null;
       } catch (e) {
         Utils.logError("Error loading snapshot", e);
         return null;
       }
     },
-    save: (data) => GM_setValue(CONFIG.STORAGE_KEY, data),
-    getWhitelist: () => GM_getValue(CONFIG.WHITELIST_KEY, []),
-    addToWhitelist: (username) => {
-      const wl = Storage.getWhitelist();
+    save: (data, userId = null) => {
+      Storage.setScopedValue(CONFIG.STORAGE_KEY, data, userId);
+    },
+    getWhitelist: (userId = null) => {
+      return Storage.getScopedValue(CONFIG.WHITELIST_KEY, [], userId);
+    },
+    addToWhitelist: (username, userId = null) => {
+      const wl = Storage.getWhitelist(userId);
       if (!wl.includes(username)) {
         wl.push(username);
-        GM_setValue(CONFIG.WHITELIST_KEY, wl);
+        Storage.setScopedValue(CONFIG.WHITELIST_KEY, wl, userId);
       }
     },
-    getHistory: () => GM_getValue(CONFIG.HISTORY_KEY, []),
-    addHistoryEntry: (followersCount, followingCount) => {
-      const hist = Storage.getHistory();
+    getHistory: (userId = null) => {
+      return Storage.getScopedValue(CONFIG.HISTORY_KEY, [], userId);
+    },
+    addHistoryEntry: (followersCount, followingCount, userId = null) => {
+      const hist = Storage.getHistory(userId);
       const dateStr = Utils.now().split("T")[0];
       const existingIdx = hist.findIndex((h) => h.date === dateStr);
       if (existingIdx > -1) {
@@ -280,23 +386,25 @@ MAX_RETRIES: 4,
       } else {
         hist.push({ date: dateStr, followers: followersCount, following: followingCount });
       }
-      GM_setValue(CONFIG.HISTORY_KEY, hist);
+      Storage.setScopedValue(CONFIG.HISTORY_KEY, hist, userId);
     },
-    getNominalList: (key) => GM_getValue(key, []),
-    addNominalEntries: (key, usernames) => {
+    getNominalList: (key, userId = null) => {
+      return Storage.getScopedValue(key, [], userId);
+    },
+    addNominalEntries: (key, usernames, userId = null) => {
       if (!usernames || usernames.length === 0) return;
-      const list = Storage.getNominalList(key);
+      const list = Storage.getNominalList(key, userId);
       const dateStr = Utils.now().split("T")[0];
       usernames.forEach((u) => {
         if (!list.find((x) => x.username === u)) {
           list.push({ username: u, date: dateStr });
         }
       });
-      GM_setValue(key, list);
+      Storage.setScopedValue(key, list, userId);
     },
-    addRenamedEntries: (entries) => {
+    addRenamedEntries: (entries, userId = null) => {
       if (!Array.isArray(entries) || entries.length === 0) return;
-      const list = Storage.getNominalList(CONFIG.RENAMED_KEY);
+      const list = Storage.getNominalList(CONFIG.RENAMED_KEY, userId);
       const dateStr = Utils.now().split("T")[0];
       entries.forEach((entry) => {
         if (!entry?.id || !entry?.oldUsername || !entry?.newUsername) return;
@@ -311,31 +419,40 @@ MAX_RETRIES: 4,
           });
         }
       });
-      GM_setValue(CONFIG.RENAMED_KEY, list);
+      Storage.setScopedValue(CONFIG.RENAMED_KEY, list, userId);
     },
-    getStoryObservations: (username) => {
-      const obs = GM_getValue(CONFIG.STORY_OBS_KEY, {});
+    getStoryObservations: (username, userId = null) => {
+      const obs = Storage.getScopedValue(CONFIG.STORY_OBS_KEY, {}, userId);
       return obs[username] || [];
     },
-    addStoryObservation: (username, data) => {
-      const obs = GM_getValue(CONFIG.STORY_OBS_KEY, {});
+    addStoryObservation: (username, data, userId = null) => {
+      const obs = Storage.getScopedValue(CONFIG.STORY_OBS_KEY, {}, userId);
       if (!obs[username]) obs[username] = [];
       data.timestamp = Utils.now();
       obs[username].push(data);
       if (obs[username].length > 10) {
         obs[username].shift();
       }
-      GM_setValue(CONFIG.STORY_OBS_KEY, obs);
+      Storage.setScopedValue(CONFIG.STORY_OBS_KEY, obs, userId);
     },
-    resetAll: () => {
-      GM_deleteValue(CONFIG.STORAGE_KEY);
-      GM_deleteValue(CONFIG.WHITELIST_KEY);
-      GM_deleteValue(CONFIG.HISTORY_KEY);
-      GM_deleteValue(CONFIG.CHURN_KEY);
-      GM_deleteValue(CONFIG.DEACTIVATED_KEY);
-      GM_deleteValue(CONFIG.BLOCKED_KEY);
-      GM_deleteValue(CONFIG.RENAMED_KEY);
-      GM_deleteValue(CONFIG.STORY_OBS_KEY);
+    resetAll: (userId = null) => {
+      const keys = [
+        CONFIG.STORAGE_KEY,
+        CONFIG.WHITELIST_KEY,
+        CONFIG.HISTORY_KEY,
+        CONFIG.CHURN_KEY,
+        CONFIG.DEACTIVATED_KEY,
+        CONFIG.BLOCKED_KEY,
+        CONFIG.RENAMED_KEY,
+        CONFIG.STORY_OBS_KEY
+      ];
+      keys.forEach((k) => {
+        const id = userId || Storage.getCurrentUserId();
+        if (id) {
+          GM_deleteValue(`${k}_${id}`);
+        }
+        GM_deleteValue(k);
+      });
     }
   };
   const BACKUP_MAX_DEPTH = 20;
@@ -384,6 +501,42 @@ MAX_RETRIES: 4,
     });
   };
   const isSafeStorageKey = (key) => typeof key === "string" && key.length > 0 && !BACKUP_UNSAFE_KEYS.has(key);
+  const ALLOWED_BACKUP_KEY_BASES = [
+    CONFIG.STORAGE_KEY,
+    CONFIG.WHITELIST_KEY,
+    CONFIG.HISTORY_KEY,
+    CONFIG.CHURN_KEY,
+    CONFIG.DEACTIVATED_KEY,
+    CONFIG.BLOCKED_KEY,
+    CONFIG.RENAMED_KEY,
+    CONFIG.STORY_ANOMALY_KEY,
+    CONFIG.STORY_OBS_KEY,
+    CONFIG.TOUR_KEY,
+    CONFIG.POSITION_KEY,
+    "followers",
+    "following",
+    "followersDetailed",
+    "followingDetailed",
+    "notFollowingBackDetailed",
+    "fansDetailed",
+    "mutualsDetailed",
+    "unfollowers",
+    "deactivated",
+    "blocked",
+    "renamed",
+    "history"
+  ];
+  const isAuthorizedBackupKey = (key) => {
+    if (!isSafeStorageKey(key)) return false;
+    return ALLOWED_BACKUP_KEY_BASES.some((base) => {
+      if (key === base) return true;
+      if (key.startsWith(base + "_")) {
+        const suffix = key.slice(base.length + 1);
+        return /^[0-9]+$/.test(suffix);
+      }
+      return false;
+    });
+  };
   const readFileAsText = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
@@ -619,8 +772,8 @@ MAX_RETRIES: 4,
       return { valid: false, reason: "The backup appears to be corrupted or truncated." };
     }
     for (const [key, value] of dataEntries) {
-      if (!isSafeStorageKey(key)) {
-        return { valid: false, reason: `The key "${key}" is not safe.` };
+      if (!isAuthorizedBackupKey(key)) {
+        return { valid: false, reason: `The key "${key}" is not recognized or authorized for this script.` };
       }
       if (!isSafeJsonValue(value)) {
         return { valid: false, reason: `The key "${key}" contains unsupported values.` };
@@ -793,9 +946,10 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     minimize: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     mailbox: '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 6H17.2C18.8802 6 19.7202 6 20.362 6.32698C20.9265 6.6146 21.3854 7.07354 21.673 7.63803C22 8.27976 22 9.11984 22 10.8V18H11M7 6C9.20914 6 11 7.79086 11 10V18M7 6C4.79086 6 3 7.79086 3 10V18H11M17 3H14V12M10 18V21H14V18M7 12H7.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
     metrics: '<svg fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" xml:space="preserve"><g><path d="M72,22H28c-3.3,0-6,2.7-6,6v44c0,3.3,2.7,6,6,6h44c3.3,0,6-2.7,6-6V28C78,24.7,75.3,22,72,22z M38,66 c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V55c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M48,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V40 c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M58,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V34c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z M68,66c0,1.1-0.9,2-2,2h-2c-1.1,0-2-0.9-2-2V47c0-1.1,0.9-2,2-2h2c1.1,0,2,0.9,2,2V66z"></path></g></svg>',
-    spy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M11 8a3 3 0 0 0-3 3"/></svg>'
+    spy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M11 8a3 3 0 0 0-3 3"/></svg>',
+    stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align: middle;"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"/></svg>'
   };
-  const mainCss = ':root{--ig-panel-bg: rgba(15, 15, 20, .92);--ig-panel-border: rgba(255, 255, 255, .08);--ig-text-main: #e5e7eb;--ig-text-muted: #6b7280;--ig-text-bright: #f9fafb;--ig-bg-input: rgba(255, 255, 255, .04);--ig-bg-hover: rgba(255, 255, 255, .08);--ig-bg-active: rgba(255, 255, 255, .12);--ig-scrollbar-thumb: rgba(255, 255, 255, .12);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .5);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .3);--ig-accent: #3b82f6;--ig-accent-hover: #2563eb;--ig-accent-soft: rgba(59, 130, 246, .12);--ig-success: #22c55e;--ig-success-hover: #16a34a;--ig-danger: #ef4444;--ig-danger-hover: #dc2626;--ig-warning: #f59e0b;--ig-btn-bg: rgba(255, 255, 255, .06);--ig-btn-border: rgba(255, 255, 255, .1);--ig-btn-text: #d1d5db;--ig-btn-disabled-bg: rgba(255, 255, 255, .04);--ig-btn-disabled-border: rgba(255, 255, 255, .06);--ig-btn-disabled-text: rgba(255, 255, 255, .3);--ig-radius-sm: 6px;--ig-radius-md: 10px;--ig-radius-lg: 16px;--ig-radius-full: 999px}.ig-light-theme{--ig-panel-bg: rgba(255, 255, 255, .92);--ig-panel-border: rgba(0, 0, 0, .08);--ig-text-main: #374151;--ig-text-muted: #9ca3af;--ig-text-bright: #111827;--ig-bg-input: rgba(0, 0, 0, .03);--ig-bg-hover: rgba(0, 0, 0, .05);--ig-bg-active: rgba(0, 0, 0, .08);--ig-scrollbar-thumb: rgba(0, 0, 0, .12);--ig-scrollbar-thumb-hover: rgba(0, 0, 0, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .15);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .08);--ig-accent-soft: rgba(59, 130, 246, .08);--ig-btn-bg: rgba(0, 0, 0, .04);--ig-btn-border: rgba(0, 0, 0, .1);--ig-btn-text: #4b5563;--ig-btn-disabled-bg: rgba(0, 0, 0, .04);--ig-btn-disabled-border: rgba(0, 0, 0, .08);--ig-btn-disabled-text: rgba(0, 0, 0, .35)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:400px;height:510px;max-height:calc(100vh - 100px);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);color:var(--ig-text-main);box-shadow:var(--ig-shadow);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica Neue,sans-serif;font-size:13px;padding:20px;z-index:999999;border-radius:var(--ig-radius-lg);display:flex;flex-direction:column;resize:both;overflow:hidden;transition:background .3s ease,border-color .3s ease,box-shadow .3s ease}#ig-analyzer-panel *{box-sizing:border-box}#ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--ig-panel-border);cursor:move;-webkit-user-select:none;user-select:none}.ig-header-left{display:flex;align-items:center;gap:10px}.ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--ig-accent-soft);border-radius:var(--ig-radius-md);color:var(--ig-accent)}.ig-title{font-size:15px;font-weight:700;color:var(--ig-text-bright);letter-spacing:-.3px}.ig-header-right{display:flex;align-items:center}#ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--ig-bg-input);padding:5px 12px;border-radius:var(--ig-radius-full);color:var(--ig-text-muted);border:1px solid var(--ig-panel-border);transition:all .2s ease}.ig-status-dot{width:6px;height:6px;border-radius:50%;background:var(--ig-text-muted);display:inline-block;flex-shrink:0;animation:ig-pulse 2s ease-in-out infinite}@keyframes ig-pulse{0%,to{opacity:1}50%{opacity:.4}}.ig-actions-bar{display:flex;gap:8px;margin-bottom:14px}.ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:var(--ig-radius-sm);font-size:12px;font-weight:600;cursor:pointer;background:var(--ig-btn-bg);color:var(--ig-btn-text);border:1px solid var(--ig-btn-border);transition:all .2s cubic-bezier(.4,0,.2,1);flex:1;white-space:nowrap;line-height:1}.ig-btn-icon{display:inline-flex;align-items:center;opacity:.9}.ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--ig-shadow-sm)}.ig-btn:active:not(:disabled){transform:translateY(0)}.ig-backup-tools{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;padding:10px 12px;border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);background:var(--ig-bg-input)}.ig-backup-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--ig-text-muted)}.ig-backup-actions{display:flex;gap:8px}.ig-backup-btn{flex:1;min-width:0}.ig-backup-btn-export{border-color:#3b82f673;color:var(--ig-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:#3b82f624;border-color:#3b82f6b3}.ig-backup-btn-import{border-color:#f59e0b73;color:var(--ig-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:#f59e0b24;border-color:#f59e0bb3}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--ig-text-muted);min-height:16px}.ig-backup-status[data-state=success]{color:var(--ig-success)}.ig-backup-status[data-state=error]{color:var(--ig-danger)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}.ig-btn.ig-btn-primary{background:var(--ig-accent);border-color:var(--ig-accent);color:#fff}.ig-btn.ig-btn-primary:hover:not(:disabled){background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);color:#fff}#ig-export-csv:not(:disabled){background:#22c55e!important;border-color:#22c55e!important;color:#fff!important}#ig-export-csv:not(:disabled):hover{background:#16a34a!important;border-color:#16a34a!important;color:#fff!important}#ig-export-csv:disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;cursor:not-allowed!important;transform:none!important;box-shadow:none!important}#ig-export-csv:disabled .ig-btn-icon{opacity:.4}.ig-btn.ig-btn-danger{background:transparent;border-color:var(--ig-danger);color:var(--ig-danger)}.ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--ig-danger);border-color:var(--ig-danger);color:#fff}.ig-btn.ig-btn-primary:disabled,.ig-btn.ig-btn-danger:disabled{background:var(--ig-btn-disabled-bg);border-color:var(--ig-btn-disabled-border);color:var(--ig-btn-disabled-text);cursor:not-allowed;transform:none;box-shadow:none}.ig-btn:disabled .ig-btn-icon{opacity:.4}#ig-progress-container{width:100%;background:var(--ig-bg-input);border-radius:var(--ig-radius-full);height:4px;margin-bottom:14px;overflow:hidden;display:none;border:none}#ig-progress-bar{width:0%;background:linear-gradient(90deg,var(--ig-accent),#8b5cf6);height:100%;border-radius:var(--ig-radius-full);transition:width .4s cubic-bezier(.4,0,.2,1);position:relative}#ig-progress-bar:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.2),transparent);animation:ig-shimmer 1.5s infinite}@keyframes ig-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}.ig-tabs-container{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:0;padding:4px;background:var(--ig-bg-input);border-radius:var(--ig-radius-md)}.ig-tab-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:5px!important;padding:7px 10px!important;flex:auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--ig-text-muted)!important;font-size:11px!important;font-weight:500!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer!important;transition:all .2s ease!important;white-space:nowrap!important;line-height:1!important}.ig-tab-icon{display:inline-flex;align-items:center;flex-shrink:0}.ig-backup-tab-btn{min-width:0;color:var(--ig-text-muted)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn:hover{color:var(--ig-text-bright)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--ig-text-muted)!important}.ig-backup-tab-btn svg{width:14px;height:14px;display:block}.ig-backup-tab-btn .ig-backup-tab-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;line-height:0}.ig-backup-tab-btn .ig-backup-tab-icon svg{width:100%;height:100%;display:block}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#0000008c;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:1000000}.ig-backup-overlay.is-open{display:flex}.ig-backup-dialog{width:min(520px,100%);border-radius:var(--ig-radius-lg);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);box-shadow:var(--ig-shadow);padding:18px;display:flex;flex-direction:column;gap:14px;color:var(--ig-text-main)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--ig-text-bright)}.ig-backup-close-btn{border:0;background:transparent;color:var(--ig-text-muted);border-radius:0;padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .18s ease,color .18s ease}.ig-backup-close-btn:hover{color:var(--ig-text-bright);transform:scale(1.08)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--ig-text-muted)}.ig-backup-dialog-actions{display:flex;gap:8px}.ig-backup-dialog .ig-backup-btn{flex:1}.ig-tab-label{pointer-events:none}.ig-tab-btn:hover{color:var(--ig-text-main)!important;background:var(--ig-bg-hover)!important}.ig-tab-btn.active{background:var(--ig-bg-active)!important;color:var(--ig-text-bright)!important;font-weight:600!important;box-shadow:var(--ig-shadow-sm)!important}.ig-view{display:none}.ig-view.active{display:block}.ig-view-container{flex-grow:1;overflow-y:auto;background:var(--ig-bg-input);border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);padding:14px;font-size:12px;color:var(--ig-text-main);margin-top:8px}.ig-view-container::-webkit-scrollbar{width:5px}.ig-view-container::-webkit-scrollbar-track{background:transparent}.ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:10px}.ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}#ig-log{font-family:SF Mono,Cascadia Code,Fira Code,ui-monospace,monospace;font-size:11px;line-height:1.6}.ig-log-entry{padding:3px 0;color:var(--ig-text-main);border-bottom:1px solid var(--ig-panel-border);transition:background .15s ease}.ig-log-entry:last-child{border-bottom:none}.ig-log-entry:hover{background:var(--ig-bg-hover);border-radius:4px;padding-left:6px}.ig-log-time{color:var(--ig-accent);font-weight:500}.ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--ig-text-bright);letter-spacing:-.2px}.ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--ig-accent-soft);color:var(--ig-accent);padding:0 7px;border-radius:var(--ig-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:none}.ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--ig-text-muted);font-size:12px;padding:32px 16px;text-align:center}.ig-empty-icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;color:var(--ig-text-muted);opacity:.5}.ig-empty-icon svg{width:100%;height:100%}.ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-sm);transition:all .3s cubic-bezier(.4,0,.2,1)}.ig-user-row:last-child{border-bottom:none}.ig-user-row:hover{background:var(--ig-bg-hover)}.ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}.ig-user-avatar{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--ig-accent-soft);color:var(--ig-accent);font-size:11px;font-weight:700;flex-shrink:0}.ig-username{color:var(--ig-text-bright);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-view-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:12px;padding:4px 8px;border-radius:var(--ig-radius-sm);transition:all .15s ease}.ig-view-link:hover{background:var(--ig-accent-soft);text-decoration:none}.btn-whitelist{background:var(--ig-btn-bg)!important;border:1px solid var(--ig-btn-border)!important;color:var(--ig-text-muted)!important;padding:4px 10px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer}.btn-whitelist:hover{background:var(--ig-bg-hover)!important;border-color:var(--ig-text-muted)!important;color:var(--ig-text-main)!important}.btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#8b5cf61a!important;border:1px solid rgba(139,92,246,.3)!important;color:#a78bfa!important;padding:4px 8px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)!important;-webkit-user-select:none!important;user-select:none!important}.btn-spy-story:hover:not(:disabled){background:#8b5cf638!important;border-color:#a78bfa!important;color:#f3f4f6!important;transform:translateY(-1px)}.btn-spy-story:active:not(:disabled){transform:translateY(0)}.btn-spy-story:disabled{opacity:.6!important;cursor:not-allowed!important}.btn-spy-story svg{width:12px;height:12px;flex-shrink:0}.ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:12px}.ig-table thead th{color:var(--ig-text-muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 8px 10px;border-bottom:1px solid var(--ig-panel-border);position:sticky;top:0;background:var(--ig-bg-input)}.ig-table td{padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);color:var(--ig-text-main)}.ig-table tbody tr{transition:background .15s ease}.ig-table tbody tr:hover{background:var(--ig-bg-hover)}.ig-table tbody tr:last-child td{border-bottom:none}.ig-table-user{font-weight:500;color:var(--ig-text-bright)}.ig-table-date{color:var(--ig-text-muted);font-size:11px;font-variant-numeric:tabular-nums}.ig-table-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:11px}.ig-table-link:hover{text-decoration:underline}.ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:500}.ig-modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:ig-fade-in .2s ease}@keyframes ig-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:#1a1a2e;border:1px solid rgba(255,255,255,.08);padding:32px 28px;border-radius:var(--ig-radius-lg);width:380px;max-width:90vw;text-align:center;color:#f3f4f6;box-shadow:0 25px 50px -12px #0009;display:flex;flex-direction:column;align-items:center;animation:ig-modal-slide-in .3s cubic-bezier(.4,0,.2,1)}@keyframes ig-modal-slide-in{0%{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:56px;height:56px;color:var(--ig-warning);margin-bottom:20px;padding:12px;background:#f59e0b1a;border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:18px;font-weight:700;margin-bottom:10px;color:#fff;letter-spacing:-.3px}.ig-modal-text{font-size:14px;line-height:1.6;color:#9ca3af;margin-bottom:28px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:11px 16px;border-radius:var(--ig-radius-sm);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)}.ig-btn-cancel-modal{background:transparent;border:1px solid rgba(255,255,255,.1);color:#9ca3af}.ig-btn-cancel-modal:hover{background:#ffffff0f;border-color:#fff3;color:#fff}.ig-btn-confirm-modal{background:var(--ig-accent);border:1px solid var(--ig-accent);color:#fff}.ig-btn-confirm-modal:hover{background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);transform:translateY(-1px)}';
+  const mainCss = ':root{--ig-panel-bg: rgba(15, 15, 20, .92);--ig-panel-border: rgba(255, 255, 255, .08);--ig-text-main: #e5e7eb;--ig-text-muted: #6b7280;--ig-text-bright: #f9fafb;--ig-bg-input: rgba(255, 255, 255, .04);--ig-bg-hover: rgba(255, 255, 255, .08);--ig-bg-active: rgba(255, 255, 255, .12);--ig-scrollbar-thumb: rgba(255, 255, 255, .12);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .5);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .3);--ig-accent: #3b82f6;--ig-accent-hover: #2563eb;--ig-accent-soft: rgba(59, 130, 246, .12);--ig-success: #22c55e;--ig-success-hover: #16a34a;--ig-danger: #ef4444;--ig-danger-hover: #dc2626;--ig-warning: #f59e0b;--ig-btn-bg: rgba(255, 255, 255, .06);--ig-btn-border: rgba(255, 255, 255, .1);--ig-btn-text: #d1d5db;--ig-btn-disabled-bg: rgba(255, 255, 255, .04);--ig-btn-disabled-border: rgba(255, 255, 255, .06);--ig-btn-disabled-text: rgba(255, 255, 255, .3);--ig-radius-sm: 6px;--ig-radius-md: 10px;--ig-radius-lg: 16px;--ig-radius-full: 999px}.ig-light-theme{--ig-panel-bg: rgba(255, 255, 255, .92);--ig-panel-border: rgba(0, 0, 0, .08);--ig-text-main: #374151;--ig-text-muted: #9ca3af;--ig-text-bright: #111827;--ig-bg-input: rgba(0, 0, 0, .03);--ig-bg-hover: rgba(0, 0, 0, .05);--ig-bg-active: rgba(0, 0, 0, .08);--ig-scrollbar-thumb: rgba(0, 0, 0, .12);--ig-scrollbar-thumb-hover: rgba(0, 0, 0, .2);--ig-shadow: 0 25px 60px -12px rgba(0, 0, 0, .15);--ig-shadow-sm: 0 1px 3px rgba(0, 0, 0, .08);--ig-accent-soft: rgba(59, 130, 246, .08);--ig-btn-bg: rgba(0, 0, 0, .04);--ig-btn-border: rgba(0, 0, 0, .1);--ig-btn-text: #4b5563;--ig-btn-disabled-bg: rgba(0, 0, 0, .04);--ig-btn-disabled-border: rgba(0, 0, 0, .08);--ig-btn-disabled-text: rgba(0, 0, 0, .35)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:400px;height:510px;max-height:calc(100vh - 100px);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);color:var(--ig-text-main);box-shadow:var(--ig-shadow);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica Neue,sans-serif;font-size:13px;padding:20px;z-index:999999;border-radius:var(--ig-radius-lg);display:flex;flex-direction:column;resize:both;overflow:hidden;transition:background .3s ease,border-color .3s ease,box-shadow .3s ease}#ig-analyzer-panel *{box-sizing:border-box}#ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--ig-panel-border);cursor:move;-webkit-user-select:none;user-select:none}.ig-header-left{display:flex;align-items:center;gap:10px}.ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--ig-accent-soft);border-radius:var(--ig-radius-md);color:var(--ig-accent)}.ig-title{font-size:15px;font-weight:700;color:var(--ig-text-bright);letter-spacing:-.3px}.ig-header-right{display:flex;align-items:center}#ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--ig-bg-input);padding:5px 12px;border-radius:var(--ig-radius-full);color:var(--ig-text-muted);border:1px solid var(--ig-panel-border);transition:all .2s ease}.ig-status-dot{width:6px;height:6px;border-radius:50%;background:var(--ig-text-muted);display:inline-block;flex-shrink:0;animation:ig-pulse 2s ease-in-out infinite}@keyframes ig-pulse{0%,to{opacity:1}50%{opacity:.4}}.ig-actions-bar{display:flex;gap:8px;margin-bottom:14px}.ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:var(--ig-radius-sm);font-size:12px;font-weight:600;cursor:pointer;background:var(--ig-btn-bg);color:var(--ig-btn-text);border:1px solid var(--ig-btn-border);transition:all .2s cubic-bezier(.4,0,.2,1);flex:1;white-space:nowrap;line-height:1}.ig-btn-icon{display:inline-flex;align-items:center;opacity:.9}.ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--ig-shadow-sm)}.ig-btn:active:not(:disabled){transform:translateY(0)}.ig-btn:disabled{opacity:.4;cursor:not-allowed;background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;transform:none!important;box-shadow:none!important}.ig-btn-primary{background:var(--ig-accent);border-color:var(--ig-accent);color:#fff}.ig-btn-primary:hover:not(:disabled){background:var(--ig-accent-hover);border-color:var(--ig-accent-hover)}.ig-btn-danger{background:var(--ig-danger);border-color:var(--ig-danger);color:#fff}.ig-btn-danger:hover:not(:disabled){background:var(--ig-danger-hover);border-color:var(--ig-danger-hover)}.ig-btn-success{background:var(--ig-success);border-color:var(--ig-success);color:#fff}.ig-btn-success:hover:not(:disabled){background:var(--ig-success-hover);border-color:var(--ig-success-hover)}.ig-backup-tools{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;padding:10px 12px;border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);background:var(--ig-bg-input)}.ig-backup-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--ig-text-muted)}.ig-backup-actions{display:flex;gap:8px}.ig-backup-btn{flex:1;min-width:0}.ig-backup-btn-export{border-color:#3b82f673;color:var(--ig-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:#3b82f624;border-color:#3b82f6b3}.ig-backup-btn-import{border-color:#f59e0b73;color:var(--ig-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:#f59e0b24;border-color:#f59e0bb3}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--ig-text-muted);min-height:16px}.ig-backup-status[data-state=success]{color:var(--ig-success)}.ig-backup-status[data-state=error]{color:var(--ig-danger)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}.ig-btn.ig-btn-primary{background:var(--ig-accent);border-color:var(--ig-accent);color:#fff}.ig-btn.ig-btn-primary:hover:not(:disabled){background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);color:#fff}#ig-export-csv:not(:disabled){background:#22c55e!important;border-color:#22c55e!important;color:#fff!important}#ig-export-csv:not(:disabled):hover{background:#16a34a!important;border-color:#16a34a!important;color:#fff!important}#ig-export-csv:disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;cursor:not-allowed!important;transform:none!important;box-shadow:none!important}#ig-export-csv:disabled .ig-btn-icon{opacity:.4}.ig-btn.ig-btn-danger{background:transparent;border-color:var(--ig-danger);color:var(--ig-danger)}.ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--ig-danger);border-color:var(--ig-danger);color:#fff}.ig-btn.ig-btn-primary:disabled,.ig-btn.ig-btn-danger:disabled{background:var(--ig-btn-disabled-bg);border-color:var(--ig-btn-disabled-border);color:var(--ig-btn-disabled-text);cursor:not-allowed;transform:none;box-shadow:none}.ig-btn:disabled .ig-btn-icon{opacity:.4}#ig-progress-container{width:100%;background:var(--ig-bg-input);border-radius:var(--ig-radius-full);height:4px;margin-bottom:14px;overflow:hidden;display:none;border:none}#ig-progress-bar{width:0%;background:linear-gradient(90deg,var(--ig-accent),#8b5cf6);height:100%;border-radius:var(--ig-radius-full);transition:width .4s cubic-bezier(.4,0,.2,1);position:relative}#ig-progress-bar:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.2),transparent);animation:ig-shimmer 1.5s infinite}@keyframes ig-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}.ig-tabs-container{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:0;padding:4px;background:var(--ig-bg-input);border-radius:var(--ig-radius-md)}.ig-tab-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:5px!important;padding:7px 10px!important;flex:auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--ig-text-muted)!important;font-size:11px!important;font-weight:500!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer!important;transition:all .2s ease!important;white-space:nowrap!important;line-height:1!important}.ig-tab-icon{display:inline-flex;align-items:center;flex-shrink:0}.ig-backup-tab-btn{min-width:0;color:var(--ig-text-muted)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn:hover{color:var(--ig-text-bright)!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important}.ig-backup-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--ig-text-muted)!important}.ig-backup-tab-btn svg{width:14px;height:14px;display:block}.ig-backup-tab-btn .ig-backup-tab-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;line-height:0}.ig-backup-tab-btn .ig-backup-tab-icon svg{width:100%;height:100%;display:block}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#0000008c;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:1000000}.ig-backup-overlay.is-open{display:flex}.ig-backup-dialog{width:min(520px,100%);border-radius:var(--ig-radius-lg);background:var(--ig-panel-bg);border:1px solid var(--ig-panel-border);box-shadow:var(--ig-shadow);padding:18px;display:flex;flex-direction:column;gap:14px;color:var(--ig-text-main)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--ig-text-bright)}.ig-backup-close-btn{border:0;background:transparent;color:var(--ig-text-muted);border-radius:0;padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .18s ease,color .18s ease}.ig-backup-close-btn:hover{color:var(--ig-text-bright);transform:scale(1.08)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--ig-text-muted)}.ig-backup-dialog-actions{display:flex;gap:8px}.ig-backup-dialog .ig-backup-btn{flex:1}.ig-tab-label{pointer-events:none}.ig-tab-btn:hover{color:var(--ig-text-main)!important;background:var(--ig-bg-hover)!important}.ig-tab-btn.active{background:var(--ig-bg-active)!important;color:var(--ig-text-bright)!important;font-weight:600!important;box-shadow:var(--ig-shadow-sm)!important}.ig-view{display:none}.ig-view.active{display:block}.ig-view-container{flex-grow:1;overflow-y:auto;background:var(--ig-bg-input);border:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-md);padding:14px;font-size:12px;color:var(--ig-text-main);margin-top:8px}.ig-view-container::-webkit-scrollbar{width:5px}.ig-view-container::-webkit-scrollbar-track{background:transparent}.ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:10px}.ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}#ig-log{font-family:SF Mono,Cascadia Code,Fira Code,ui-monospace,monospace;font-size:11px;line-height:1.6}.ig-log-entry{padding:3px 0;color:var(--ig-text-main);border-bottom:1px solid var(--ig-panel-border);transition:background .15s ease}.ig-log-entry:last-child{border-bottom:none}.ig-log-entry:hover{background:var(--ig-bg-hover);border-radius:4px;padding-left:6px}.ig-log-time{color:var(--ig-accent);font-weight:500}.ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--ig-text-bright);letter-spacing:-.2px}.ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--ig-accent-soft);color:var(--ig-accent);padding:0 7px;border-radius:var(--ig-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:none}.ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--ig-text-muted);font-size:12px;padding:32px 16px;text-align:center}.ig-empty-icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;color:var(--ig-text-muted);opacity:.5}.ig-empty-icon svg{width:100%;height:100%}.ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);border-radius:var(--ig-radius-sm);transition:all .3s cubic-bezier(.4,0,.2,1)}.ig-user-row:last-child{border-bottom:none}.ig-user-row:hover{background:var(--ig-bg-hover)}.ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}.ig-user-avatar{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--ig-accent-soft);color:var(--ig-accent);font-size:11px;font-weight:700;flex-shrink:0}.ig-username{color:var(--ig-text-bright);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-view-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:12px;padding:4px 8px;border-radius:var(--ig-radius-sm);transition:all .15s ease}.ig-view-link:hover{background:var(--ig-accent-soft);text-decoration:none}.btn-whitelist,.ig-btn-whitelist{background:var(--ig-btn-bg)!important;border:1px solid var(--ig-btn-border)!important;color:var(--ig-text-muted)!important;padding:4px 10px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer}.btn-whitelist:hover,.ig-btn-whitelist:hover{background:var(--ig-bg-hover)!important;border-color:var(--ig-text-muted)!important;color:var(--ig-text-main)!important}.btn-spy-story,.ig-btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#8b5cf61a!important;border:1px solid rgba(139,92,246,.3)!important;color:#a78bfa!important;padding:4px 8px!important;font-size:10px!important;font-weight:500!important;margin-right:0!important;flex:none!important;border-radius:var(--ig-radius-sm)!important;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)!important;-webkit-user-select:none!important;user-select:none!important}.btn-spy-story:hover:not(:disabled){background:#8b5cf638!important;border-color:#a78bfa!important;color:#f3f4f6!important;transform:translateY(-1px)}.btn-spy-story:active:not(:disabled){transform:translateY(0)}.btn-spy-story:disabled{opacity:.6!important;cursor:not-allowed!important}.btn-spy-story svg{width:12px;height:12px;flex-shrink:0}.ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:12px}.ig-table thead th{color:var(--ig-text-muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 8px 10px;border-bottom:1px solid var(--ig-panel-border);position:sticky;top:0;background:var(--ig-bg-input)}.ig-table td{padding:10px 8px;border-bottom:1px solid var(--ig-panel-border);color:var(--ig-text-main)}.ig-table tbody tr{transition:background .15s ease}.ig-table tbody tr:hover{background:var(--ig-bg-hover)}.ig-table tbody tr:last-child td{border-bottom:none}.ig-table-user{font-weight:500;color:var(--ig-text-bright)}.ig-table-date{color:var(--ig-text-muted);font-size:11px;font-variant-numeric:tabular-nums}.ig-table-link{display:inline-flex;align-items:center;color:var(--ig-accent);text-decoration:none;font-weight:500;font-size:11px}.ig-table-link:hover{text-decoration:underline}.ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:500}.ig-modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:ig-fade-in .2s ease}@keyframes ig-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:#1a1a2e;border:1px solid rgba(255,255,255,.08);padding:32px 28px;border-radius:var(--ig-radius-lg);width:380px;max-width:90vw;text-align:center;color:#f3f4f6;box-shadow:0 25px 50px -12px #0009;display:flex;flex-direction:column;align-items:center;animation:ig-modal-slide-in .3s cubic-bezier(.4,0,.2,1)}@keyframes ig-modal-slide-in{0%{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:56px;height:56px;color:var(--ig-warning);margin-bottom:20px;padding:12px;background:#f59e0b1a;border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:18px;font-weight:700;margin-bottom:10px;color:#fff;letter-spacing:-.3px}.ig-modal-text{font-size:14px;line-height:1.6;color:#9ca3af;margin-bottom:28px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:11px 16px;border-radius:var(--ig-radius-sm);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1)}.ig-btn-cancel-modal{background:transparent;border:1px solid rgba(255,255,255,.1);color:#9ca3af}.ig-btn-cancel-modal:hover{background:#ffffff0f;border-color:#fff3;color:#fff}.ig-btn-confirm-modal{background:var(--ig-accent);border:1px solid var(--ig-accent);color:#fff}.ig-btn-confirm-modal:hover{background:var(--ig-accent-hover);border-color:var(--ig-accent-hover);transform:translateY(-1px)}.ig-pagination{display:flex;align-items:center;justify-content:space-between;padding:12px 4px 4px;margin-top:10px;border-top:1px solid var(--ig-panel-border);font-size:11px;color:var(--ig-text-muted)}.ig-page-btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 10px;border-radius:var(--ig-radius-sm);font-size:11px;font-weight:600;cursor:pointer;background:var(--ig-btn-bg);color:var(--ig-btn-text);border:1px solid var(--ig-btn-border);transition:all .2s ease}.ig-page-btn:hover:not(:disabled){background:var(--ig-bg-hover);color:var(--ig-text-bright);border-color:var(--ig-accent)}.ig-page-btn:disabled{opacity:.35;cursor:not-allowed}.ig-page-info{font-weight:500;letter-spacing:.02em}';
   importCSS(mainCss);
   const UI = {
     init: () => {
@@ -866,21 +1020,47 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
       UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes");
       UI.renderPersistedSnapshot(Storage.load());
+      Utils.getUserIdAsync().then((asyncId) => {
+        if (asyncId && asyncId !== Storage.getCurrentUserId()) {
+          Storage.setCurrentUserId(asyncId);
+          UI.renderHistory(Storage.getHistory(asyncId));
+          UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, asyncId), "ig-view-unfollowers", "Recent Unfollowers");
+          UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, asyncId), "ig-view-deactivated", "Deactivated Accounts");
+          UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, asyncId), "ig-view-blocked", "Blocked Accounts");
+          UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, asyncId), "ig-view-renamed", "Username Changes");
+          UI.renderPersistedSnapshot(Storage.load(asyncId));
+        }
+      }).catch(() => {
+      });
     },
     setupThemeObserver: () => {
       const panel = document.getElementById("ig-analyzer-panel");
+      let rafId = null;
       const checkTheme = () => {
-        const bgColor = window.getComputedStyle(document.body).backgroundColor;
-        if (bgColor === "rgb(255, 255, 255)" || bgColor === "#ffffff" || bgColor === "white") {
+        const html = document.documentElement;
+        const body = document.body;
+        const isExplicitDark = html.classList.contains("_aa55") || html.getAttribute("data-theme") === "dark" || body && body.getAttribute("data-theme") === "dark";
+        if (isExplicitDark) {
+          panel.classList.remove("ig-light-theme");
+          return;
+        }
+        const bodyBg = window.getComputedStyle(body || html).backgroundColor;
+        const isLightBg = bodyBg === "rgb(255, 255, 255)" || bodyBg === "#ffffff" || bodyBg === "white" || bodyBg === "rgb(250, 250, 250)" || bodyBg === "#fafafa";
+        if (isLightBg) {
           panel.classList.add("ig-light-theme");
         } else {
           panel.classList.remove("ig-light-theme");
         }
       };
       checkTheme();
-      const observer = new MutationObserver(() => checkTheme());
-      observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
-      observer.observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
+      const observer = new MutationObserver(() => {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(checkTheme);
+      });
+      observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
+      if (document.body) {
+        observer.observe(document.body, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
+      }
     },
     confirmAction: (title, message, confirmBtnText = "Yes, Continue", showCancel = true, customIcon = null) => {
       return new Promise((resolve) => {
@@ -966,21 +1146,31 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       }
     },
     log: (msg) => {
-      const box = document.getElementById("ig-log");
-      if (box) {
-        const timeStr = Utils.now().split("T")[1].split(".")[0];
-        const entry = document.createElement("div");
-        entry.className = "ig-log-entry";
-        const timeSpan = document.createElement("span");
-        timeSpan.className = "ig-log-time";
-        timeSpan.textContent = "[" + timeStr + "] ";
-        const textNode = document.createTextNode(msg);
-        entry.appendChild(timeSpan);
-        entry.appendChild(textNode);
-        box.appendChild(entry);
-        box.scrollTop = box.scrollHeight;
+      try {
+        const box = document.getElementById("ig-log");
+        if (box) {
+          const nowStr = typeof Utils.now === "function" ? Utils.now() : ( new Date()).toISOString();
+          const timeParts = nowStr.split("T");
+          const timeStr = (timeParts.length > 1 ? timeParts[1].split(".")[0] : "") || nowStr;
+          const entry = document.createElement("div");
+          entry.className = "ig-log-entry";
+          const timeSpan = document.createElement("span");
+          timeSpan.className = "ig-log-time";
+          timeSpan.textContent = "[" + timeStr + "] ";
+          const textNode = document.createTextNode(msg);
+          entry.appendChild(timeSpan);
+          entry.appendChild(textNode);
+          box.appendChild(entry);
+          box.scrollTop = box.scrollHeight;
+        }
+      } catch (err) {
+        console.error("[IG Analyzer Log Box Error]", err);
       }
-      Utils.log(msg);
+      try {
+        Utils.log(msg);
+      } catch (err) {
+        console.log(`[IG Analyzer] ${msg}`);
+      }
     },
     setProgress: (current, total, label) => {
       const container = document.getElementById("ig-progress-container");
@@ -995,21 +1185,67 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       const el = document.getElementById("ig-progress-container");
       if (el) el.style.display = "none";
     },
-    renderResults: (users, title, containerId, isExportable = false) => {
+    setRunButtonState: (state) => {
+      const btnRun = document.getElementById("ig-run");
+      if (!btnRun) return;
+      if (state === "running") {
+        btnRun.className = "ig-btn ig-btn-danger";
+        btnRun.innerHTML = '<span class="ig-btn-icon">' + Icons.stop + "</span>Cancel Analysis";
+        btnRun.disabled = false;
+      } else if (state === "cancelling") {
+        btnRun.className = "ig-btn ig-btn-danger";
+        btnRun.innerHTML = '<span class="ig-btn-icon">' + Icons.stop + "</span>Cancelling...";
+        btnRun.disabled = true;
+      } else {
+        btnRun.className = "ig-btn ig-btn-primary";
+        btnRun.innerHTML = '<span class="ig-btn-icon">' + Icons.play + "</span>Run Analysis";
+        btnRun.disabled = false;
+      }
+    },
+    paginationState: {},
+    changePage: (containerId, delta) => {
+      const state = UI.paginationState[containerId];
+      if (!state) return;
+      const totalPages = Math.max(1, Math.ceil(state.users.length / state.pageSize));
+      const newPage = state.page + delta;
+      if (newPage >= 1 && newPage <= totalPages) {
+        state.page = newPage;
+        UI.renderResultsPage(containerId);
+      }
+    },
+    renderResultsPage: (containerId) => {
+      const state = UI.paginationState[containerId];
+      if (!state) return;
       const container = document.getElementById(containerId);
       if (!container) return;
+      const { users, title, isExportable, pageSize } = state;
+      const totalPages = Math.max(1, Math.ceil(users.length / pageSize));
+      state.page = Math.max(1, Math.min(state.page, totalPages));
+      const page = state.page;
+      const startIndex = (page - 1) * pageSize;
+      const pageUsers = users.slice(startIndex, startIndex + pageSize);
       const safeTitle = Utils.escapeHtml(title);
       let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + users.length + "</span></div>";
-      if (users.length === 0) html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No data available yet.</div>";
-      users.forEach((u, index) => {
-        const uniqueId = containerId + "-row-" + index;
+      if (users.length === 0) {
+        html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No data available yet.</div>";
+        container.innerHTML = html;
+        if (isExportable) {
+          const exportBtn = document.getElementById("ig-export-csv");
+          if (exportBtn) exportBtn.disabled = true;
+        }
+        return;
+      }
+      pageUsers.forEach((u, index) => {
+        const globalIndex = startIndex + index;
+        const uniqueId = containerId + "-row-" + globalIndex;
         const safeUsername = Utils.escapeHtml(u.username || "");
         const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : "?";
         const safeUrl = Utils.sanitizeUrl(u.username, u.url);
         const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : "";
         const isVerified = Boolean(u.isVerified);
         const hasStory = Boolean(u.latestReelMedia && u.latestReelMedia > 0);
-        const avatarHtml = u.profilePicUrl ? '<img class="ig-user-avatar" src="' + Utils.escapeHtml(u.profilePicUrl) + '" alt="' + safeUsername + '" style="object-fit:cover;' + (hasStory ? " outline: 2px solid #e1306c; outline-offset: 1px;" : "") + '" />' : '<span class="ig-user-avatar"' + (hasStory ? ' style="outline: 2px solid #e1306c; outline-offset: 1px;"' : "") + ">" + safeInitial + "</span>";
+        const safeAvatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
+        const avatarHtml = safeAvatarUrl ? '<img class="ig-user-avatar" src="' + safeAvatarUrl + '" alt="' + safeUsername + '" style="object-fit:cover;' + (hasStory ? " outline: 2px solid #e1306c; outline-offset: 1px;" : "") + '" />' : '<span class="ig-user-avatar"' + (hasStory ? ' style="outline: 2px solid #e1306c; outline-offset: 1px;"' : "") + ">" + safeInitial + "</span>";
         html += '<div class="ig-user-row" id="' + uniqueId + '">';
         html += '<div class="ig-user-info">' + avatarHtml;
         html += '<div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
@@ -1020,60 +1256,38 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         html += "</div></div>";
         html += '<div class="ig-user-actions">';
         if (containerId === "ig-view-notfollowing") {
-          html += '<button class="btn-whitelist" data-user="' + safeUsername + '" data-idx="' + uniqueId + '">Ignore</button>';
+          html += '<button class="ig-btn-whitelist btn-whitelist" data-user="' + safeUsername + '" data-container="' + containerId + '">Ignore</button>';
         }
         if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing") {
-          html += '<button class="btn-spy-story" data-user="' + safeUsername + '">' + Icons.spy + " Check Story</button>";
+          html += '<button class="ig-btn-spy-story btn-spy-story" data-user="' + safeUsername + '">' + Icons.spy + " Check Story</button>";
         }
         html += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
         html += "</div></div>";
       });
-      container.innerHTML = html;
-      const spyBtns = container.querySelectorAll(".btn-spy-story");
-      spyBtns.forEach((btn) => {
-        btn.onclick = async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const btnEl = e.currentTarget || e.target.closest(".btn-spy-story") || btn;
-          const targetUser = btnEl ? btnEl.getAttribute("data-user") : null;
-          if (!targetUser) return;
-          if (window.App && typeof window.App.runStorySpy === "function") {
-            await window.App.runStorySpy(targetUser, btnEl);
-          } else {
-            console.error("[IG Analyzer] window.App.runStorySpy is not available");
-          }
-        };
-      });
-      if (containerId === "ig-view-notfollowing") {
-        const whitelistBtns = container.querySelectorAll(".btn-whitelist");
-        whitelistBtns.forEach((btn) => {
-          btn.onclick = (e) => {
-            const btnEl = e.currentTarget || btn;
-            const targetUser = btnEl.getAttribute("data-user");
-            const rowId = btnEl.getAttribute("data-idx");
-            if (!targetUser) return;
-            Storage.addToWhitelist(targetUser);
-            const row = document.getElementById(rowId);
-            if (row) {
-              row.style.opacity = "0";
-              row.style.transform = "translateX(20px)";
-              setTimeout(() => row.style.display = "none", 300);
-            }
-            UI.log("[INFO] " + targetUser + " added to whitelist.");
-            if (window.__igLastResults) {
-              window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
-              if (isExportable) {
-                const exportBtn = document.getElementById("ig-export-csv");
-                if (exportBtn) exportBtn.disabled = window.__igLastResults.length === 0;
-              }
-            }
-          };
-        });
+      if (totalPages > 1) {
+        html += '<div class="ig-pagination">';
+        html += '<button class="ig-page-btn ig-page-prev" data-container="' + containerId + '"' + (page <= 1 ? " disabled" : "") + ">&larr; Prev</button>";
+        html += '<span class="ig-page-info">Page ' + page + " of " + totalPages + " (" + users.length + " users)</span>";
+        html += '<button class="ig-page-btn ig-page-next" data-container="' + containerId + '"' + (page >= totalPages ? " disabled" : "") + ">Next &rarr;</button>";
+        html += "</div>";
       }
+      container.innerHTML = html;
       if (isExportable) {
         const exportBtn = document.getElementById("ig-export-csv");
         if (exportBtn) exportBtn.disabled = users.length === 0;
       }
+    },
+    renderResults: (users, title, containerId, isExportable = false) => {
+      const safeUsers = Array.isArray(users) ? users : [];
+      UI.paginationState[containerId] = {
+        users: safeUsers,
+        title,
+        containerId,
+        isExportable,
+        page: 1,
+        pageSize: 50
+      };
+      UI.renderResultsPage(containerId);
     },
     renderNominalList: (list, containerId, title) => {
       const container = document.getElementById(containerId);
@@ -1220,10 +1434,16 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         retries = options;
         options = {};
       }
+      if (options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const csrf = Utils.getCsrfToken();
       const defaultHeaders = {
         "X-IG-App-ID": "936619743392459",
         "X-Requested-With": "XMLHttpRequest",
-        "Accept": "*/*"
+        "X-ASBD-ID": CONFIG.ASBD_ID,
+        "Accept": "*/*",
+        ...csrf ? { "X-CSRFToken": csrf } : {}
       };
       const fetchOptions = {
         credentials: "include",
@@ -1233,32 +1453,56 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           ...options.headers || {}
         }
       };
+      let rateLimitCount = 0;
+      const maxRateLimitRetries = 2;
       for (let i = 0; i < retries; i++) {
+        if (options.signal?.aborted) {
+          throw new DOMException("Aborted", "AbortError");
+        }
         try {
           const res = await fetch(url, fetchOptions);
           if (res.ok) return await res.json();
           if (res.status === 429) {
-            UI.log("Request limit (429). Retrying in " + backoff / 1e3 + "s... (Attempt " + (i + 1) + "/" + retries + ")");
-            await Utils.sleep(backoff);
-            backoff *= 2;
+            rateLimitCount++;
+            const retryAfterHeader = res.headers ? res.headers.get("Retry-After") : null;
+            const retrySeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : null;
+            const waitMs = retrySeconds && !isNaN(retrySeconds) && retrySeconds > 0 ? retrySeconds * 1e3 : CONFIG.COOLDOWN_429_MS || 6e4;
+            if (rateLimitCount >= maxRateLimitRetries) {
+              UI.log(`[Rate Limit] HTTP 429 persistent. Aborting to safeguard your account.`);
+              throw new Error("Instagram rate limit (429) persistent. Please wait at least 30-60 minutes before retrying.");
+            }
+            UI.setStatus(`Rate limit (429). Cooling down ${Math.round(waitMs / 1e3)}s...`);
+            UI.log(`[Safety Cooldown] HTTP 429 detected. Pausing for ${Math.round(waitMs / 1e3)}s before retry ${rateLimitCount}/${maxRateLimitRetries}...`);
+            await Utils.sleep(waitMs, options.signal);
+            continue;
           } else {
             throw new Error("HTTP " + res.status + " while requesting " + url);
           }
         } catch (e) {
+          if (e.name === "AbortError" || options.signal?.aborted) {
+            throw e;
+          }
+          if (e.message && e.message.includes("rate limit (429) persistent")) {
+            throw e;
+          }
           if (i === retries - 1) throw e;
+          await Utils.sleep(1500 * (i + 1) + Math.random() * 500, options.signal);
         }
       }
       throw new Error("Maximum retries achieved.");
     },
-    getAllUsersViaGraphQL: async (userId, hash, label) => {
+    getAllUsersViaGraphQL: async (userId, hash, label, options = {}) => {
       const users = [];
       let cursor = null;
       let hasNext = true;
       let totalCount = 0;
       while (hasNext) {
+        if (options.signal?.aborted) {
+          throw new DOMException("Aborted", "AbortError");
+        }
         const vars = encodeURIComponent(JSON.stringify({ id: userId, first: CONFIG.PAGE_SIZE, after: cursor }));
         const url = "https://www.instagram.com/graphql/query/?query_hash=" + hash + "&variables=" + vars;
-        const json = await API.fetchWithRetry(url);
+        const json = await API.fetchWithRetry(url, options);
         const userNode = json?.data?.user;
         const edge = userNode?.edge_follow || userNode?.edge_followed_by;
         if (!edge || !Array.isArray(edge.edges)) {
@@ -1280,21 +1524,24 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         if (totalCount > 0) {
           UI.setProgress(users.length, totalCount, "Extracting " + label + " (GraphQL)...");
         }
-        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500);
+        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500, options.signal);
       }
       return users;
     },
-    getAllUsersViaFriendships: async (userId, label) => {
+    getAllUsersViaFriendships: async (userId, label, options = {}) => {
       const users = [];
       let maxId = null;
       let hasNext = true;
       const endpoint = label === "following" ? "following" : "followers";
       while (hasNext) {
+        if (options.signal?.aborted) {
+          throw new DOMException("Aborted", "AbortError");
+        }
         let url = `https://www.instagram.com/api/v1/friendships/${userId}/${endpoint}/?count=50&search_surface=follow_list_page`;
         if (maxId) {
           url += `&max_id=${encodeURIComponent(maxId)}`;
         }
-        const json = await API.fetchWithRetry(url);
+        const json = await API.fetchWithRetry(url, options);
         const list = json?.users;
         if (!Array.isArray(list)) {
           console.warn(`[IG Analyzer] Friendships API returned non-array for ${label}:`, json);
@@ -1316,23 +1563,29 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         maxId = json?.next_max_id || null;
         hasNext = Boolean(maxId);
         UI.setProgress(users.length, 0, `Extracting ${label}... (${users.length})`);
-        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800);
+        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800, options.signal);
       }
       return users;
     },
-    getAllUsers: async (userId, hash, label) => {
+    getAllUsers: async (userId, hash, label, options = {}) => {
       let users = [];
+      let friendshipsSuccess = false;
       try {
-        users = await API.getAllUsersViaFriendships(userId, label);
+        users = await API.getAllUsersViaFriendships(userId, label, options);
+        friendshipsSuccess = true;
       } catch (e) {
+        if (e.name === "AbortError" || options.signal?.aborted) throw e;
         console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e);
         users = [];
+        friendshipsSuccess = false;
       }
-      if (users.length === 0 && hash) {
-        UI.log(`Friendships returned 0 for '${label}'. Falling back to legacy GraphQL...`);
+      if (!friendshipsSuccess && hash) {
+        if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        UI.log(`Friendships API failed for '${label}'. Falling back to legacy GraphQL...`);
         try {
-          users = await API.getAllUsersViaGraphQL(userId, hash, label);
+          users = await API.getAllUsersViaGraphQL(userId, hash, label, options);
         } catch (e) {
+          if (e.name === "AbortError" || options.signal?.aborted) throw e;
           Utils.logError(`GraphQL fallback failed for ${label}`, e);
         }
       }
@@ -1340,40 +1593,22 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       UI.log("Total " + label + ": " + users.length + " (with IDs: " + withIdCount + ")");
       return users;
     },
-    checkAccountStatus: async (username) => {
+    checkAccountStatus: async (username, options = {}) => {
       const cleanUser = String(username || "").replace(/^@/, "").trim();
       if (!cleanUser) return "Active";
+      if (options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
       try {
-        let authStatus = 0;
-        try {
-          const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`, {
-            headers: {
-              "X-IG-App-ID": "936619743392459",
-              "X-Requested-With": "XMLHttpRequest",
-              "Accept": "*/*"
-            },
-            credentials: "include"
-          });
-          authStatus = authRes.status;
-          if (authRes.ok) {
-            const json = await authRes.json();
-            const authData = json?.data?.user;
-            if (authData?.username) {
-              return "Active";
-            }
-          } else if (authStatus === 429) {
-            console.warn(`[IG Analyzer] Rate limit (429) checking account status for ${cleanUser}. Defaulting to Active.`);
-            return "Active";
-          }
-        } catch (err) {
-          console.warn(`[IG Analyzer] Error in auth web_profile_info for ${cleanUser}:`, err);
-        }
         let authIsErrorPage = false;
         let authProfileFound = false;
+        let authStatus = 0;
         try {
           const authHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, {
-            credentials: "include"
+            credentials: "include",
+            signal: options.signal
           });
+          authStatus = authHtmlRes.status;
           if (authHtmlRes.status === 429) {
             return "Active";
           }
@@ -1388,15 +1623,17 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             authIsErrorPage = true;
           }
         } catch (err) {
+          if (err.name === "AbortError" || options.signal?.aborted) throw err;
           console.warn(`[IG Analyzer] Error in auth HTML for ${cleanUser}:`, err);
         }
         if (!authIsErrorPage && authStatus !== 404) {
           return "Active";
         }
-        await Utils.sleep(800);
+        await Utils.sleep(800, options.signal);
         try {
           const anonRes = await fetch(`https://www.instagram.com/${cleanUser}/`, {
-            credentials: "omit"
+            credentials: "omit",
+            signal: options.signal
           });
           if (anonRes.status === 429) {
             return "Active";
@@ -1411,17 +1648,22 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             return "Deactivated";
           }
         } catch (err) {
+          if (err.name === "AbortError" || options.signal?.aborted) throw err;
           console.warn(`[IG Analyzer] Error in anon check for ${cleanUser}:`, err);
           return "Active";
         }
       } catch (e) {
+        if (e.name === "AbortError" || options.signal?.aborted) throw e;
         console.error(`Error verifying account status for "${username}". Defaulting to Active.`, e);
         return "Active";
       }
     },
-    checkStoryStatus: async (username) => {
+    checkStoryStatus: async (username, options = {}) => {
       const cleanUser = String(username || "").replace(/^@/, "").trim();
       if (!cleanUser) return null;
+      if (options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
       try {
         let authHtml = "";
         let authHasStoryCanvas = false;
@@ -1429,52 +1671,35 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         let authHighlightsCount = 0;
         let authHasStory = false;
         let isPrivate = false;
+        let authHtmlSuccess = false;
         try {
-          const authHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, { credentials: "include" });
+          const authHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, {
+            credentials: "include",
+            signal: options.signal
+          });
           if (authHtmlRes.ok) {
             authHtml = await authHtmlRes.text();
+            authHtmlSuccess = true;
             authHasStoryCanvas = authHtml.includes('height="115" width="115"') || authHtml.includes("x1upo8f9 xpdipgo x87ps6o");
             authHasHighlightsCanvas = authHtml.includes('height="84" width="84"') || authHtml.includes("height: 67px") || authHtml.includes("left: -5.5px");
-            const authHighlightMatch = authHtml.match(/"highlight_reel_count"\s*:\s*([0-9]+)/);
+            const authHighlightMatch = authHtml.match(/\\?"highlight_reel_count\\?"\s*:\s*([0-9]+)/);
             if (authHighlightMatch) {
               authHighlightsCount = parseInt(authHighlightMatch[1], 10);
             }
-            const authStoryMatch = authHtml.match(/"latest_reel_media"\s*:\s*([1-9][0-9]*)/);
+            const authStoryMatch = authHtml.match(/\\?"latest_reel_media\\?"\s*:\s*([1-9][0-9]*)/);
             if (authStoryMatch) {
               authHasStory = true;
             }
-            if (authHtml.includes('"is_private":true')) {
+            if (authHtml.includes('"is_private":true') || authHtml.includes('\\"is_private\\":true') || /\\?"is_private\\?"\s*:\s*true/.test(authHtml)) {
               isPrivate = true;
             }
           }
         } catch (err) {
+          if (err.name === "AbortError" || options.signal?.aborted) throw err;
           console.warn("[IG Analyzer] Error fetching auth profile HTML:", err);
         }
-        try {
-          const authRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`, {
-            headers: {
-              "X-IG-App-ID": "936619743392459",
-              "X-Requested-With": "XMLHttpRequest"
-            },
-            credentials: "include"
-          });
-          if (authRes.ok) {
-            const json = await authRes.json();
-            const authData = json?.data?.user;
-            if (authData) {
-              if (typeof authData.is_private === "boolean") {
-                isPrivate = authData.is_private;
-              }
-              if (typeof authData.highlight_reel_count === "number") {
-                authHighlightsCount = Math.max(authHighlightsCount, authData.highlight_reel_count);
-              }
-              if (authData.latest_reel_media && authData.latest_reel_media > 0) {
-                authHasStory = true;
-              }
-            }
-          }
-        } catch (err) {
-          console.warn("[IG Analyzer] Error fetching auth web_profile_info:", err);
+        if (!authHtmlSuccess) {
+          return null;
         }
         if (authHasStoryCanvas) authHasStory = true;
         if (authHasHighlightsCanvas && authHighlightsCount === 0) authHighlightsCount = 1;
@@ -1482,46 +1707,28 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         let anonHasStory = false;
         let anonHasHighlightsCanvas = false;
         if (!isPrivate) {
+          await Utils.sleep(300, options.signal);
           try {
-            const anonHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, { credentials: "omit" });
+            const anonHtmlRes = await fetch(`https://www.instagram.com/${cleanUser}/`, {
+              credentials: "omit",
+              signal: options.signal
+            });
             if (anonHtmlRes.ok) {
               const anonHtml = await anonHtmlRes.text();
               anonHasStory = anonHtml.includes('height="115" width="115"') || anonHtml.includes("x1upo8f9 xpdipgo x87ps6o");
               anonHasHighlightsCanvas = anonHtml.includes('height="84" width="84"') || anonHtml.includes("height: 67px") || anonHtml.includes("left: -5.5px");
-              const anonHighlightMatch = anonHtml.match(/"highlight_reel_count"\s*:\s*([0-9]+)/);
+              const anonHighlightMatch = anonHtml.match(/\\?"highlight_reel_count\\?"\s*:\s*([0-9]+)/);
               if (anonHighlightMatch) {
                 anonHighlightsCount = parseInt(anonHighlightMatch[1], 10);
               }
-              const anonStoryMatch = anonHtml.match(/"latest_reel_media"\s*:\s*([1-9][0-9]*)/);
+              const anonStoryMatch = anonHtml.match(/\\?"latest_reel_media\\?"\s*:\s*([1-9][0-9]*)/);
               if (anonStoryMatch) {
                 anonHasStory = true;
               }
             }
           } catch (e) {
+            if (e.name === "AbortError" || options.signal?.aborted) throw e;
             console.warn("[IG Analyzer] Anon HTML fetch failed for", cleanUser, e);
-          }
-          try {
-            const anonRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`, {
-              headers: {
-                "X-IG-App-ID": "936619743392459",
-                "X-Requested-With": "XMLHttpRequest"
-              },
-              credentials: "omit"
-            });
-            if (anonRes.ok) {
-              const anonJson = await anonRes.json();
-              const anonData = anonJson?.data?.user;
-              if (anonData) {
-                if (typeof anonData.highlight_reel_count === "number") {
-                  anonHighlightsCount = Math.max(anonHighlightsCount, anonData.highlight_reel_count);
-                }
-                if (anonData.latest_reel_media && anonData.latest_reel_media > 0) {
-                  anonHasStory = true;
-                }
-              }
-            }
-          } catch (e) {
-            console.warn("[IG Analyzer] Anon API fetch failed for", cleanUser, e);
           }
           if (anonHasHighlightsCanvas && anonHighlightsCount === 0) {
             anonHighlightsCount = 1;
@@ -1536,15 +1743,33 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           authHasStory
         };
       } catch (e) {
+        if (e.name === "AbortError" || options.signal?.aborted) throw e;
         console.error(`Error checking story status for "${username}"`, e);
         return null;
       }
     }
   };
   const App = {
+    isRunning: false,
+    abortController: null,
+    lastResults: null,
+    abort: () => {
+      if (App.isRunning && App.abortController) {
+        UI.setStatus("Cancelling...");
+        UI.setRunButtonState("cancelling");
+        try {
+          UI.log("[INFO] Analysis cancellation requested by user...");
+        } catch (err) {
+          console.log("[INFO] Analysis cancellation requested by user...");
+        }
+        App.abortController.abort();
+      }
+    },
     run: async () => {
-      const btnRun = document.getElementById("ig-run");
-      if (btnRun) btnRun.disabled = true;
+      if (App.isRunning) {
+        App.abort();
+        return;
+      }
       const userConfirmed = await UI.confirmAction(
         "Safety Precaution",
         "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
@@ -1553,21 +1778,28 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       if (!userConfirmed) {
         UI.log("Analysis cancelled by user.");
         console.log("Analysis cancelled by user.");
-        if (btnRun) btnRun.disabled = false;
         return;
       }
+      App.isRunning = true;
+      App.abortController = new AbortController();
+      const signal = App.abortController.signal;
+      UI.setRunButtonState("running");
       UI.setStatus("Analyzing...");
-      UI.log("Starting deep analysis...");
-      const logTab = document.querySelector('[data-target="ig-log"]');
-      if (logTab) logTab.click();
       try {
-        const userId = await Utils.getUserIdAsync();
+        UI.log("Starting deep analysis...");
+        const logTab = document.querySelector('[data-target="ig-log"]');
+        if (logTab) logTab.click();
+        const userId = await Utils.getUserIdAsync(signal);
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         if (!userId || userId === "0") throw new Error("User ID could not be obtained. Are you logged in?");
+        Storage.setCurrentUserId(userId);
         UI.log("User ID detected: " + userId);
         UI.log("Fetching 'Following'...");
-        const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following");
+        const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following", { signal });
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         UI.log("Fetching 'Followers'...");
-        const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers");
+        const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal });
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw);
         const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw);
         const following = followingDetailed.map((u) => u.username);
@@ -1628,25 +1860,33 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           const newUnfollowers = [];
           const filteredLostFollowers = lostFollowers.filter((u) => !renamedOldUsernameSet.has(u));
           const filteredMissingUsers = missingUsers.filter((u) => !renamedOldUsernameSet.has(u));
-          const accountsToVerify = Utils.unique([...filteredLostFollowers, ...filteredMissingUsers]);
+          const ordinaryUnfollowers = filteredLostFollowers.filter((u) => !filteredMissingUsers.includes(u));
+          if (ordinaryUnfollowers.length > 0) {
+            newUnfollowers.push(...ordinaryUnfollowers);
+          }
+          const maxVerify = CONFIG.MAX_AUTO_VERIFY_ACCOUNTS || 5;
+          const accountsToVerify = filteredMissingUsers.slice(0, maxVerify);
+          const unverifiedMissing = filteredMissingUsers.slice(maxVerify);
+          if (unverifiedMissing.length > 0) {
+            newUnfollowers.push(...unverifiedMissing);
+          }
           if (accountsToVerify.length > 0) {
-            UI.setStatus("Verifying lost accounts...");
+            UI.setStatus(`Verifying ${accountsToVerify.length} suspicious account(s)...`);
             for (let i = 0; i < accountsToVerify.length; i++) {
+              if (signal.aborted) throw new DOMException("Aborted", "AbortError");
               const username = accountsToVerify[i];
-              UI.setStatus(`Verifying lost account (${i + 1}/${accountsToVerify.length}): @${username}`);
-              const status = await API.checkAccountStatus(username);
+              UI.setStatus(`Verifying account status (${i + 1}/${accountsToVerify.length}): @${username}`);
+              const status = await API.checkAccountStatus(username, { signal });
               if (status === "Deactivated") {
                 newDeactivated.push(username);
               } else if (status === "Blocked") {
                 newBlocked.push(username);
               } else if (status === "Active") {
-                if (filteredLostFollowers.includes(username)) {
-                  newUnfollowers.push(username);
-                }
+                newUnfollowers.push(username);
                 let currentBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
                 if (currentBlocked.some((b) => b.username === username)) {
                   currentBlocked = currentBlocked.filter((b) => b.username !== username);
-                  GM_setValue(CONFIG.BLOCKED_KEY, currentBlocked);
+                  Storage.setScopedValue(CONFIG.BLOCKED_KEY, currentBlocked);
                   UI.renderNominalList(currentBlocked, "ig-view-blocked", "Blocked Accounts");
                 }
               } else {
@@ -1654,9 +1894,10 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
                   `Unexpected status "${status}" from checkAccountStatus for user "${username}"`,
                   null
                 );
+                newUnfollowers.push(username);
               }
               if (i < accountsToVerify.length - 1) {
-                await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS);
+                await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS, signal);
               }
             }
           }
@@ -1676,7 +1917,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           let storedBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
           const cleanedBlocked = storedBlocked.filter((b) => !activeHandles.has(b.username));
           if (cleanedBlocked.length !== storedBlocked.length) {
-            GM_setValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
+            Storage.setScopedValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
             UI.renderNominalList(cleanedBlocked, "ig-view-blocked", "Blocked Accounts");
           }
         } else {
@@ -1706,28 +1947,38 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
         UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes");
         UI.renderPersistedSnapshot(Storage.load());
+        App.lastResults = notFollowingBackDetailed;
         window.__igLastResults = notFollowingBackDetailed;
         UI.setStatus("Completed");
         UI.log("[OK] Analysis completed successfully.");
       } catch (e) {
-        UI.setStatus("Error");
         UI.hideProgress();
-        Utils.logError("Failed analysis", e);
+        if (e.name === "AbortError" || signal?.aborted) {
+          UI.setStatus("Cancelled");
+          UI.log("[INFO] Analysis cancelled by user.");
+        } else {
+          UI.setStatus("Error");
+          UI.log("[ERROR] Analysis failed: " + (e.message || String(e)));
+          Utils.logError("Failed analysis", e);
+        }
       } finally {
-        if (btnRun) btnRun.disabled = false;
+        App.isRunning = false;
+        App.abortController = null;
+        UI.setRunButtonState("idle");
       }
     },
     runStorySpy: async (username, btnElement) => {
+      const safeUsername = Utils.escapeHtml(username);
       if (btnElement) {
         if (btnElement.disabled) return;
         btnElement.disabled = true;
         btnElement.innerHTML = '<span style="opacity:0.7;">Scanning...</span>';
       }
       try {
-        UI.log(`[Spy Module] Checking story visibility for @${username}...`);
+        UI.log(`[Spy Module] Checking story visibility for @${safeUsername}...`);
         const status = await API.checkStoryStatus(username);
         if (!status) {
-          await UI.confirmAction("Error", `Could not fetch data for @${username}. The profile might be unavailable or rate-limited.`, "Close", false);
+          await UI.confirmAction("Error", `Could not fetch data for @${safeUsername}. The profile might be unavailable or rate-limited.`, "Close", false);
           return;
         }
         let probability = 0;
@@ -1770,6 +2021,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         let statusColor = "#22c55e";
         if (probability >= 75) statusColor = "#ef4444";
         else if (probability > 0) statusColor = "#eab308";
+        const targetType = status.isPrivate ? "Private" : "Public";
         let resultHtml = `
                 <div style="text-align:center; margin-bottom: 14px;">
                     <div style="font-size: 26px; font-weight: bold; color: ${statusColor};">${probability}% Probability</div>
@@ -1779,14 +2031,14 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
                     ${reason}
                 </div>
                 <div style="margin-top: 14px; font-size: 12px; color: #8e8e8e; line-height: 1.6; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
-                    <b>Target:</b> @${username} (${status.isPrivate ? "Private" : "Public"})<br>
+                    <b>Target:</b> @${safeUsername} (${targetType})<br>
                     <b>Highlights (Logged In):</b> ${status.authHighlightsCount > 0 ? `Visible (${status.authHighlightsCount})` : "None detected"}<br>
                     <b>Story (Logged In):</b> ${status.authHasStory ? "Active Story" : "None"}<br>
                     ${!status.isPrivate ? `<b>Highlights (Guest):</b> ${status.anonHighlightsCount > 0 ? `Visible (${status.anonHighlightsCount})` : "None"}<br><b>Story (Guest):</b> ${status.anonHasStory ? "Active Story" : "None"}` : "<i>Guest check not applicable to private accounts.</i>"}
                 </div>
             `;
-        UI.log(`[Spy Module] @${username}: ${probability}% anomaly probability (${status.isPrivate ? "Private" : "Public"}).`);
-        await UI.confirmAction(`Story Spy: @${username}`, resultHtml, "Close", false, Icons.spy);
+        UI.log(`[Spy Module] @${safeUsername}: ${probability}% anomaly probability (${targetType}).`);
+        await UI.confirmAction(`Story Spy: @${safeUsername}`, resultHtml, "Close", false, Icons.spy);
       } catch (e) {
         Utils.logError("Error in runStorySpy", e);
         await UI.confirmAction("Error", "An unexpected error occurred while running the spy check.", "Close", false);
@@ -1802,9 +2054,10 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       if (btnRun) btnRun.onclick = App.run;
       const btnExport = document.getElementById("ig-export-csv");
       if (btnExport) btnExport.onclick = () => {
-        if (window.__igLastResults) {
+        const resultsToExport = App.lastResults || window.__igLastResults;
+        if (resultsToExport && resultsToExport.length > 0) {
           const dateStr = Utils.now().split("T")[0];
-          Utils.exportCSV(window.__igLastResults, "ig_no_follow_back_" + dateStr + ".csv");
+          Utils.exportCSV(resultsToExport, "ig_no_follow_back_" + dateStr + ".csv");
           UI.log("CSV Exported.");
         }
       };
@@ -1829,14 +2082,55 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       const panel = document.getElementById("ig-analyzer-panel");
       if (panel) {
         panel.addEventListener("click", async (e) => {
-          const btnSpy = e.target.closest(".btn-spy-story");
-          if (!btnSpy) return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (btnSpy.disabled) return;
-          const username = btnSpy.getAttribute("data-user");
-          if (!username) return;
-          await App.runStorySpy(username, btnSpy);
+          const btnSpy = e.target.closest(".btn-spy-story, .ig-btn-spy-story");
+          if (btnSpy) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (btnSpy.disabled) return;
+            const username = btnSpy.getAttribute("data-user");
+            if (!username) return;
+            await App.runStorySpy(username, btnSpy);
+            return;
+          }
+          const btnWl = e.target.closest(".btn-whitelist, .ig-btn-whitelist");
+          if (btnWl) {
+            e.preventDefault();
+            e.stopPropagation();
+            const targetUser = btnWl.getAttribute("data-user");
+            const containerId = btnWl.getAttribute("data-container");
+            if (!targetUser) return;
+            Storage.addToWhitelist(targetUser);
+            if (containerId && UI.paginationState[containerId]) {
+              UI.paginationState[containerId].users = UI.paginationState[containerId].users.filter((u) => u.username !== targetUser);
+              UI.renderResultsPage(containerId);
+            }
+            if (App.lastResults) {
+              App.lastResults = App.lastResults.filter((u) => u.username !== targetUser);
+            }
+            if (window.__igLastResults) {
+              window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
+              const exportBtn = document.getElementById("ig-export-csv");
+              if (exportBtn) exportBtn.disabled = window.__igLastResults.length === 0;
+            }
+            UI.log("[INFO] " + targetUser + " added to whitelist.");
+            return;
+          }
+          const btnPrev = e.target.closest(".ig-page-prev");
+          if (btnPrev && !btnPrev.disabled) {
+            e.preventDefault();
+            e.stopPropagation();
+            const cId = btnPrev.getAttribute("data-container");
+            if (cId) UI.changePage(cId, -1);
+            return;
+          }
+          const btnNext = e.target.closest(".ig-page-next");
+          if (btnNext && !btnNext.disabled) {
+            e.preventDefault();
+            e.stopPropagation();
+            const cId = btnNext.getAttribute("data-container");
+            if (cId) UI.changePage(cId, 1);
+            return;
+          }
         });
       }
       document.addEventListener("keydown", (e) => {
@@ -2015,10 +2309,17 @@ popoverOffset: 12,
   window.App = App;
   App.bindEvents();
   setTimeout(() => {
-    startTour();
+    const panel = document.getElementById("ig-analyzer-panel");
+    if (panel && panel.style.display !== "none") {
+      startTour();
+    }
   }, 800);
   if (typeof GM_registerMenuCommand === "function") {
     GM_registerMenuCommand("Replay IG Analyzer Tour", () => {
+      const panel = document.getElementById("ig-analyzer-panel");
+      if (panel && panel.style.display === "none") {
+        UI.togglePanel();
+      }
       resetTour();
       startTour({ force: true });
     });

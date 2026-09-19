@@ -16,7 +16,7 @@ export default defineConfig({
           'pt-PT': 'Analisador de seguidores do Instagram',
         },
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.8.2', 
+        version: '3.9.0', 
         description: {
           '': 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',
           es: 'Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.',
@@ -27,6 +27,7 @@ export default defineConfig({
         },
         author: 'UNKchr',
         match: ['https://www.instagram.com/*'],
+        noframes: true,
         updateURL: 'https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js',
         downloadURL: 'https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js',
         license: 'MIT',

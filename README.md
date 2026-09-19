@@ -33,9 +33,13 @@ A powerful and elegant Tampermonkey userscript that safely analyzes your Instagr
 - --Renamed Accounts History:-- Includes a dedicated --Renamed-- tab that stores and displays username transitions with previous username, current username, and detection date.
 - --Churn & Deactivation Tracking:-- Keeps a dated record of users who unfollow you while distinguishing real unfollows from accounts that became unavailable.
 - --Visual Trend Indicators:-- The History tab uses SVG indicators to visualize daily follower and following growth or decline.
-- --Anti-Rate-Limit Retry Logic:-- Implements exponential backoff to handle HTTP 429 responses safely and reduce request pressure.
+- --On-Demand Analysis Cancellation:-- Interrupt any active scan safely at any time. The "Run Analysis" button dynamically converts into "Cancel Analysis", instantly halting network pagination and background verifications via `AbortController`.
+- --Client-Side Results Pagination:-- Results in Not Following, Fans, and Mutuals tabs are paginated into clean 50-user pages with interactive `← Prev` and `Next →` navigation, eliminating DOM bloat and preventing UI freezes on large accounts.
+- --Multi-Account Storage Isolation:-- Automatically isolates saved snapshots, history, whitelist, and tracking lists by Instagram account ID (`${key}_${userId}`), preventing data cross-contamination when switching accounts on the same browser profile.
+- --Anti-Rate-Limit & SSR Architecture:-- Extracts story anomalies and account statuses directly from official Server-Side Rendered (SSR) HTML and canvas element signatures, eliminating HTTP 429 rate limit warnings in browser DevTools.
+- --Secure CSV Export:-- Download sanitized `.csv` files protected against CSV Formula Injection (CWE-1236) and formatted with UTF-8 BOM for seamless compatibility with Excel, LibreOffice, and Google Sheets.
 - --Direct CSV Export:-- Download a `.csv` file containing usernames and profile URLs for non-followers, ready for Excel or Google Sheets.
-- --Backup & Restore:-- Export all current analyzer data to a local JSON backup and import it later to recover history, lists, and persistent state if browser data is lost.
+- --Backup & Restore:-- Export all current analyzer data to a local JSON backup and import it later to recover history, lists, and persistent state if browser data is lost, protected by strict key whitelisting.
 - --Whitelist System:-- Exclude selected users from non-followers results and CSV output; ignored users remain filtered in future scans.
 - --Real-time Progress Tracking:-- Displays progress based on total count and processed records during extraction.
 - --Modern UI Panel:-- Draggable panel with tabbed analytics, real-time logs, Light/Dark theme awareness, and persistent local state.
@@ -60,13 +64,15 @@ A powerful and elegant Tampermonkey userscript that safely analyzes your Instagr
    - If unreachable, press `F8` to reset its default position.
 3. Click --Run Analysis--.
 4. A safety reminder will confirm your intent. Click --Yes, Continue--.
-5. Monitor progress in --Logs-- and with the progress bar. Do not refresh or close the tab during processing.
-6. Once completed, review tabs: --Not Following--, --Fans--, --Mutuals--, --Unfollowers--, --Deactivated--, --Blocked--, and --Renamed--.
-7. Click --`Check Story`-- next to any user in --Mutuals--, --Fans--, or --Not Following-- to perform a targeted story visibility check.
-8. In --Not Following--, click --Ignore-- to add users to your whitelist.
-9. Click --Export CSV-- to download filtered non-followers data.
-10. Use --History-- to inspect follower/following trends across runs.
-11. Open --Backup-- to export a complete JSON snapshot of the analyzer state or import one later to restore it after data loss.
+5. While the scan is running, the button converts into --Cancel Analysis--. You can click it at any time to abort the process safely.
+6. Monitor progress in --Logs-- and with the progress bar. Do not refresh or close the tab during processing.
+7. Once completed, review tabs: --Not Following--, --Fans--, --Mutuals--, --Unfollowers--, --Deactivated--, --Blocked--, and --Renamed--.
+8. Browse long lists smoothly using the --`← Prev`-- and --`Next →`-- pagination controls at the bottom of each tab (50 users per page).
+9. Click --`Check Story`-- next to any user in --Mutuals--, --Fans--, or --Not Following-- to perform a targeted story visibility check.
+10. In --Not Following--, click --Ignore-- to add users to your whitelist.
+11. Click --Export CSV-- to download filtered non-followers data with CSV formula injection protection.
+12. Use --History-- to inspect follower/following trends across runs.
+13. Open --Backup-- to export a complete JSON snapshot of the analyzer state or import one later to restore it after data loss.
 
 ---
 
@@ -105,23 +111,25 @@ Older snapshots remain supported. Username-only historical data is normalized at
 ---
 
 ## Local Data Stored
-
+ 
 All data is stored locally on your browser profile using Tampermonkey's private storage APIs (`GM_getValue`, `GM_setValue`). No data is ever transmitted to third-party servers.
+
+Starting in v3.9.0, all data is automatically isolated by your Instagram user ID (`${key}_${userId}`), ensuring complete data privacy and isolation when using multiple accounts on the same browser.
 
 Stored keys:
 
-- `ig_snapshot_v2`: Latest complete scan snapshot (followers, following, detailed records).
-- `ig_whitelist_v2`: Ignored / whitelisted usernames.
-- `ig_history_v2`: Daily follower and following counts for historical trend tracking.
-- `ig_churn_v3`: Log of detected unfollow events with timestamps.
-- `ig_deactivated_v3`: Log of accounts identified as deactivated or unavailable.
-- `ig_blocked_v1`: Log of accounts detected as having blocked your profile.
-- `ig_renamed_v1`: Log of confirmed username changes (old vs new usernames).
-- `ig_story_observations_v1`: Historical highlight count observations for private accounts.
+- `ig_snapshot_v2_${userId}`: Latest complete scan snapshot (followers, following, detailed records).
+- `ig_whitelist_v2_${userId}`: Ignored / whitelisted usernames.
+- `ig_history_v2_${userId}`: Daily follower and following counts for historical trend tracking.
+- `ig_churn_v3_${userId}`: Log of detected unfollow events with timestamps.
+- `ig_deactivated_v3_${userId}`: Log of accounts identified as deactivated or unavailable.
+- `ig_blocked_v1_${userId}`: Log of accounts detected as having blocked your profile.
+- `ig_renamed_v1_${userId}`: Log of confirmed username changes (old vs new usernames).
+- `ig_story_observations_v1_${userId}`: Historical highlight count observations for private accounts.
 - `ig_panel_position_v2`: Saved screen coordinates of the draggable panel.
 - `ig_tour_completed_v1`: Flag recording if the interactive tour has been completed.
 
-The --Backup-- tool exports all current analyzer storage entries into a single JSON file with metadata, and the same file can be imported later to restore the saved state into the browser.
+The --Backup-- tool exports all current analyzer storage entries into a single JSON file with metadata, and the same file can be imported later to restore the saved state into the browser (protected by strict key validation).
 
 Use the --Reset-- button to clear persisted analyzer data.
 

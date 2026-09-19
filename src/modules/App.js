@@ -6,9 +6,28 @@ import { API } from './API.js';
 import { Icons } from '../assets/Icons.js';
 
 export const App = {
+    isRunning: false,
+    abortController: null,
+    lastResults: null,
+
+    abort: () => {
+        if (App.isRunning && App.abortController) {
+            UI.setStatus("Cancelling...");
+            UI.setRunButtonState('cancelling');
+            try {
+                UI.log("[INFO] Analysis cancellation requested by user...");
+            } catch (err) {
+                console.log("[INFO] Analysis cancellation requested by user...");
+            }
+            App.abortController.abort();
+        }
+    },
+
     run: async () => {
-        const btnRun = document.getElementById("ig-run");
-        if (btnRun) btnRun.disabled = true;
+        if (App.isRunning) {
+            App.abort();
+            return;
+        }
 
         const userConfirmed = await UI.confirmAction(
             "Safety Precaution", 
@@ -19,24 +38,34 @@ export const App = {
         if (!userConfirmed) {
             UI.log("Analysis cancelled by user.");
             console.log("Analysis cancelled by user.");
-            if (btnRun) btnRun.disabled = false;
             return; 
         }
 
+        App.isRunning = true;
+        App.abortController = new AbortController();
+        const signal = App.abortController.signal;
+
+        UI.setRunButtonState('running');
         UI.setStatus("Analyzing...");
-        UI.log("Starting deep analysis...");
-        const logTab = document.querySelector('[data-target="ig-log"]');
-        if (logTab) logTab.click();
-        
+
         try {
-            const userId = await Utils.getUserIdAsync();
+            UI.log("Starting deep analysis...");
+            const logTab = document.querySelector('[data-target="ig-log"]');
+            if (logTab) logTab.click();
+
+            const userId = await Utils.getUserIdAsync(signal);
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError");
             if (!userId || userId === "0") throw new Error("User ID could not be obtained. Are you logged in?");
+            Storage.setCurrentUserId(userId);
             UI.log("User ID detected: " + userId);
             
             UI.log("Fetching 'Following'...");
-            const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following"); 
+            const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following", { signal }); 
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+
             UI.log("Fetching 'Followers'...");
-            const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers"); 
+            const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal }); 
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError"); 
 
             
             const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw); 
@@ -115,31 +144,44 @@ export const App = {
                 const newBlocked = [];
                 const newUnfollowers = [];
 
-                
                 const filteredLostFollowers = lostFollowers.filter((u) => !renamedOldUsernameSet.has(u)); 
                 const filteredMissingUsers = missingUsers.filter((u) => !renamedOldUsernameSet.has(u)); 
-                const accountsToVerify = Utils.unique([...filteredLostFollowers, ...filteredMissingUsers]); 
+
+                // Ordinary unfollowers: lost followers who didn't vanish from both lists simultaneously
+                const ordinaryUnfollowers = filteredLostFollowers.filter((u) => !filteredMissingUsers.includes(u));
+                if (ordinaryUnfollowers.length > 0) {
+                    newUnfollowers.push(...ordinaryUnfollowers);
+                }
+
+                // Only anomalous missing accounts (vanished from both following & followers) are candidates for checkAccountStatus
+                const maxVerify = CONFIG.MAX_AUTO_VERIFY_ACCOUNTS || 5;
+                const accountsToVerify = filteredMissingUsers.slice(0, maxVerify);
+                const unverifiedMissing = filteredMissingUsers.slice(maxVerify);
+
+                // Any remaining missing accounts beyond the safe limit are safely classified as unfollowers to prevent API flood
+                if (unverifiedMissing.length > 0) {
+                    newUnfollowers.push(...unverifiedMissing);
+                }
 
                 if (accountsToVerify.length > 0) {
-                    UI.setStatus("Verifying lost accounts...");
+                    UI.setStatus(`Verifying ${accountsToVerify.length} suspicious account(s)...`);
                     for (let i = 0; i < accountsToVerify.length; i++) {
+                        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
                         const username = accountsToVerify[i];
-                        UI.setStatus(`Verifying lost account (${i + 1}/${accountsToVerify.length}): @${username}`);
-                        const status = await API.checkAccountStatus(username);
+                        UI.setStatus(`Verifying account status (${i + 1}/${accountsToVerify.length}): @${username}`);
+                        const status = await API.checkAccountStatus(username, { signal });
 
                         if (status === 'Deactivated') {
                             newDeactivated.push(username);
                         } else if (status === 'Blocked') {
                             newBlocked.push(username);
                         } else if (status === 'Active') {
-                            if (filteredLostFollowers.includes(username)) {
-                                newUnfollowers.push(username);
-                            }
+                            newUnfollowers.push(username);
                             // Auto-heal: If an account was previously misclassified as Blocked, remove it!
                             let currentBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
                             if (currentBlocked.some((b) => b.username === username)) {
                                 currentBlocked = currentBlocked.filter((b) => b.username !== username);
-                                GM_setValue(CONFIG.BLOCKED_KEY, currentBlocked);
+                                Storage.setScopedValue(CONFIG.BLOCKED_KEY, currentBlocked);
                                 UI.renderNominalList(currentBlocked, "ig-view-blocked", "Blocked Accounts");
                             }
                         } else {
@@ -147,10 +189,11 @@ export const App = {
                                 `Unexpected status "${status}" from checkAccountStatus for user "${username}"`,
                                 null
                             );
+                            newUnfollowers.push(username);
                         }
 
                         if (i < accountsToVerify.length - 1) {
-                            await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS);
+                            await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS, signal);
                         }
                     }
                 }    
@@ -175,7 +218,7 @@ export const App = {
                 let storedBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
                 const cleanedBlocked = storedBlocked.filter((b) => !activeHandles.has(b.username));
                 if (cleanedBlocked.length !== storedBlocked.length) {
-                    GM_setValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
+                    Storage.setScopedValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
                     UI.renderNominalList(cleanedBlocked, "ig-view-blocked", "Blocked Accounts");
                 }
             } else {
@@ -208,20 +251,30 @@ export const App = {
             UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
             UI.renderPersistedSnapshot(Storage.load());
             
+            App.lastResults = notFollowingBackDetailed;
             window.__igLastResults = notFollowingBackDetailed;
             UI.setStatus("Completed");
             UI.log("[OK] Analysis completed successfully.");
             
         } catch (e) {
-            UI.setStatus("Error");
             UI.hideProgress();
-            Utils.logError("Failed analysis", e);
+            if (e.name === 'AbortError' || signal?.aborted) {
+                UI.setStatus("Cancelled");
+                UI.log("[INFO] Analysis cancelled by user.");
+            } else {
+                UI.setStatus("Error");
+                UI.log("[ERROR] Analysis failed: " + (e.message || String(e)));
+                Utils.logError("Failed analysis", e);
+            }
         } finally {
-            if (btnRun) btnRun.disabled = false;
+            App.isRunning = false;
+            App.abortController = null;
+            UI.setRunButtonState('idle');
         }
     },
 
     runStorySpy: async (username, btnElement) => {
+        const safeUsername = Utils.escapeHtml(username);
         if (btnElement) {
             if (btnElement.disabled) return;
             btnElement.disabled = true;
@@ -229,11 +282,11 @@ export const App = {
         }
 
         try {
-            UI.log(`[Spy Module] Checking story visibility for @${username}...`);
+            UI.log(`[Spy Module] Checking story visibility for @${safeUsername}...`);
             const status = await API.checkStoryStatus(username);
             
             if (!status) {
-                await UI.confirmAction("Error", `Could not fetch data for @${username}. The profile might be unavailable or rate-limited.`, "Close", false);
+                await UI.confirmAction("Error", `Could not fetch data for @${safeUsername}. The profile might be unavailable or rate-limited.`, "Close", false);
                 return;
             }
 
@@ -286,6 +339,7 @@ export const App = {
             if (probability >= 75) statusColor = '#ef4444';
             else if (probability > 0) statusColor = '#eab308';
 
+            const targetType = status.isPrivate ? 'Private' : 'Public';
             let resultHtml = `
                 <div style="text-align:center; margin-bottom: 14px;">
                     <div style="font-size: 26px; font-weight: bold; color: ${statusColor};">${probability}% Probability</div>
@@ -295,15 +349,15 @@ export const App = {
                     ${reason}
                 </div>
                 <div style="margin-top: 14px; font-size: 12px; color: #8e8e8e; line-height: 1.6; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
-                    <b>Target:</b> @${username} (${status.isPrivate ? 'Private' : 'Public'})<br>
+                    <b>Target:</b> @${safeUsername} (${targetType})<br>
                     <b>Highlights (Logged In):</b> ${status.authHighlightsCount > 0 ? `Visible (${status.authHighlightsCount})` : 'None detected'}<br>
                     <b>Story (Logged In):</b> ${status.authHasStory ? 'Active Story' : 'None'}<br>
                     ${!status.isPrivate ? `<b>Highlights (Guest):</b> ${status.anonHighlightsCount > 0 ? `Visible (${status.anonHighlightsCount})` : 'None'}<br><b>Story (Guest):</b> ${status.anonHasStory ? 'Active Story' : 'None'}` : '<i>Guest check not applicable to private accounts.</i>'}
                 </div>
             `;
 
-            UI.log(`[Spy Module] @${username}: ${probability}% anomaly probability (${status.isPrivate ? 'Private' : 'Public'}).`);
-            await UI.confirmAction(`Story Spy: @${username}`, resultHtml, "Close", false, Icons.spy);
+            UI.log(`[Spy Module] @${safeUsername}: ${probability}% anomaly probability (${targetType}).`);
+            await UI.confirmAction(`Story Spy: @${safeUsername}`, resultHtml, "Close", false, Icons.spy);
 
         } catch (e) {
             Utils.logError("Error in runStorySpy", e);
@@ -322,9 +376,10 @@ export const App = {
         
         const btnExport = document.getElementById("ig-export-csv");
         if (btnExport) btnExport.onclick = () => {
-            if (window.__igLastResults) {
+            const resultsToExport = App.lastResults || window.__igLastResults;
+            if (resultsToExport && resultsToExport.length > 0) {
                 const dateStr = Utils.now().split("T")[0];
-                Utils.exportCSV(window.__igLastResults, "ig_no_follow_back_" + dateStr + ".csv");
+                Utils.exportCSV(resultsToExport, "ig_no_follow_back_" + dateStr + ".csv");
                 UI.log("CSV Exported.");
             }
         };
@@ -349,18 +404,65 @@ export const App = {
             };
         }
         
-        // Delegated click listener on the panel for .btn-spy-story
+        // Single unified delegated click listener for panel actions
         const panel = document.getElementById("ig-analyzer-panel");
         if (panel) {
             panel.addEventListener("click", async (e) => {
-                const btnSpy = e.target.closest(".btn-spy-story");
-                if (!btnSpy) return;
-                e.preventDefault();
-                e.stopPropagation();
-                if (btnSpy.disabled) return;
-                const username = btnSpy.getAttribute("data-user");
-                if (!username) return;
-                await App.runStorySpy(username, btnSpy);
+                // 1. Delegated Story Spy Button
+                const btnSpy = e.target.closest(".btn-spy-story, .ig-btn-spy-story");
+                if (btnSpy) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (btnSpy.disabled) return;
+                    const username = btnSpy.getAttribute("data-user");
+                    if (!username) return;
+                    await App.runStorySpy(username, btnSpy);
+                    return;
+                }
+
+                // 2. Delegated Whitelist / Ignore Button
+                const btnWl = e.target.closest(".btn-whitelist, .ig-btn-whitelist");
+                if (btnWl) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const targetUser = btnWl.getAttribute("data-user");
+                    const containerId = btnWl.getAttribute("data-container");
+                    if (!targetUser) return;
+                    Storage.addToWhitelist(targetUser);
+                    if (containerId && UI.paginationState[containerId]) {
+                        UI.paginationState[containerId].users = UI.paginationState[containerId].users.filter((u) => u.username !== targetUser);
+                        UI.renderResultsPage(containerId);
+                    }
+                    if (App.lastResults) {
+                        App.lastResults = App.lastResults.filter((u) => u.username !== targetUser);
+                    }
+                    if (window.__igLastResults) {
+                        window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
+                        const exportBtn = document.getElementById("ig-export-csv");
+                        if (exportBtn) exportBtn.disabled = window.__igLastResults.length === 0;
+                    }
+                    UI.log("[INFO] " + targetUser + " added to whitelist.");
+                    return;
+                }
+
+                // 3. Delegated Pagination Controls
+                const btnPrev = e.target.closest(".ig-page-prev");
+                if (btnPrev && !btnPrev.disabled) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const cId = btnPrev.getAttribute("data-container");
+                    if (cId) UI.changePage(cId, -1);
+                    return;
+                }
+
+                const btnNext = e.target.closest(".ig-page-next");
+                if (btnNext && !btnNext.disabled) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const cId = btnNext.getAttribute("data-container");
+                    if (cId) UI.changePage(cId, 1);
+                    return;
+                }
             });
         }
 

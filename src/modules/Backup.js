@@ -62,6 +62,44 @@ const isSafeJsonValue = (value, depth = 0) => {
 
 const isSafeStorageKey = (key) => typeof key === 'string' && key.length > 0 && !BACKUP_UNSAFE_KEYS.has(key);
 
+const ALLOWED_BACKUP_KEY_BASES = [
+    CONFIG.STORAGE_KEY,
+    CONFIG.WHITELIST_KEY,
+    CONFIG.HISTORY_KEY,
+    CONFIG.CHURN_KEY,
+    CONFIG.DEACTIVATED_KEY,
+    CONFIG.BLOCKED_KEY,
+    CONFIG.RENAMED_KEY,
+    CONFIG.STORY_ANOMALY_KEY,
+    CONFIG.STORY_OBS_KEY,
+    CONFIG.TOUR_KEY,
+    CONFIG.POSITION_KEY,
+    'followers',
+    'following',
+    'followersDetailed',
+    'followingDetailed',
+    'notFollowingBackDetailed',
+    'fansDetailed',
+    'mutualsDetailed',
+    'unfollowers',
+    'deactivated',
+    'blocked',
+    'renamed',
+    'history'
+];
+
+const isAuthorizedBackupKey = (key) => {
+    if (!isSafeStorageKey(key)) return false;
+    return ALLOWED_BACKUP_KEY_BASES.some((base) => {
+        if (key === base) return true;
+        if (key.startsWith(base + '_')) {
+            const suffix = key.slice(base.length + 1);
+            return /^[0-9]+$/.test(suffix);
+        }
+        return false;
+    });
+};
+
 const readFileAsText = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
 
@@ -359,8 +397,8 @@ export const validateBackupSchema = (payload) => {
     }
 
     for (const [key, value] of dataEntries) {
-        if (!isSafeStorageKey(key)) {
-            return { valid: false, reason: `The key "${key}" is not safe.` };
+        if (!isAuthorizedBackupKey(key)) {
+            return { valid: false, reason: `The key "${key}" is not recognized or authorized for this script.` };
         }
 
         if (!isSafeJsonValue(value)) {

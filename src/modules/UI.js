@@ -77,22 +77,65 @@ export const UI = {
         UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
         UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
         UI.renderPersistedSnapshot(Storage.load());
+
+        Utils.getUserIdAsync().then((asyncId) => {
+            if (asyncId && asyncId !== Storage.getCurrentUserId()) {
+                Storage.setCurrentUserId(asyncId);
+                UI.renderHistory(Storage.getHistory(asyncId));
+                UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, asyncId), "ig-view-unfollowers", "Recent Unfollowers");
+                UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, asyncId), "ig-view-deactivated", "Deactivated Accounts");
+                UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, asyncId), "ig-view-blocked", "Blocked Accounts");
+                UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, asyncId), "ig-view-renamed", "Username Changes"); 
+                UI.renderPersistedSnapshot(Storage.load(asyncId));
+            }
+        }).catch(() => {});
     },
 
     setupThemeObserver: () => {
         const panel = document.getElementById('ig-analyzer-panel');
+        let rafId = null;
+
         const checkTheme = () => {
-            const bgColor = window.getComputedStyle(document.body).backgroundColor;
-            if (bgColor === 'rgb(255, 255, 255)' || bgColor === '#ffffff' || bgColor === 'white') {
+            const html = document.documentElement;
+            const body = document.body;
+
+            // 1. Check for explicit dark mode classes/attributes on Instagram Web
+            const isExplicitDark = html.classList.contains('_aa55') || 
+                                   html.getAttribute('data-theme') === 'dark' || 
+                                   (body && body.getAttribute('data-theme') === 'dark');
+
+            if (isExplicitDark) {
+                panel.classList.remove('ig-light-theme');
+                return;
+            }
+
+            // 2. Computed background color with Instagram light theme (#fafafa / rgb(250, 250, 250)) tolerance
+            const bodyBg = window.getComputedStyle(body || html).backgroundColor;
+            const isLightBg = bodyBg === 'rgb(255, 255, 255)' || 
+                              bodyBg === '#ffffff' || 
+                              bodyBg === 'white' || 
+                              bodyBg === 'rgb(250, 250, 250)' || 
+                              bodyBg === '#fafafa';
+
+            if (isLightBg) {
                 panel.classList.add('ig-light-theme');
             } else {
                 panel.classList.remove('ig-light-theme');
             }
         };
+
         checkTheme();
-        const observer = new MutationObserver(() => checkTheme());
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
-        observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+
+        // Use requestAnimationFrame to eliminate layout thrashing during DOM mutation bursts
+        const observer = new MutationObserver(() => {
+            if (rafId) cancelAnimationFrame(rafId);
+            rafId = requestAnimationFrame(checkTheme);
+        });
+
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+        if (document.body) {
+            observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+        }
     },
     
     confirmAction: (title, message, confirmBtnText = "Yes, Continue", showCancel = true, customIcon = null) => {
@@ -198,24 +241,34 @@ export const UI = {
     },
     
     log: (msg) => {
-        const box = document.getElementById("ig-log");
-        if (box) {
-            const timeStr = Utils.now().split("T")[1].split(".")[0];
-            const entry = document.createElement("div");
-            entry.className = "ig-log-entry";
-            
-            const timeSpan = document.createElement("span");
-            timeSpan.className = "ig-log-time";
-            timeSpan.textContent = '[' + timeStr + '] ';
-            
-            const textNode = document.createTextNode(msg);
-            
-            entry.appendChild(timeSpan);
-            entry.appendChild(textNode);
-            box.appendChild(entry);
-            box.scrollTop = box.scrollHeight;
+        try {
+            const box = document.getElementById("ig-log");
+            if (box) {
+                const nowStr = (typeof Utils.now === 'function' ? Utils.now() : new Date().toISOString());
+                const timeParts = nowStr.split("T");
+                const timeStr = (timeParts.length > 1 ? timeParts[1].split(".")[0] : '') || nowStr;
+                const entry = document.createElement("div");
+                entry.className = "ig-log-entry";
+                
+                const timeSpan = document.createElement("span");
+                timeSpan.className = "ig-log-time";
+                timeSpan.textContent = '[' + timeStr + '] ';
+                
+                const textNode = document.createTextNode(msg);
+                
+                entry.appendChild(timeSpan);
+                entry.appendChild(textNode);
+                box.appendChild(entry);
+                box.scrollTop = box.scrollHeight;
+            }
+        } catch (err) {
+            console.error("[IG Analyzer Log Box Error]", err);
         }
-        Utils.log(msg);
+        try {
+            Utils.log(msg);
+        } catch (err) {
+            console.log(`[IG Analyzer] ${msg}`);
+        }
     },
     
     setProgress: (current, total, label) => {
@@ -232,26 +285,80 @@ export const UI = {
         const el = document.getElementById("ig-progress-container");
         if (el) el.style.display = "none";
     },
+
+    setRunButtonState: (state) => {
+        const btnRun = document.getElementById("ig-run");
+        if (!btnRun) return;
+
+        if (state === 'running') {
+            btnRun.className = "ig-btn ig-btn-danger";
+            btnRun.innerHTML = '<span class="ig-btn-icon">' + Icons.stop + '</span>Cancel Analysis';
+            btnRun.disabled = false;
+        } else if (state === 'cancelling') {
+            btnRun.className = "ig-btn ig-btn-danger";
+            btnRun.innerHTML = '<span class="ig-btn-icon">' + Icons.stop + '</span>Cancelling...';
+            btnRun.disabled = true;
+        } else {
+            btnRun.className = "ig-btn ig-btn-primary";
+            btnRun.innerHTML = '<span class="ig-btn-icon">' + Icons.play + '</span>Run Analysis';
+            btnRun.disabled = false;
+        }
+    },
     
-    renderResults: (users, title, containerId, isExportable = false) => {
+    paginationState: {},
+
+    changePage: (containerId, delta) => {
+        const state = UI.paginationState[containerId];
+        if (!state) return;
+        const totalPages = Math.max(1, Math.ceil(state.users.length / state.pageSize));
+        const newPage = state.page + delta;
+        if (newPage >= 1 && newPage <= totalPages) {
+            state.page = newPage;
+            UI.renderResultsPage(containerId);
+        }
+    },
+
+    renderResultsPage: (containerId) => {
+        const state = UI.paginationState[containerId];
+        if (!state) return;
+
         const container = document.getElementById(containerId);
         if (!container) return;
-        
+
+        const { users, title, isExportable, pageSize } = state;
+        const totalPages = Math.max(1, Math.ceil(users.length / pageSize));
+        state.page = Math.max(1, Math.min(state.page, totalPages));
+        const page = state.page;
+
+        const startIndex = (page - 1) * pageSize;
+        const pageUsers = users.slice(startIndex, startIndex + pageSize);
+
         const safeTitle = Utils.escapeHtml(title);
         let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + users.length + "</span></div>";
-        if (users.length === 0) html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + '</span>No data available yet.</div>';
-        
-        users.forEach((u, index) => {
-            const uniqueId = containerId + "-row-" + index;
+
+        if (users.length === 0) {
+            html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + '</span>No data available yet.</div>';
+            container.innerHTML = html;
+            if (isExportable) {
+                const exportBtn = document.getElementById("ig-export-csv");
+                if (exportBtn) exportBtn.disabled = true;
+            }
+            return;
+        }
+
+        pageUsers.forEach((u, index) => {
+            const globalIndex = startIndex + index;
+            const uniqueId = containerId + "-row-" + globalIndex;
             const safeUsername = Utils.escapeHtml(u.username || '');
             const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : '?';
             const safeUrl = Utils.sanitizeUrl(u.username, u.url);
             const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : '';
             const isVerified = Boolean(u.isVerified);
             const hasStory = Boolean(u.latestReelMedia && u.latestReelMedia > 0);
+            const safeAvatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
 
-            const avatarHtml = u.profilePicUrl
-                ? '<img class="ig-user-avatar" src="' + Utils.escapeHtml(u.profilePicUrl) + '" alt="' + safeUsername + '" style="object-fit:cover;' + (hasStory ? ' outline: 2px solid #e1306c; outline-offset: 1px;' : '') + '" />'
+            const avatarHtml = safeAvatarUrl
+                ? '<img class="ig-user-avatar" src="' + safeAvatarUrl + '" alt="' + safeUsername + '" style="object-fit:cover;' + (hasStory ? ' outline: 2px solid #e1306c; outline-offset: 1px;' : '') + '" />'
                 : '<span class="ig-user-avatar"' + (hasStory ? ' style="outline: 2px solid #e1306c; outline-offset: 1px;"' : '') + '>' + safeInitial + '</span>';
 
             html += '<div class="ig-user-row" id="' + uniqueId + '">';
@@ -264,66 +371,42 @@ export const UI = {
             html += '</div></div>';
             html += '<div class="ig-user-actions">';
             if (containerId === "ig-view-notfollowing") {
-                html += '<button class="btn-whitelist" data-user="' + safeUsername + '" data-idx="' + uniqueId + '">Ignore</button>';
+                html += '<button class="ig-btn-whitelist btn-whitelist" data-user="' + safeUsername + '" data-container="' + containerId + '">Ignore</button>';
             }
             if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing") {
-                html += '<button class="btn-spy-story" data-user="' + safeUsername + '">' + Icons.spy + ' Check Story</button>';
+                html += '<button class="ig-btn-spy-story btn-spy-story" data-user="' + safeUsername + '">' + Icons.spy + ' Check Story</button>';
             }
             html += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + '</a>';
             html += '</div></div>';
         });
-        
+
+        if (totalPages > 1) {
+            html += '<div class="ig-pagination">';
+            html += '<button class="ig-page-btn ig-page-prev" data-container="' + containerId + '"' + (page <= 1 ? ' disabled' : '') + '>&larr; Prev</button>';
+            html += '<span class="ig-page-info">Page ' + page + ' of ' + totalPages + ' (' + users.length + ' users)</span>';
+            html += '<button class="ig-page-btn ig-page-next" data-container="' + containerId + '"' + (page >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>';
+            html += '</div>';
+        }
+
         container.innerHTML = html;
 
-        // Bind Spy Buttons
-        const spyBtns = container.querySelectorAll(".btn-spy-story");
-        spyBtns.forEach((btn) => {
-            btn.onclick = async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const btnEl = e.currentTarget || e.target.closest('.btn-spy-story') || btn;
-                const targetUser = btnEl ? btnEl.getAttribute("data-user") : null;
-                if (!targetUser) return;
-
-                if (window.App && typeof window.App.runStorySpy === 'function') {
-                    await window.App.runStorySpy(targetUser, btnEl);
-                } else {
-                    console.error("[IG Analyzer] window.App.runStorySpy is not available");
-                }
-            };
-        });
-        
-        if (containerId === "ig-view-notfollowing") {
-            const whitelistBtns = container.querySelectorAll(".btn-whitelist");
-            whitelistBtns.forEach((btn) => {
-                btn.onclick = (e) => {
-                    const btnEl = e.currentTarget || btn;
-                    const targetUser = btnEl.getAttribute("data-user");
-                    const rowId = btnEl.getAttribute("data-idx");
-                    if (!targetUser) return;
-                    Storage.addToWhitelist(targetUser);
-                    const row = document.getElementById(rowId);
-                    if (row) {
-                        row.style.opacity = "0";
-                        row.style.transform = "translateX(20px)";
-                        setTimeout(() => row.style.display = "none", 300);
-                    }
-                    UI.log("[INFO] " + targetUser + " added to whitelist.");
-                    if (window.__igLastResults) {
-                        window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
-                        if (isExportable) {
-                            const exportBtn = document.getElementById("ig-export-csv");
-                            if (exportBtn) exportBtn.disabled = window.__igLastResults.length === 0;
-                        }
-                    }
-                };
-            });
-        }
-        
         if (isExportable) {
             const exportBtn = document.getElementById("ig-export-csv");
             if (exportBtn) exportBtn.disabled = users.length === 0;
         }
+    },
+
+    renderResults: (users, title, containerId, isExportable = false) => {
+        const safeUsers = Array.isArray(users) ? users : [];
+        UI.paginationState[containerId] = {
+            users: safeUsers,
+            title,
+            containerId,
+            isExportable,
+            page: 1,
+            pageSize: 50
+        };
+        UI.renderResultsPage(containerId);
     },
     
     renderNominalList: (list, containerId, title) => {

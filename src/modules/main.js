@@ -10,14 +10,21 @@ window.App = App;
 
 App.bindEvents();
 
-// Start the first-time tour after the DOM is fully rendered
+// Start the first-time tour after the DOM is fully rendered, only if panel is visible
 setTimeout(() => {
-    startTour();
+    const panel = document.getElementById("ig-analyzer-panel");
+    if (panel && panel.style.display !== "none") {
+        startTour();
+    }
 }, 800);
 
 // Tampermonkey menu command to replay the tour on demand
 if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('Replay IG Analyzer Tour', () => {
+        const panel = document.getElementById("ig-analyzer-panel");
+        if (panel && panel.style.display === "none") {
+            UI.togglePanel();
+        }
         resetTour();
         startTour({ force: true });
     });

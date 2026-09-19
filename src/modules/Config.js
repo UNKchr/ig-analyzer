@@ -21,6 +21,9 @@ export const CONFIG = {
     PAGE_SIZE: 50,
     BASE_RATE_LIMIT_MS: 2000, // Increased pacing for native REST API sensitivity
     MAX_RETRIES: 4,           
+    COOLDOWN_429_MS: 60000,   // Cooldown period when encountering HTTP 429
+    MAX_AUTO_VERIFY_ACCOUNTS: 5, // Maximum lost accounts to auto-verify per scan
+    ASBD_ID: "359341",        // Modern Meta ASBD header identifier
     DEBUG: false,
     MIN_VISIBLE_PX: 50,
     DEFAULT_POSITION: { top: 80, right: 20 }

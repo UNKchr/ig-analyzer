@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.0] - 2026-09-19
+
+### Added
+
+- **On-Demand Analysis Cancellation:**
+  - The "Run Analysis" button dynamically converts into a "Cancel Analysis" button while a scan is running.
+  - Powered by `AbortController`, cancellation halts network pagination, profile verifications, and background delays instantly, cleanly restoring the UI and analyzer state to idle.
+- **Client-Side Results Pagination (Performance & DOM Optimization):**
+  - Implemented pagination (50 items per page) for user lists in all result tabs (Not Following, Fans, Mutuals).
+  - Added interactive `← Prev` and `Next →` navigation controls with page counters, completely eliminating DOM bloat and browser UI freezes when inspecting accounts with thousands of followers.
+- **Multi-Account Storage Scoping & Isolation:**
+  - Storage keys are now dynamically isolated by Instagram account ID (`${baseKey}_${userId}`), preventing data cross-contamination when managing multiple accounts in the same browser profile.
+  - Features transparent, automatic backward migration of legacy unscoped data upon first read.
+- **Authorized Backup Key Whitelisting:**
+  - Added strict key validation (`isAuthorizedBackupKey`) during backup imports, ensuring only authorized analyzer keys with valid numeric account ID suffixes can be imported, preventing arbitrary storage key injection.
+- **Unified Event Delegation:**
+  - Replaced repetitive per-element click listeners with a single, performant delegated click listener on `#ig-analyzer-panel` for all user row actions (Story Spy, Whitelist/Ignore, and Pagination).
+
+### Security
+
+- **CSV Formula Injection Mitigation (CWE-1236):**
+  - Fully sanitized CSV export generation in `Utils.exportCSV`: prepends a single quote (`'`) to any cell value starting with formula triggers (`=`, `+`, `-`, `@`, `\t`, `\r`), escapes internal quotes, and wraps fields in double quotes per RFC 4180.
+  - Added UTF-8 Byte Order Mark (`\uFEFF`) to guarantee accurate character encoding across Microsoft Excel, LibreOffice Calc, and Google Sheets.
+- **Strict XSS & Protocol Sanitization:**
+  - Hardened `Utils.sanitizeUrl` to block malicious URI schemes (`javascript:`, `data:`, `vbscript:`).
+  - Introduced `Utils.sanitizeImageUrl` to validate HTTPS protocols and proper URI formatting before inserting avatar URLs into `<img>` tags.
+  - Applied comprehensive HTML entity escaping (`Utils.escapeHtml`) across all user-supplied data in modal alerts, logs, and user rows.
+
+### Fixed
+
+- **HTTP 429 Eradication in Story Spy & Account Status:**
+  - Completely eliminated all calls to Meta's restricted REST endpoint (`/api/v1/users/web_profile_info/?username=...`) across `checkStoryStatus`, `checkAccountStatus`, and `getUserIdAsync`.
+  - Both Story Spy and Account Status modules now extract data directly from official Server-Side Rendered (SSR) HTML and canvas element signatures (`latest_reel_media`, `highlight_reel_count`, `is_private`), eliminating red HTTP 429 warnings in browser DevTools and speeding up analysis.
+- **Analysis Freeze & Unhandled Exception Recovery:**
+  - Restored `Utils.now()` and `CONFIG` imports in `Utils.js`.
+  - Wrapped `UI.log()` in defensive `try/catch` and enclosed the entire `App.run()` execution flow within `try/catch/finally` to guarantee that UI states, buttons, and flags always recover cleanly.
+- **Tour Visibility on Closed Panel:**
+  - Fixed tour auto-start to only trigger when the analyzer panel is visible.
+  - Updated the Tampermonkey menu command (`GM_registerMenuCommand`) to automatically open the panel if closed before replaying the tour.
+
 ## [3.8.2] - 2026-09-10
 
 ### Added

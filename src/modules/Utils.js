@@ -1,7 +1,22 @@
 import { CONFIG } from './Config.js';
 
-export const Utils =  {
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+export const Utils = {
+    sleep: (ms, signal = null) => new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            return reject(new DOMException("Aborted", "AbortError"));
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+        };
+        const timer = setTimeout(() => {
+            if (signal) signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        if (signal) {
+            signal.addEventListener("abort", onAbort, { once: true });
+        }
+    }),
     now: () => (new Date()).toISOString(),
     log: (msg) => console.log(`[IG Analyzer] ${msg}`),
     logError: (msg, err) => console.error(`[IG Analyzer Error] ${msg}`, err),
@@ -31,9 +46,27 @@ export const Utils =  {
         return `https://www.instagram.com/${safeUser}/`;
     },
 
+    sanitizeImageUrl: (url) => {
+        if (!url || typeof url !== 'string') return null;
+        try {
+            const parsed = new URL(url, window.location.origin);
+            if (parsed.protocol === 'https:') {
+                return Utils.escapeHtml(parsed.href);
+            }
+        } catch (e) {
+            Utils.logError('Error parsing image URL', e);
+        }
+        return null;
+    },
+
+    getCsrfToken: () => {
+        const match = document.cookie.match(/(?:^|;\s*)csrftoken=([a-zA-Z0-9_-]+)/);
+        return match ? match[1] : '';
+    },
+
     getUserId: () => {
         // 1. Check document.cookie (strictly non-zero)
-        const matchCookie = document.cookie.match(/ds_user_id=([1-9][0-9]*)/);
+        const matchCookie = document.cookie.match(/(?:^|;\s*)ds_user_id=([1-9][0-9]*)/);
         if (matchCookie && matchCookie[1] && matchCookie[1] !== "0") {
             return matchCookie[1];
         }
@@ -43,9 +76,14 @@ export const Utils =  {
             const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
             const viewerId = win._sharedData?.config?.viewerId || 
                              win.__initialData?.pending?.viewer?.id || 
+                             win.__initialData?.data?.viewer?.id ||
                              win._sharedData?.rawProfileUser?.id;
             if (viewerId && String(viewerId) !== "0" && /^[1-9][0-9]*$/.test(String(viewerId))) {
                 return String(viewerId);
+            }
+            const lsId = win.localStorage?.getItem('ds_user_id') || win.sessionStorage?.getItem('ds_user_id');
+            if (lsId && String(lsId) !== "0" && /^[1-9][0-9]*$/.test(String(lsId))) {
+                return String(lsId);
             }
         } catch (e) {
         }
@@ -84,70 +122,82 @@ export const Utils =  {
         return null;
     },
 
-    getUserIdAsync: async () => {
+    getUserIdAsync: async (signal = null) => {
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
         // First try synchronous resolution
         const syncId = Utils.getUserId();
         if (syncId && syncId !== "0") {
             return syncId;
         }
 
-        // Fallback A: Fetch account edit form data to get the active username
+        const csrf = Utils.getCsrfToken();
+        const baseHeaders = { 
+            "X-IG-App-ID": "936619743392459",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-ASBD-ID": CONFIG.ASBD_ID || "359341",
+            ...(csrf ? { "X-CSRFToken": csrf } : {})
+        };
+
+        // Fallback A: Fetch account edit form data to get the active username safely (1 official request)
         try {
+            if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
             const res = await fetch("https://www.instagram.com/api/v1/accounts/edit/web_form_data/", {
-                headers: { 
-                    "X-IG-App-ID": "936619743392459",
-                    "X-Requested-With": "XMLHttpRequest"
-                },
-                credentials: "include"
+                headers: baseHeaders,
+                credentials: "include",
+                signal
             });
             if (res.ok) {
                 const data = await res.json();
                 const username = data?.form_data?.username;
                 if (username) {
-                    const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
-                        headers: { 
-                            "X-IG-App-ID": "936619743392459",
-                            "X-Requested-With": "XMLHttpRequest"
-                        },
-                        credentials: "include"
+                    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+                    const profileRes = await fetch(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
+                        credentials: "include",
+                        signal
                     });
                     if (profileRes.ok) {
-                        const profileJson = await profileRes.json();
-                        const id = profileJson?.data?.user?.id;
-                        if (id && String(id) !== "0") return String(id);
+                        const html = await profileRes.text();
+                        const idMatch = html.match(/"id"\s*:\s*"([1-9][0-9]*)"/) || 
+                                        html.match(/"user_id"\s*:\s*"([1-9][0-9]*)"/) || 
+                                        html.match(/"pk"\s*:\s*"([1-9][0-9]*)"/);
+                        if (idMatch && idMatch[1] && idMatch[1] !== "0") return idMatch[1];
                     }
                 }
             }
         } catch (e) {
+            if (e.name === 'AbortError' || signal?.aborted) throw e;
             Utils.logError("Async user ID detection fallback A failed", e);
         }
 
-        // Fallback B: Scan DOM for the profile link in navigation
+        // Fallback B: Look specifically for the user's own profile link in the navigation menu (at most 1 target check)
         try {
-            const links = Array.from(document.querySelectorAll('a[href^="/"]'));
-            for (const link of links) {
-                const href = link.getAttribute('href') || '';
+            if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+            const navLink = document.querySelector('nav a[href^="/"][role="link"], a[href^="/"][aria-label*="Profile" i], a[href^="/"][aria-label*="Perfil" i]');
+            if (navLink) {
+                const href = navLink.getAttribute('href') || '';
                 const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
                 if (match) {
                     const candidate = match[1];
-                    const systemRoutes = ['explore', 'reels', 'direct', 'stories', 'your_activity', 'settings', 'accounts', 'developer', 'about'];
-                    if (!systemRoutes.includes(candidate.toLowerCase()) && (link.querySelector('img') || link.querySelector('svg'))) {
-                        const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${candidate}`, {
-                            headers: { 
-                                "X-IG-App-ID": "936619743392459",
-                                "X-Requested-With": "XMLHttpRequest"
-                            },
-                            credentials: "include"
+                    const systemRoutes = ['explore', 'reels', 'direct', 'stories', 'your_activity', 'settings', 'accounts', 'developer', 'about', 'p', 'reel'];
+                    if (!systemRoutes.includes(candidate.toLowerCase())) {
+                        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+                        const profileRes = await fetch(`https://www.instagram.com/${encodeURIComponent(candidate)}/`, {
+                            credentials: "include",
+                            signal
                         });
                         if (profileRes.ok) {
-                            const profileJson = await profileRes.json();
-                            const id = profileJson?.data?.user?.id;
-                            if (id && String(id) !== "0") return String(id);
+                            const html = await profileRes.text();
+                            const idMatch = html.match(/"id"\s*:\s*"([1-9][0-9]*)"/) || 
+                                            html.match(/"user_id"\s*:\s*"([1-9][0-9]*)"/) || 
+                                            html.match(/"pk"\s*:\s*"([1-9][0-9]*)"/);
+                            if (idMatch && idMatch[1] && idMatch[1] !== "0") return idMatch[1];
                         }
                     }
                 }
             }
         } catch (e) {
+            if (e.name === 'AbortError' || signal?.aborted) throw e;
             Utils.logError("Async user ID detection fallback B failed", e);
         }
 
@@ -218,13 +268,29 @@ export const Utils =  {
 
     exportCSV: (data, filename) => {
         if (!data || !data.length) return;
-        const csvContent = "Username,Profile URL\n" + data.map((u) => u.username + "," + u.url).join("\n");
-        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-        const link = document.createElement("a");
+
+        const sanitizeCell = (val) => {
+            let text = String(val ?? '');
+            // Mitigate CSV Formula Injection (CWE-1236)
+            if (/^[=+\-@\t\r]/.test(text)) {
+                text = "'" + text;
+            }
+            // RFC 4180: Escape quotes and wrap in quotes
+            return `"${text.replace(/"/g, '""')}"`;
+        };
+
+        const header = ['Username', 'Profile URL'].map(sanitizeCell).join(',');
+        const rows = data.map((u) => [u.username, u.url].map(sanitizeCell).join(','));
+        // Include UTF-8 BOM (\uFEFF) for universal spreadsheet compatibility
+        const csvContent = '\uFEFF' + [header, ...rows].join('\r\n');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.setAttribute("download", filename);
+        link.setAttribute('download', filename);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
     }
 };
