@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.1] - 2026-09-19
+
+### Changed
+
+- **License Migration to Custom Source-Available & Non-Commercial License (CSAL-NC):**
+  - Updated the project license from MIT to a tailored Custom Source-Available License.
+  - **Commercial Prohibition:** Strictly prohibits the sale, resale, sublicensing, commercial distribution, or monetization of the script or its components.
+  - **Anti-Plagiarism & Minimum 70% Original Code Rule:** Prohibits copying, republishing, or creating competing clones/forks unless the derivative work contains at least 70% newly authored, original code or rewrites at least 70% of the codebase.
+  - **Mandatory Attribution:** Prohibits claiming false authorship or exclusive credit; requires prominent attribution to the original author (`UNKchr`) and repository link.
+  - Synchronized `@license Custom` in userscript metadata for GreasyFork and package manifests.
+
 ## [3.9.0] - 2026-09-19
 
 ### Added

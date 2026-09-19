@@ -1,18 +1,44 @@
-# License
+# CUSTOM SOURCE-AVAILABLE & NON-COMMERCIAL LICENSE (CSAL-NC)
 
-MIT License
+Version 1.0 - 2026
 
-Copyright (c) 2026 UNKchr
+Copyright (c) 2026 UNKchr (<https://github.com/UNKchr/ig-analyzer>)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+of this software and associated documentation files (the "Software"), to use,
+execute, and run the Software for personal, non-commercial purposes only,
+subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. PROHIBITION OF COMMERCIAL USE, MONETIZATION, OR RESALE
+   The Software is provided strictly for free. The sale, resale, sublicensing,
+   commercial distribution, paywalling, monetization, or profiting in any form
+   (including selling access, subscriptions, or bundled commercial packages)
+   from the Software, in whole or in part, is STRICTLY PROHIBITED.
+
+2. PROHIBITION OF LOW-EFFORT REPOSTS, CLONES, AND MINOR MODIFICATIONS
+   Direct copying, redistribution, or republishing of this Software as a new,
+   independent, or competing script/project is STRICTLY PROHIBITED unless:
+   a) The derived or modified work incorporates substantial, original, and
+      meaningful changes comprising at least seventy percent (70%) of newly
+      authored, original code compared to the original codebase; OR
+   b) At least seventy percent (70%) of the original codebase has been completely
+      rewritten, replaced, or redesigned with new proprietary logic.
+   Renaming variables, altering strings, changing UI colors, modifying branding,
+   or superficial refactoring does NOT constitute authorized modification.
+
+3. MANDATORY ATTRIBUTION & PROHIBITION OF FALSE AUTHORSHIP
+   Claiming authorship, creation, or exclusive credit for this Software or any
+   authorized derivative work is STRICTLY PROHIBITED. Any authorized derivative
+   work or public reference must visibly, prominently, and permanently include:
+   a) The original author's name (UNKchr);
+   b) A prominent, clickable link to the official repository (<https://github.com/UNKchr/ig-analyzer>);
+   c) A copy of this original license notice.
+
+4. ENFORCEMENT & PLATFORM REMOVAL
+   The original author reserves all rights to enforce these terms and issue
+   immediate takedown notices (including DMCA and platform moderation reports
+   on platforms such as Greasy Fork, OpenUserJS, GitHub, and browser extension/user
+   script repositories) against any unauthorized copy, clone, or commercialized fork.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

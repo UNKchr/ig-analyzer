@@ -1,6 +1,6 @@
 {
   "name": "ig-analizer",
-  "version": "3.9.0",
+  "version": "3.9.1",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "Custom",
   "type": "module",
   "devDependencies": {
     "vite": "^7.3.1",

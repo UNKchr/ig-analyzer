@@ -149,4 +149,5 @@ Use responsibly and at your own discretion.
 
 ## License
 
-Distributed under the MIT License.
+Distributed under the **Custom Source-Available & Non-Commercial License (CSAL-NC)**.  
+See the [LICENSE](LICENSE) file for full terms and conditions. Commercial use, resale, and unauthorized low-effort copies/clones are strictly prohibited.
