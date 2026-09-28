@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.1] - 2026-09-27
+
+### Added
+
+- **Multilingual Userscript Metadata Support (`vite.config.js`):**
+  - Added explicit `@name:en` and `@description:en` metadata directives for script repositories (such as GreasyFork) and userscript managers (Tampermonkey, Violentmonkey).
+  - Enables GreasyFork to recognize English as an explicit supported translation, ensuring English and Spanish documentation are mapped correctly to users based on their browser language.
+- **Documentation Language Harmonization:**
+  - Standardized all repository documentation (`README.md`, `CHANGELOG.md`, guided tour popovers) to 100% clean English.
+
 ## [3.12.0] - 2026-09-25
 
 ### Added
@@ -52,10 +62,6 @@ All notable changes to this project will be documented in this file.
   - Profile picture URL sanitization preventing HTML entities (`&amp;`) from corrupting Meta CDN HMAC signatures.
   - Direct HD 1080p avatar downloader (`Utils.downloadImage`) supporting `GM_download` with CORS Blob fallback.
   - Self-healing cleanup for blocked accounts when verified active or present in current lists.
-
-- **Multilingual Userscript Metadata Support (`vite.config.js`):**
-  - Added explicit `@name:en` and `@description:en` metadata directives for script repositories (such as GreasyFork) and Tampermonkey/Violentmonkey.
-  - Corrects language detection on GreasyFork, ensuring English descriptions are served to English users and Spanish descriptions to Spanish users without locale mismatch.
 
 ## [3.11.0] - 2026-09-25
 

@@ -68,7 +68,7 @@ export const UI = {
             '    <span class="ig-bmc-icon">' + Icons.coffee + '</span>',
             '    <span class="ig-bmc-text">Buy me a coffee</span>',
             '  </a>',
-            '  <span class="ig-footer-meta">v3.12.0</span>',
+            '  <span class="ig-footer-meta">v3.12.2</span>',
             '</div>'
         ].join("\n");
         document.body.appendChild(panel);

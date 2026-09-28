@@ -23,7 +23,7 @@ function getTamperGuide() {
 }
 
 /**
- * Builds steps for the Single Unified IG Analyzer Tour (v3.12.0).
+ * Builds steps for the Single Unified IG Analyzer Tour (v3.12.2).
  * Prompts the user to run an analysis so that results, filters, and row tools are populated in DOM.
  * @returns {Array<Object>}
  */
@@ -34,7 +34,7 @@ function buildUnifiedSteps() {
             popover: {
                 title: 'Welcome to IG Analyzer!',
                 description:
-                    'Welcome to version 3.12.0! This complete guided tour walks you through every feature of ' +
+                    'Welcome to version 3.12.2! This complete guided tour walks you through every feature of ' +
                     'your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>' +
                     'Let\'s get started!',
             },

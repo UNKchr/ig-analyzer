@@ -7,7 +7,7 @@
 // @name:pt-BR          Analisador de seguidores do Instagram
 // @name:pt-PT          Analisador de seguidores do Instagram
 // @namespace           https://github.com/UNKchr/ig-analyzer
-// @version             3.12.1
+// @version             3.12.2
 // @author              UNKchr
 // @description         Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
 // @description:en      Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
@@ -2407,7 +2407,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '    <span class="ig-bmc-icon">' + Icons.coffee + "</span>",
         '    <span class="ig-bmc-text">Buy me a coffee</span>',
         "  </a>",
-        '  <span class="ig-footer-meta">v3.12.0</span>',
+        '  <span class="ig-footer-meta">v3.12.2</span>',
         "</div>"
       ].join("\n");
       document.body.appendChild(panel);
@@ -5419,7 +5419,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         id: "welcome",
         popover: {
           title: "Welcome to IG Analyzer!",
-          description: "Welcome to version 3.12.0! This complete guided tour walks you through every feature of your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>Let's get started!"
+          description: "Welcome to version 3.12.2! This complete guided tour walks you through every feature of your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>Let's get started!"
         }
       },
       {

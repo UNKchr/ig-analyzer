@@ -1,7 +1,7 @@
 # Instagram Follower Analyzer
 
 [![Userscript](https://img.shields.io/badge/Tampermonkey-Userscript-blue?logo=tampermonkey)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)
-[![Version](https://img.shields.io/badge/version-3.12.0-emerald.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-3.12.2-emerald.svg)](package.json)
 [![License: Custom](https://img.shields.io/badge/License-CSAL--NC-amber.svg)](LICENSE)
 [![Maintenance](https://img.shields.io/badge/maintained%3F-yes-brightgreen.svg)](https://github.com/UNKchr/ig-analyzer)
 
@@ -113,7 +113,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 
 1. Install a userscript manager extension in your browser (**[Tampermonkey](https://www.tampermonkey.net/)** is strongly recommended).
 2. Click the installation link below:
-   👉 **[Install Instagram Follower Analyzer (v3.12.0)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)**
+   👉 **[Install Instagram Follower Analyzer (v3.12.1)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)**
 3. Tampermonkey will prompt you to inspect and confirm the script. Click **Install** (or **Update**).
 
 ---
