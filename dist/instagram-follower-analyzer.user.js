@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name                Instagram Follower Analyzer
+// @name:en             Instagram Follower Analyzer
 // @name:es             Analizador de seguidores de Instagram
 // @name:es-419         Analizador de seguidores de Instagram
 // @name:pt             Analisador de seguidores do Instagram
 // @name:pt-BR          Analisador de seguidores do Instagram
 // @name:pt-PT          Analisador de seguidores do Instagram
 // @namespace           https://github.com/UNKchr/ig-analyzer
-// @version             3.12.0
+// @version             3.12.1
 // @author              UNKchr
 // @description         Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
+// @description:en      Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
 // @description:es      Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.
 // @description:es-419  Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.
 // @description:pt      Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados.

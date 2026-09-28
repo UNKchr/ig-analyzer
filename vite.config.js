@@ -9,6 +9,7 @@ export default defineConfig({
       userscript: {
         name: {
           '': 'Instagram Follower Analyzer',
+          en: 'Instagram Follower Analyzer',
           es: 'Analizador de seguidores de Instagram',
           'es-419': 'Analizador de seguidores de Instagram',
           pt: 'Analisador de seguidores do Instagram',
@@ -16,9 +17,10 @@ export default defineConfig({
           'pt-PT': 'Analisador de seguidores do Instagram',
         },
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.12.0', 
+        version: '3.12.1', 
         description: {
           '': 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',
+          en: 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',
           es: 'Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.',
           'es-419': 'Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.',
           pt: 'Analise seguidores e quem não te segue de volta no Instagram, detecte anomalias em stories e exporte dados.',

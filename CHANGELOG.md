@@ -4,78 +4,88 @@ All notable changes to this project will be documented in this file.
 
 ## [3.12.0] - 2026-09-25
 
-- **Etapa 6: Target Tracker & Subpanel Hijo de Auditoría Profunda (Child Draggable & Resizable Subpanel):**
-  - **Subpanel Hijo Flotante Independiente (`#ig-target-subpanel`):**
-    - Subpanel flotante posicionado sobre la ventana principal (`z-index: 10000000`), con redimensionamiento nativo en esquina (`resize: both`) y arrastre por cabecera con fijación en pantalla (`setupTargetDrag`).
-    - Controles de ventana independientes: botón de minimizar/expandir (`#ig-target-btn-minimize`), cerrar (`#ig-target-btn-close`) y refrescar auditoría (`#ig-target-btn-refresh`).
-    - Barra de navegación por pestañas con indicador fluido animado (`#ig-target-tabs`): *Overview*, *Mutuals*, *New Followers*, *Lost Followers*, *Followers*, *Following*, y *Logs*.
-    - Exportación a CSV contextual (`#ig-target-export-csv`) basada en la pestaña activa de la cuenta auditada.
-  - **Acceso Directo desde Filas de Usuarios (Mutuals, etc.):**
-    - Botón interactivo de auditoría directa (`.ig-btn-target-audit`) en cada fila de usuario (especialmente en *Mutuals*, *Fans*, *Not Following*, *New Followers* y *Whitelist*).
-    - Permite auditar la red de cualquier cuenta sin necesidad de abandonar o cambiar la pestaña activa del panel principal.
-  - **Pestaña Dedicada "Target Tracker" en Panel Principal:**
-    - Formulario con prefijo visual `@` para auditar cualquier cuenta de Instagram mediante `API.validateTargetAccount`.
-    - Detección precisa de errores: advertencias amigables en caso de nombres inexistentes o errores de tipeo.
-    - Manejo ético de privacidad: advertencia clara con banner ámbar si la cuenta objetivo es privada y no es seguida por el usuario, protegiendo contra bloqueos de Meta y monitoreando solo métricas de cabecera.
-    - Cuadrícula de cuentas monitoreadas (`.ig-target-grid`): tarjetas con avatar, nombre, contadores de seguidores/seguidos, balance neto con insignia de color (`+X` / `-Y`), fecha de última auditoría, y botones para abrir, re-auditar o eliminar el seguimiento.
-  - **Diffing y Detección de Dinámicas de Red:**
-    - Cálculo de nuevos seguidores ganados y perdidos entre auditorías sucesivas de la misma cuenta.
-    - Detección de conexiones mutuas internas y cruce con el snapshot del usuario (`Shared Mutuals`) destacado con insignia esmeralda (`.ig-badge-new-mutual`).
-  - **Seguridad y Anti-Detección Avanzada:**
-    - Integración estricta de cabeceras de seguridad (`X-IG-App-ID`, `X-ASBD-ID`, `X-Requested-With`, `X-CSRFToken`, `credentials: "include"`).
-    - Cadencia adaptativa (`CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800`) y reintentos exponenciales con jitter.
-  - **Aislamiento de Almacenamiento y Respaldo:**
-    - Datos guardados bajo `CONFIG.TARGET_TRACKER_KEY` de forma independiente al perfil personal del usuario.
-    - Registro en `Backup.js` para compatibilidad total con exportación/importación JSON.
+### Added
 
-- **Tour Guiado Unificado & Comandos de Menú Tampermonkey (`Tour.js`):**
-  - **Unificación en un Solo Tour Integral (`startTour`):** Se eliminaron los 3 tutoriales interactivos separados y propensos a fallos, sustituyéndolos por un único tour guiado integral que explica todas las funcionalidades del userscript de forma fluida y clara.
-  - **Eliminación de Balizas Forzadas en Acciones Críticas:** Los botones de ejecución ("Run Analysis", "Export CSV", "Reset", "Check Story") ya no exigen clics con balizas interactivas para avanzar, protegiendo al usuario de ejecutar peticiones a la API de Meta o resetear datos involuntariamente; ahora se explican mediante popovers informativos estándar.
-  - **Uso Estricto y Puntual de Balizas:** Las balizas interactivas se reservan exclusivamente para indicar la entrada a secciones que lo requieren (como hacer clic en la pestaña de Backup para abrir el popup y mostrar su explicación).
-  - **Comando Único en Tampermonkey:** Registro simplificado de un único comando en el menú de la extensión: `IG Analyzer: Replay Tour`.
+- **Target Tracker & Deep Audit Child Subpanel (`#ig-target-subpanel`):**
+  - **Independent Floating Child Subpanel:**
+    - Dedicated child window positioned above the main analyzer panel (`z-index: 10000000`) with native corner resizing (`resize: both`) and header drag physics with boundary clamping (`setupTargetDrag`).
+    - Independent window controls: minimize/expand button (`#ig-target-btn-minimize`), close button (`#ig-target-btn-close`), and audit refresh button (`#ig-target-btn-refresh`).
+    - Tab navigation bar with a smooth animated sliding pill indicator (`#ig-target-tabs`): *Overview*, *Mutuals*, *New Followers*, *Lost Followers*, *Followers*, *Following*, and *Logs*.
+    - Contextual CSV export (`#ig-target-export-csv`) tailored to the active tab of the target audit.
+  - **Direct Access from User Rows:**
+    - Interactive direct audit button (`.ig-btn-target-audit`) in each user row across lists (especially in *Mutuals*, *Fans*, *Not Following*, *New Followers*, and *Whitelist*).
+    - Allows deep network auditing of any target account without losing your place or switching away from the active tab on the main panel.
+  - **Dedicated "Target Tracker" Main Panel Tab:**
+    - Form with visual `@` handle prefix to audit any Instagram username via `API.validateTargetAccount`.
+    - Error detection: friendly warnings for nonexistent accounts, typos, or private access boundaries.
+    - Privacy handling: clear amber warning banner when the target account is private and not followed by the current user, protecting against Meta rate limits and monitoring header-level metrics safely.
+    - Monitored accounts grid (`.ig-target-grid`): cards with avatar, display name, follower/following counts, net balance colored pill badge (`+X` / `-Y`), last audit timestamp, and action buttons to view, re-audit, or delete tracking.
+  - **Network Dynamics & Diffing Engine:**
+    - Real-time computation of gained and lost followers between successive audits of the same target account.
+    - Detection of internal mutual connections cross-referenced against the current user's personal snapshot (`Shared Mutuals`), highlighted with an emerald badge (`.ig-badge-new-mutual`).
+  - **Advanced Anti-Detection & Security Headers:**
+    - Strict inclusion of Meta security headers (`X-IG-App-ID`, `X-ASBD-ID`, `X-Requested-With`, `X-CSRFToken`, `credentials: "include"`).
+    - Adaptive request cadence (`CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800`) and exponential jittered retries.
+  - **Storage Isolation & Backup Integration:**
+    - Audit data stored independently under `CONFIG.TARGET_TRACKER_KEY`, isolated from personal profile snapshots.
+    - Registered in `Backup.js` for full JSON export/import portability.
 
-- **Motor de Respaldo Multi-Cuenta Mejorado (`Backup.js`):**
-  - **Recolección Exhaustiva de Claves:** Exportación robusta que recolecta todas las claves asociadas al ID de usuario en sesión (`${key}_${userId}`) y claves globales incluso si `GM_listValues` está restringido o trunco.
-  - **Restauración y Mapeo Inteligente:** Al importar un archivo de respaldo, detecta el ID del usuario en sesión y reasigna automáticamente el snapshot y las listas auxiliares (historial, lista blanca, unfollowers, desactivados, bloqueados, renombrados, nuevos seguidores y observaciones de historias) a su sesión activa.
-  - Inclusión de `CONFIG.NEW_FOLLOWERS_KEY` y `CONFIG.TARGET_TRACKER_KEY` en `ALLOWED_BACKUP_KEY_BASES`.
+- **Unified Guided Tour & Single Tampermonkey Menu Command (`Tour.js`):**
+  - **Consolidation into a Single Tour (`startTour`):** Deprecated and removed the 3 separate error-prone interactive tutorials, replacing them with a single comprehensive, non-intrusive guided tour that walks through all script features in natural visual tab order (Logs through Backup).
+  - **Removal of Forced Beacons on Critical Buttons:** Action buttons ("Run Analysis", "Export CSV", "Reset", "Check Story") no longer require forced interactive beacon clicks to advance, protecting the user from unintentional API calls or accidental data resets. Instead, they are clearly explained with centered informative popovers.
+  - **Strict, Targeted Beacon Usage:** Exactly one beacon is used on the "Run Analysis" button to guide the mandatory initial analysis, while the Backup tab displays an informative popover without forced interactions.
+  - **Single Tampermonkey Menu Command:** Streamlined extension menu registration into a single command: `IG Analyzer: Replay Tour`.
 
-- **Buscador en Tiempo Real y Chips de Filtrado Interactivo (`UI.js`):**
-  - Barra de búsqueda con respuesta inmediata para filtrar usuarios en tiempo real en todas las listas.
-  - Chips de filtrado por categoría con contadores dinámicos: *All*, *Private*, *Public*, *Besties*, *With Story*, y *Verified*.
-  - Delegación de eventos unificada en `#ig-analyzer-panel` para gestionar acciones de Story Spy, apertura de Quick-Card, gestión de Whitelist y auditorías sin redundancia de listeners.
+- **Enhanced Multi-Account Backup Engine (`Backup.js`):**
+  - **Exhaustive Key Harvesting:** Robust export collecting all keys associated with the active session user ID (`${key}_${userId}`) and global keys even when `GM_listValues` is truncated or restricted.
+  - **Smart Session Remapping:** On JSON backup import, detects the active session user ID and automatically remaps the snapshot and auxiliary lists (history, whitelist, unfollowers, deactivated, blocked, renamed, new followers, and story observations) to the active profile.
+  - Included `CONFIG.NEW_FOLLOWERS_KEY` and `CONFIG.TARGET_TRACKER_KEY` in `ALLOWED_BACKUP_KEY_BASES`.
 
-- **Handshake de Seguridad Meta y Utilidades (`Utils.js`, `API.js`):**
-  - Extracción en memoria y DOM de tokens de seguridad `fb_dtsg` y `lsd`, con cálculo algorítmico de sumas `jazoest` para peticiones nativas de GraphQL.
-  - Inclusión de cabecera oficial Meta ASBD (`CONFIG.ASBD_ID = "359341"`).
-  - Sanitización de URLs de fotos de perfil para evitar que entidades HTML (`&amp;`) rompan las firmas HMAC en los servidores CDN de Meta.
-  - Descargador directo de avatares en resolución original HD (`Utils.downloadImage`) con soporte para `GM_download` y fallback a `Blob` CORS.
-  - Auto-limpieza y auto-reparación de cuentas en lista de bloqueados si vuelven a aparecer en seguidores o seguidos activos.
+- **Live Real-Time Search & Interactive Filter Chips (`UI.js`):**
+  - Instant live search input filtering user tables on keyup without layout lag.
+  - Category filter chips with dynamic counter badges: *All*, *Private*, *Public*, *Besties*, *With Story*, and *Verified*.
+  - Unified event delegation on `#ig-analyzer-panel` handling Story Spy, Quick-Card Inspector, Whitelist actions, and Target Tracker audits cleanly.
+
+- **Meta Security Handshake & Utilities (`Utils.js`, `API.js`):**
+  - In-memory and DOM extraction of `fb_dtsg` and `lsd` security tokens with algorithmic `jazoest` checksum calculation for native GraphQL requests.
+  - Integration of official Meta ASBD client header (`CONFIG.ASBD_ID = "359341"`).
+  - Profile picture URL sanitization preventing HTML entities (`&amp;`) from corrupting Meta CDN HMAC signatures.
+  - Direct HD 1080p avatar downloader (`Utils.downloadImage`) supporting `GM_download` with CORS Blob fallback.
+  - Self-healing cleanup for blocked accounts when verified active or present in current lists.
+
+- **Multilingual Userscript Metadata Support (`vite.config.js`):**
+  - Added explicit `@name:en` and `@description:en` metadata directives for script repositories (such as GreasyFork) and Tampermonkey/Violentmonkey.
+  - Corrects language detection on GreasyFork, ensuring English descriptions are served to English users and Spanish descriptions to Spanish users without locale mismatch.
 
 ## [3.11.0] - 2026-09-25
 
-- **Centro de Nuevos Seguidores (New Followers Tab):**
+### Added
+
+- **New Followers Hub (New Followers Tab):**
   - Added dedicated "New Followers" tab with SVG vector icon (`Icons.userPlus`).
   - Automatically identifies accounts gained between scans, persisting detailed profiles with first-detected date in `Storage.addNewFollowersEntries`.
   - Full integration with search, filter chips (All, Private, Public, Besties, With Story, Verified), Quick-Card modal inspection, and Story Spy.
   - Contextual relationship badges in rows: `Mutual` (`Icons.mutuals`) if you follow them back, or `Fan` (`Icons.fans`) if not yet followed back.
-- **Gestor Visual de Whitelist (Whitelist Manager Tab):**
+- **Visual Whitelist Manager (Whitelist Manager Tab):**
   - Added dedicated "Whitelist" tab with SVG shield icon (`Icons.shieldCheck`) displaying all ignored accounts.
   - Real-time search filter bar for quick navigation through ignored accounts.
   - **Interactive "Restore" Action:** Added `.btn-unwhitelist` button with reload icon (`Icons.restore`). Restores an ignored account from whitelist back to the "Not Following" tab in real time with smooth slide-out animation.
   - **Clear Whitelist Action:** Added "Clear All" button with safe confirmation modal dialog.
   - Automatically keeps ignored accounts synchronized across tabs.
-- **Tarjetas KPI de Crecimiento Neto en Historial (Net Dynamics & Audience Balance):**
+- **Net Dynamics & Audience Balance KPI Cards in History:**
   - Enhanced the "History" tab with a 3-card metric grid (`.ig-history-kpi-grid`) positioned above the chronological log:
-    - **Followers Actuales:** Total follower count with trending comparison vs previous scan (`Icons.trendingUp` / `Icons.trendingDown`).
-    - **Following Actual:** Total followed accounts with delta indicator.
-    - **Audience Balance (Balance Neto):** Net flow calculation showing `+X New / -Y Lost` with dynamic green/red status coloring.
-- **Iconografía y Compatibilidad de Respaldo:**
+    - **Current Followers:** Total follower count with trending comparison vs previous scan (`Icons.trendingUp` / `Icons.trendingDown`).
+    - **Current Following:** Total followed accounts with delta indicator.
+    - **Audience Balance (Net Dynamics):** Net flow calculation showing `+X New / -Y Lost` with dynamic green/red status coloring.
+- **Iconography & Backup Compatibility:**
   - Added 5 new inline SVG icons (`userPlus`, `shieldCheck`, `restore`, `trendingUp`, `trendingDown`) maintaining 100% emoji-free codebase.
   - Registered `CONFIG.NEW_FOLLOWERS_KEY` in `ALLOWED_BACKUP_KEY_BASES` for seamless JSON backup and restore operations.
 
 ## [3.10.1] - 2026-09-25
 
-- **Quick-Card Profile Inspector (Etapa 4):**
+### Added
+
+- **Quick-Card Profile Inspector:**
   - Upgraded the profile viewer into a full Quick-Card Modal showing 1080p avatar, followers, following, and post counts with formatted numbers (`Utils.formatNumber`).
   - **Dynamic Relationship Status Pills:** Real-time visual pills indicating mutual status (*Follows you / Does not follow you*, *Following / Not following*, and *Follow Request Pending*).
   - **Biography & External Link:** Renders full biography with preserved line breaks and clickable external URLs.
