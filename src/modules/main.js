@@ -1,6 +1,9 @@
 import { UI } from './UI.js';
 import { App } from './App.js';
-import { startTour, resetTour } from './Tour.js';
+import {
+    startTour,
+    resetTour
+} from './Tour.js';
 
 // No import for tamperGuide — it's loaded via @require into window.tamperGuide
 
@@ -18,13 +21,17 @@ setTimeout(() => {
     }
 }, 800);
 
-// Tampermonkey menu command to replay the tour on demand
+// Tampermonkey menu command for on-demand tour
 if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Replay IG Analyzer Tour', () => {
+    const ensurePanelOpen = () => {
         const panel = document.getElementById("ig-analyzer-panel");
         if (panel && panel.style.display === "none") {
             UI.togglePanel();
         }
+    };
+
+    GM_registerMenuCommand('IG Analyzer: Replay Tour', () => {
+        ensurePanelOpen();
         resetTour();
         startTour({ force: true });
     });

@@ -70,6 +70,8 @@ const ALLOWED_BACKUP_KEY_BASES = [
     CONFIG.DEACTIVATED_KEY,
     CONFIG.BLOCKED_KEY,
     CONFIG.RENAMED_KEY,
+    CONFIG.NEW_FOLLOWERS_KEY,
+    CONFIG.TARGET_TRACKER_KEY,
     CONFIG.STORY_ANOMALY_KEY,
     CONFIG.STORY_OBS_KEY,
     CONFIG.TOUR_KEY,
@@ -81,6 +83,10 @@ const ALLOWED_BACKUP_KEY_BASES = [
     'notFollowingBackDetailed',
     'fansDetailed',
     'mutualsDetailed',
+    'newFollowers',
+    'newFollowersDetailed',
+    'whitelist',
+    'targetTracker',
     'unfollowers',
     'deactivated',
     'blocked',
@@ -421,11 +427,38 @@ export const validateBackupSchema = (payload) => {
  */
 export const exportBackup = async () => {
     try {
-        const keys = await getCurrentStorageKeys();
-        const data = Object.create(null);
+        const listedKeys = await getCurrentStorageKeys().catch(() => []);
+        const currentId = Storage.getCurrentUserId() || Utils.getUserId();
+        const baseKeys = [
+            CONFIG.STORAGE_KEY,
+            CONFIG.WHITELIST_KEY,
+            CONFIG.HISTORY_KEY,
+            CONFIG.CHURN_KEY,
+            CONFIG.DEACTIVATED_KEY,
+            CONFIG.BLOCKED_KEY,
+            CONFIG.RENAMED_KEY,
+            CONFIG.STORY_ANOMALY_KEY,
+            CONFIG.STORY_OBS_KEY,
+            CONFIG.TOUR_KEY,
+            CONFIG.POSITION_KEY
+        ];
 
-        for (const key of keys) {
-            data[key] = await getStoredValue(key);
+        const allKeys = new Set(listedKeys);
+        baseKeys.forEach((bk) => {
+            allKeys.add(bk);
+            if (currentId) {
+                allKeys.add(`${bk}_${currentId}`);
+            }
+        });
+
+        const data = Object.create(null);
+        for (const key of allKeys) {
+            if (isSafeStorageKey(key)) {
+                const val = await getStoredValue(key);
+                if (val !== undefined && val !== null) {
+                    data[key] = val;
+                }
+            }
         }
 
         const metadata = getScriptMetadata();
@@ -508,32 +541,88 @@ export const importBackup = async (file) => {
 
         await clearCurrentStorage();
 
-        const storedSnapshot = isPlainObject(data[CONFIG.STORAGE_KEY]) ? data[CONFIG.STORAGE_KEY] : null;
-        const normalizedSnapshot = storedSnapshot || {
-            version: 4,
-            lastRun: meta.exportedAt,
-            followers: Array.isArray(data.followers) ? data.followers : [],
-            following: Array.isArray(data.following) ? data.following : [],
-            followersDetailed: Array.isArray(data.followersDetailed) ? data.followersDetailed : [],
-            followingDetailed: Array.isArray(data.followingDetailed) ? data.followingDetailed : [],
-            notFollowingBackDetailed: Array.isArray(data.notFollowingBackDetailed) ? data.notFollowingBackDetailed : [],
-            fansDetailed: Array.isArray(data.fansDetailed) ? data.fansDetailed : [],
-            mutualsDetailed: Array.isArray(data.mutualsDetailed) ? data.mutualsDetailed : [],
-            unfollowers: Array.isArray(data.unfollowers) ? data.unfollowers : [],
-            deactivated: Array.isArray(data.deactivated) ? data.deactivated : [],
-            blocked: Array.isArray(data.blocked) ? data.blocked : [],
-            renamed: Array.isArray(data.renamed) ? data.renamed : [],
-            history: Array.isArray(data.history) ? data.history : []
-        };
-
+        // 1. Write all validated keys from backup payload into GM storage
         for (const [key, value] of Object.entries(data)) {
             GM_setValue(key, value);
         }
 
-        Storage.save(normalizedSnapshot);
+        // 2. Resolve target user ID for proper account scoping
+        const currentUserId = Storage.getCurrentUserId() || Utils.getUserId();
+
+        // 3. Locate the snapshot within the backup
+        let restoredSnapshot = null;
+        if (currentUserId && isPlainObject(data[`${CONFIG.STORAGE_KEY}_${currentUserId}`])) {
+            restoredSnapshot = data[`${CONFIG.STORAGE_KEY}_${currentUserId}`];
+        } else if (isPlainObject(data[CONFIG.STORAGE_KEY])) {
+            restoredSnapshot = data[CONFIG.STORAGE_KEY];
+        } else {
+            const anySnapKey = Object.keys(data).find((k) => k.startsWith(`${CONFIG.STORAGE_KEY}_`));
+            if (anySnapKey && isPlainObject(data[anySnapKey])) {
+                restoredSnapshot = data[anySnapKey];
+            }
+        }
+
+        // Fallback for legacy flat export formats:
+        if (!restoredSnapshot && Array.isArray(data.followers)) {
+            restoredSnapshot = {
+                version: 4,
+                lastRun: meta.exportedAt || Utils.now(),
+                followers: data.followers || [],
+                following: data.following || [],
+                followersDetailed: data.followersDetailed || [],
+                followingDetailed: data.followingDetailed || [],
+                notFollowingBackDetailed: data.notFollowingBackDetailed || [],
+                fansDetailed: data.fansDetailed || [],
+                mutualsDetailed: data.mutualsDetailed || [],
+                unfollowers: Array.isArray(data.unfollowers) ? data.unfollowers : [],
+                deactivated: Array.isArray(data.deactivated) ? data.deactivated : [],
+                blocked: Array.isArray(data.blocked) ? data.blocked : [],
+                renamed: Array.isArray(data.renamed) ? data.renamed : [],
+                history: Array.isArray(data.history) ? data.history : []
+            };
+        }
+
+        // Save the real restored snapshot into storage (scoped and unscoped)
+        if (restoredSnapshot) {
+            if (currentUserId) {
+                Storage.save(restoredSnapshot, currentUserId);
+            }
+            GM_setValue(CONFIG.STORAGE_KEY, restoredSnapshot);
+        }
+
+        // 4. Ensure auxiliary lists are scoped to current user
+        const syncListKey = (baseKey) => {
+            let val = null;
+            if (currentUserId && data[`${baseKey}_${currentUserId}`] !== undefined) {
+                val = data[`${baseKey}_${currentUserId}`];
+            } else if (data[baseKey] !== undefined) {
+                val = data[baseKey];
+            } else {
+                const anyKey = Object.keys(data).find((k) => k.startsWith(`${baseKey}_`));
+                if (anyKey && data[anyKey] !== undefined) {
+                    val = data[anyKey];
+                }
+            }
+
+            if (val !== null && val !== undefined) {
+                if (currentUserId) {
+                    Storage.setScopedValue(baseKey, val, currentUserId);
+                }
+                GM_setValue(baseKey, val);
+            }
+        };
+
+        syncListKey(CONFIG.HISTORY_KEY);
+        syncListKey(CONFIG.WHITELIST_KEY);
+        syncListKey(CONFIG.CHURN_KEY);
+        syncListKey(CONFIG.DEACTIVATED_KEY);
+        syncListKey(CONFIG.BLOCKED_KEY);
+        syncListKey(CONFIG.RENAMED_KEY);
+        syncListKey(CONFIG.STORY_OBS_KEY);
+        syncListKey(CONFIG.POSITION_KEY);
 
         writeBackupStatus('Backup restored successfully. Reloading the interface...', 'success');
-        window.setTimeout(() => window.location.reload(), 250);
+        window.setTimeout(() => window.location.reload(), 400);
         return true;
     } catch (error) {
         const message = error instanceof Error ? error.message : 'The backup could not be imported.';
@@ -568,6 +657,7 @@ export const createBackupUI = (hostElement = document.getElementById('ig-analyze
         backupButton.id = BACKUP_TAB_ID;
         backupButton.className = 'ig-tab-btn ig-backup-tab-btn';
         backupButton.addEventListener('click', () => {
+            backupButton.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
             toggleBackupPopup();
         });
 

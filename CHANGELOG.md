@@ -2,6 +2,123 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.0] - 2026-09-25
+
+- **Etapa 6: Target Tracker & Subpanel Hijo de Auditoría Profunda (Child Draggable & Resizable Subpanel):**
+  - **Subpanel Hijo Flotante Independiente (`#ig-target-subpanel`):**
+    - Subpanel flotante posicionado sobre la ventana principal (`z-index: 10000000`), con redimensionamiento nativo en esquina (`resize: both`) y arrastre por cabecera con fijación en pantalla (`setupTargetDrag`).
+    - Controles de ventana independientes: botón de minimizar/expandir (`#ig-target-btn-minimize`), cerrar (`#ig-target-btn-close`) y refrescar auditoría (`#ig-target-btn-refresh`).
+    - Barra de navegación por pestañas con indicador fluido animado (`#ig-target-tabs`): *Overview*, *Mutuals*, *New Followers*, *Lost Followers*, *Followers*, *Following*, y *Logs*.
+    - Exportación a CSV contextual (`#ig-target-export-csv`) basada en la pestaña activa de la cuenta auditada.
+  - **Acceso Directo desde Filas de Usuarios (Mutuals, etc.):**
+    - Botón interactivo de auditoría directa (`.ig-btn-target-audit`) en cada fila de usuario (especialmente en *Mutuals*, *Fans*, *Not Following*, *New Followers* y *Whitelist*).
+    - Permite auditar la red de cualquier cuenta sin necesidad de abandonar o cambiar la pestaña activa del panel principal.
+  - **Pestaña Dedicada "Target Tracker" en Panel Principal:**
+    - Formulario con prefijo visual `@` para auditar cualquier cuenta de Instagram mediante `API.validateTargetAccount`.
+    - Detección precisa de errores: advertencias amigables en caso de nombres inexistentes o errores de tipeo.
+    - Manejo ético de privacidad: advertencia clara con banner ámbar si la cuenta objetivo es privada y no es seguida por el usuario, protegiendo contra bloqueos de Meta y monitoreando solo métricas de cabecera.
+    - Cuadrícula de cuentas monitoreadas (`.ig-target-grid`): tarjetas con avatar, nombre, contadores de seguidores/seguidos, balance neto con insignia de color (`+X` / `-Y`), fecha de última auditoría, y botones para abrir, re-auditar o eliminar el seguimiento.
+  - **Diffing y Detección de Dinámicas de Red:**
+    - Cálculo de nuevos seguidores ganados y perdidos entre auditorías sucesivas de la misma cuenta.
+    - Detección de conexiones mutuas internas y cruce con el snapshot del usuario (`Shared Mutuals`) destacado con insignia esmeralda (`.ig-badge-new-mutual`).
+  - **Seguridad y Anti-Detección Avanzada:**
+    - Integración estricta de cabeceras de seguridad (`X-IG-App-ID`, `X-ASBD-ID`, `X-Requested-With`, `X-CSRFToken`, `credentials: "include"`).
+    - Cadencia adaptativa (`CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800`) y reintentos exponenciales con jitter.
+  - **Aislamiento de Almacenamiento y Respaldo:**
+    - Datos guardados bajo `CONFIG.TARGET_TRACKER_KEY` de forma independiente al perfil personal del usuario.
+    - Registro en `Backup.js` para compatibilidad total con exportación/importación JSON.
+
+- **Tour Guiado Unificado & Comandos de Menú Tampermonkey (`Tour.js`):**
+  - **Unificación en un Solo Tour Integral (`startTour`):** Se eliminaron los 3 tutoriales interactivos separados y propensos a fallos, sustituyéndolos por un único tour guiado integral que explica todas las funcionalidades del userscript de forma fluida y clara.
+  - **Eliminación de Balizas Forzadas en Acciones Críticas:** Los botones de ejecución ("Run Analysis", "Export CSV", "Reset", "Check Story") ya no exigen clics con balizas interactivas para avanzar, protegiendo al usuario de ejecutar peticiones a la API de Meta o resetear datos involuntariamente; ahora se explican mediante popovers informativos estándar.
+  - **Uso Estricto y Puntual de Balizas:** Las balizas interactivas se reservan exclusivamente para indicar la entrada a secciones que lo requieren (como hacer clic en la pestaña de Backup para abrir el popup y mostrar su explicación).
+  - **Comando Único en Tampermonkey:** Registro simplificado de un único comando en el menú de la extensión: `IG Analyzer: Replay Tour`.
+
+- **Motor de Respaldo Multi-Cuenta Mejorado (`Backup.js`):**
+  - **Recolección Exhaustiva de Claves:** Exportación robusta que recolecta todas las claves asociadas al ID de usuario en sesión (`${key}_${userId}`) y claves globales incluso si `GM_listValues` está restringido o trunco.
+  - **Restauración y Mapeo Inteligente:** Al importar un archivo de respaldo, detecta el ID del usuario en sesión y reasigna automáticamente el snapshot y las listas auxiliares (historial, lista blanca, unfollowers, desactivados, bloqueados, renombrados, nuevos seguidores y observaciones de historias) a su sesión activa.
+  - Inclusión de `CONFIG.NEW_FOLLOWERS_KEY` y `CONFIG.TARGET_TRACKER_KEY` en `ALLOWED_BACKUP_KEY_BASES`.
+
+- **Buscador en Tiempo Real y Chips de Filtrado Interactivo (`UI.js`):**
+  - Barra de búsqueda con respuesta inmediata para filtrar usuarios en tiempo real en todas las listas.
+  - Chips de filtrado por categoría con contadores dinámicos: *All*, *Private*, *Public*, *Besties*, *With Story*, y *Verified*.
+  - Delegación de eventos unificada en `#ig-analyzer-panel` para gestionar acciones de Story Spy, apertura de Quick-Card, gestión de Whitelist y auditorías sin redundancia de listeners.
+
+- **Handshake de Seguridad Meta y Utilidades (`Utils.js`, `API.js`):**
+  - Extracción en memoria y DOM de tokens de seguridad `fb_dtsg` y `lsd`, con cálculo algorítmico de sumas `jazoest` para peticiones nativas de GraphQL.
+  - Inclusión de cabecera oficial Meta ASBD (`CONFIG.ASBD_ID = "359341"`).
+  - Sanitización de URLs de fotos de perfil para evitar que entidades HTML (`&amp;`) rompan las firmas HMAC en los servidores CDN de Meta.
+  - Descargador directo de avatares en resolución original HD (`Utils.downloadImage`) con soporte para `GM_download` y fallback a `Blob` CORS.
+  - Auto-limpieza y auto-reparación de cuentas en lista de bloqueados si vuelven a aparecer en seguidores o seguidos activos.
+
+## [3.11.0] - 2026-09-25
+
+- **Centro de Nuevos Seguidores (New Followers Tab):**
+  - Added dedicated "New Followers" tab with SVG vector icon (`Icons.userPlus`).
+  - Automatically identifies accounts gained between scans, persisting detailed profiles with first-detected date in `Storage.addNewFollowersEntries`.
+  - Full integration with search, filter chips (All, Private, Public, Besties, With Story, Verified), Quick-Card modal inspection, and Story Spy.
+  - Contextual relationship badges in rows: `Mutual` (`Icons.mutuals`) if you follow them back, or `Fan` (`Icons.fans`) if not yet followed back.
+- **Gestor Visual de Whitelist (Whitelist Manager Tab):**
+  - Added dedicated "Whitelist" tab with SVG shield icon (`Icons.shieldCheck`) displaying all ignored accounts.
+  - Real-time search filter bar for quick navigation through ignored accounts.
+  - **Interactive "Restore" Action:** Added `.btn-unwhitelist` button with reload icon (`Icons.restore`). Restores an ignored account from whitelist back to the "Not Following" tab in real time with smooth slide-out animation.
+  - **Clear Whitelist Action:** Added "Clear All" button with safe confirmation modal dialog.
+  - Automatically keeps ignored accounts synchronized across tabs.
+- **Tarjetas KPI de Crecimiento Neto en Historial (Net Dynamics & Audience Balance):**
+  - Enhanced the "History" tab with a 3-card metric grid (`.ig-history-kpi-grid`) positioned above the chronological log:
+    - **Followers Actuales:** Total follower count with trending comparison vs previous scan (`Icons.trendingUp` / `Icons.trendingDown`).
+    - **Following Actual:** Total followed accounts with delta indicator.
+    - **Audience Balance (Balance Neto):** Net flow calculation showing `+X New / -Y Lost` with dynamic green/red status coloring.
+- **Iconografía y Compatibilidad de Respaldo:**
+  - Added 5 new inline SVG icons (`userPlus`, `shieldCheck`, `restore`, `trendingUp`, `trendingDown`) maintaining 100% emoji-free codebase.
+  - Registered `CONFIG.NEW_FOLLOWERS_KEY` in `ALLOWED_BACKUP_KEY_BASES` for seamless JSON backup and restore operations.
+
+## [3.10.1] - 2026-09-25
+
+- **Quick-Card Profile Inspector (Etapa 4):**
+  - Upgraded the profile viewer into a full Quick-Card Modal showing 1080p avatar, followers, following, and post counts with formatted numbers (`Utils.formatNumber`).
+  - **Dynamic Relationship Status Pills:** Real-time visual pills indicating mutual status (*Follows you / Does not follow you*, *Following / Not following*, and *Follow Request Pending*).
+  - **Biography & External Link:** Renders full biography with preserved line breaks and clickable external URLs.
+  - **Mutual Connections Context & Facepile:** Displays mutual follower counts with names of shared friends and overlapping circular micro-avatars.
+  - **Account Badges:** Direct visual tags for Business/Commercial accounts (`Icons.briefcase`) and Content Creators (`Icons.creator`) alongside Private and Bestie indicators.
+  - **Inspect Action Button:** Added `.ig-btn-inspect-user` button with eye SVG icon across all result table rows.
+  - **Zero-Latency In-Memory Cache:** Profile inspection results cached in `API.hdAvatarCache` for instant 0ms subsequent views.
+
+- **Story Spy 2.0 — Dual-Channel Anomaly Detection Engine:**
+  - Complete architectural rebuild replacing legacy 2022/2023 HTML scraping with direct Meta Relay Modern GraphQL (`PolarisProfilePageContentQuery`) and REST Highlights Tray (`/api/v1/highlights/{userId}/highlights_tray/`).
+  - **High-Precision Story State Tracking:** Accurately reads `latest_reel_media` timestamp (integer unix seconds), Close Friends (`latest_besties_reel_media`), and server-side gating (`null`).
+  - **24-Hour Story Decay Window Math:** Compares active story timestamps against the current time. If an unexpired story (< 24h old) disappears along with highlights, probability spikes to 95%.
+  - **Highlights Disappearance Anomaly Detection:** Highlights never expire naturally. If an accepted private or public account drops from visible highlights (>0) to 0, Story Spy immediately raises a high anomaly alert (85-95%).
+  - **Multi-Factor Anomaly Modal:** Redesigned interactive modal displaying calculated probability percentage badge, transparent reason explanation, real-time highlights & story indicators, and a chronological scan history timeline.
+  - **Normalized Storage Keys & Fast Cleanup:** Case-insensitive and trimmed username keys in `Storage.addStoryObservation` with support for up to 10 historical scans.
+
+## [3.10.0] - 2026-09-21
+
+### Added
+
+- **Real-Time Proportional Progress & Profile Count Integration:**
+  - Integrated `API.getUserInfo` to automatically fetch and cache profile metrics (`follower_count`, `following_count`) at the start of analysis via window context or the official `/api/v1/users/{userId}/info/` endpoint.
+  - Extraction pagination now tracks progress against true expected totals (e.g. `Extracting followers... (97/290) 33%`), keeping the progress bar and status indicator badge precisely synchronized.
+  - Added indeterminate progress bar animation (`#ig-progress-bar.is-indeterminate`) with smooth CSS keyframe sliding for cases where total count cannot be determined, avoiding misleading progress states.
+  - Added progressive step-by-step tracking to the suspicious account verification loop (`Verifying status (1/10)...`).
+- **Modern UI/UX Overhaul & Dual-Theme System:**
+  - Redesigned visual hierarchy with modern design tokens (`--iga-*`), glassmorphism, refined typography, and full Dark/Light theme adaptation.
+  - Added panel window controls in the header: Minimize/Expand and Close buttons.
+  - Introduced a horizontal scrollable tab navigation bar with a sliding water-droplet indicator.
+  - Added macOS/iOS-style magnetic lift and spring rebound physics when dragging the analyzer panel (`.is-dragging`).
+  - Added smooth left-to-right moving gradient animation on "Run Analysis" button hover.
+  - Added native, CSP-safe "Buy Me a Coffee" creator support button (`buymeacoffee.com/UNKchr`) in the panel footer.
+  - Added smooth slide-out to the right animation when clicking "Ignore" (whitelist) on user rows in "Not Following".
+
+### Fixed
+
+- **Premature 100% Progress Bar & Status Bug:**
+  - Fixed an issue where `UI.setProgress` defaulted to `100%` whenever `total` was `0`, undefined, or not provided (`total > 0 ? ... : 100`), causing the progress bar to fill and the badge to display `100%` from the very first batch.
+  - Replaced hardcoded `total = 0` in `API.getAllUsersViaFriendships` with actual `expectedTotal` parameter passing.
+- **User Row Layout Squishing Across Result Tabs:**
+  - Corrected `.ig-view.active` CSS layout from `display: flex` to `display: block`.
+  - Added `min-height: 48px` and `flex-shrink: 0` to user rows, preventing avatar distortion, text overlap, and vertical clipping across all result views.
+
 ## [3.9.1] - 2026-09-19
 
 ### Changed

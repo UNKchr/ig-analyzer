@@ -81,6 +81,52 @@ export const Storage = {
         }
     },
 
+    removeFromWhitelist: (username, userId = null) => {
+        const wl = Storage.getWhitelist(userId);
+        const filtered = wl.filter((u) => u !== username);
+        Storage.setScopedValue(CONFIG.WHITELIST_KEY, filtered, userId);
+    },
+
+    clearWhitelist: (userId = null) => {
+        Storage.setScopedValue(CONFIG.WHITELIST_KEY, [], userId);
+    },
+
+    getNewFollowersList: (userId = null) => {
+        return Storage.getScopedValue(CONFIG.NEW_FOLLOWERS_KEY, [], userId);
+    },
+
+    addNewFollowersEntries: (entries, userId = null) => {
+        if (!Array.isArray(entries) || entries.length === 0) return;
+        const list = Storage.getNewFollowersList(userId);
+        const dateStr = Utils.now().split("T")[0];
+
+        entries.forEach((item) => {
+            const username = typeof item === 'string' ? item : item.username;
+            if (!username) return;
+
+            const existingIdx = list.findIndex((x) => x.username === username);
+            const entryObj = {
+                id: item.id || null,
+                username: username,
+                fullName: item.fullName || '',
+                profilePicUrl: item.profilePicUrl || '',
+                isVerified: Boolean(item.isVerified),
+                isPrivate: Boolean(item.isPrivate),
+                isBestie: Boolean(item.isBestie),
+                followsBack: item.followsBack !== undefined ? item.followsBack : null,
+                date: dateStr
+            };
+
+            if (existingIdx > -1) {
+                list[existingIdx] = { ...list[existingIdx], ...entryObj };
+            } else {
+                list.push(entryObj);
+            }
+        });
+
+        Storage.setScopedValue(CONFIG.NEW_FOLLOWERS_KEY, list, userId);
+    },
+
     getHistory: (userId = null) => {
         return Storage.getScopedValue(CONFIG.HISTORY_KEY, [], userId);
     },
@@ -138,24 +184,101 @@ export const Storage = {
     },
 
     getStoryObservations: (username, userId = null) => {
+        const clean = String(username || '').replace(/^@/, '').toLowerCase().trim();
+        const raw = String(username || '').trim();
         const obs = Storage.getScopedValue(CONFIG.STORY_OBS_KEY, {}, userId);
-        return obs[username] || [];
+        return obs[clean] || obs[raw] || obs[`@${raw}`] || [];
     },
 
     addStoryObservation: (username, data, userId = null) => {
+        const clean = String(username || '').replace(/^@/, '').toLowerCase().trim();
         const obs = Storage.getScopedValue(CONFIG.STORY_OBS_KEY, {}, userId);
-        if (!obs[username]) obs[username] = [];
+        if (!obs[clean]) obs[clean] = [];
         
-        // Add current timestamp
+        // Add current timestamp and epochMs
         data.timestamp = Utils.now();
-        obs[username].push(data);
+        data.epochMs = Date.now();
+        obs[clean].push(data);
         
         // Keep only last 10 observations to prevent bloat
-        if (obs[username].length > 10) {
-            obs[username].shift();
+        if (obs[clean].length > 10) {
+            obs[clean].shift();
         }
         
         Storage.setScopedValue(CONFIG.STORY_OBS_KEY, obs, userId);
+    },
+
+    clearStoryObservations: (username, userId = null) => {
+        const clean = String(username || '').replace(/^@/, '').toLowerCase().trim();
+        const raw = String(username || '').trim();
+        const obs = Storage.getScopedValue(CONFIG.STORY_OBS_KEY, {}, userId);
+        let modified = false;
+        [clean, raw, `@${raw}`].forEach((k) => {
+            if (obs[k]) {
+                delete obs[k];
+                modified = true;
+            }
+        });
+        if (modified) {
+            Storage.setScopedValue(CONFIG.STORY_OBS_KEY, obs, userId);
+        }
+    },
+
+    getTargetTrackerMap: (userId = null) => {
+        const map = Storage.getScopedValue(CONFIG.TARGET_TRACKER_KEY, {}, userId);
+        const viewerId = Utils.getUserId();
+        const viewerName = (Utils.getUsername() || '').toLowerCase();
+        let modified = false;
+
+        if (map && typeof map === 'object') {
+            Object.keys(map).forEach((k) => {
+                const item = map[k];
+                if (k !== viewerName && viewerId && item?.user && String(item.user.id) === String(viewerId)) {
+                    delete map[k];
+                    modified = true;
+                }
+            });
+            if (modified) {
+                Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, map, userId);
+            }
+        }
+
+        return map;
+    },
+
+    getTargetData: (username, userId = null) => {
+        const clean = String(username || '').replace(/^@+\s*/, '').toLowerCase().trim();
+        const map = Storage.getTargetTrackerMap(userId);
+        return map[clean] || null;
+    },
+
+    saveTargetData: (username, data, userId = null) => {
+        const clean = String(username || '').replace(/^@+\s*/, '').toLowerCase().trim();
+        if (!clean) return;
+
+        const viewerId = Utils.getUserId();
+        const viewerName = (Utils.getUsername() || '').toLowerCase();
+        if (clean !== viewerName && viewerId && data?.user && String(data.user.id) === String(viewerId)) {
+            console.warn(`[IG Analyzer] Refusing to save target data for @${clean} because ID matches logged-in viewer.`);
+            return;
+        }
+
+        const map = Storage.getTargetTrackerMap(userId);
+        map[clean] = {
+            ...data,
+            username: clean,
+            updatedAt: Utils.now()
+        };
+        Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, map, userId);
+    },
+
+    removeTargetData: (username, userId = null) => {
+        const clean = String(username || '').replace(/^@+\s*/, '').toLowerCase().trim();
+        const map = Storage.getTargetTrackerMap(userId);
+        if (map[clean]) {
+            delete map[clean];
+            Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, map, userId);
+        }
     },
 
     resetAll: (userId = null) => {
@@ -167,6 +290,8 @@ export const Storage = {
             CONFIG.DEACTIVATED_KEY,
             CONFIG.BLOCKED_KEY,
             CONFIG.RENAMED_KEY,
+            CONFIG.NEW_FOLLOWERS_KEY,
+            CONFIG.TARGET_TRACKER_KEY,
             CONFIG.STORY_OBS_KEY
         ];
 

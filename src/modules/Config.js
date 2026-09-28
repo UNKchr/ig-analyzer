@@ -11,6 +11,9 @@ export const CONFIG = {
     BLOCKED_KEY: "ig_blocked_v1",
     TOUR_KEY: "ig_tour_completed_v1",
     RENAMED_KEY: "ig_renamed_v1",
+    NEW_FOLLOWERS_KEY: "ig_new_followers_v1",
+    TARGET_TRACKER_KEY: "ig_target_tracker_v1",
+    TARGET_SUBPANEL_POSITION_KEY: "ig_target_position_v1",
     STORY_ANOMALY_KEY: "ig_story_anomaly_v1",
     STORY_OBS_KEY: "ig_story_observations_v1",
     STORY_MIN_OBSERVATIONS: 3,
@@ -26,5 +29,5 @@ export const CONFIG = {
     ASBD_ID: "359341",        // Modern Meta ASBD header identifier
     DEBUG: false,
     MIN_VISIBLE_PX: 50,
-    DEFAULT_POSITION: { top: 80, right: 20 }
+    DEFAULT_POSITION: { top: 80, right: 20, width: 717, height: 560 }
 };

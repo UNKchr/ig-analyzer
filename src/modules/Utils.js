@@ -49,9 +49,11 @@ export const Utils = {
     sanitizeImageUrl: (url) => {
         if (!url || typeof url !== 'string') return null;
         try {
-            const parsed = new URL(url, window.location.origin);
+            // Strip corrupted HTML entities (&amp;) to prevent breaking Meta CDN HMAC signature
+            const clean = url.replace(/&amp;/g, '&').trim();
+            const parsed = new URL(clean, window.location.origin);
             if (parsed.protocol === 'https:') {
-                return Utils.escapeHtml(parsed.href);
+                return parsed.href;
             }
         } catch (e) {
             Utils.logError('Error parsing image URL', e);
@@ -62,6 +64,83 @@ export const Utils = {
     getCsrfToken: () => {
         const match = document.cookie.match(/(?:^|;\s*)csrftoken=([a-zA-Z0-9_-]+)/);
         return match ? match[1] : '';
+    },
+
+    getDtsg: () => {
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            if (win.DTSGInitialData?.token) return win.DTSGInitialData.token;
+            if (win.DTSGInitData?.token) return win.DTSGInitData.token;
+            if (typeof win.require === 'function') {
+                const mod = win.require('DTSGInitialData') || win.require('DTSGInitData');
+                if (mod?.token) return mod.token;
+            }
+        } catch (e) {}
+
+        try {
+            const inputEl = document.querySelector('input[name="fb_dtsg"]');
+            if (inputEl?.value) return inputEl.value;
+        } catch (e) {}
+
+        try {
+            const scripts = document.querySelectorAll('script:not([src])');
+            for (const script of scripts) {
+                const text = script.textContent || '';
+                if (!text) continue;
+                const match = text.match(/"DTSGInitialData",\s*\[\],\s*\{\s*"token"\s*:\s*"([^"]+)"/) ||
+                              text.match(/\["DTSGInitData",\s*\[\],\s*\{\s*"token"\s*:\s*"([^"]+)"/) ||
+                              text.match(/["']token["']\s*:\s*["'](NAf[a-zA-Z0-9_\-:]+)["']/) ||
+                              text.match(/name=["']fb_dtsg["']\s+value=["']([^"']+)["']/) ||
+                              text.match(/"fb_dtsg"\s*:\s*"([^"]+)"/);
+                if (match && match[1]) {
+                    return match[1];
+                }
+            }
+        } catch (e) {}
+
+        return '';
+    },
+
+    calculateJazoest: (dtsg) => {
+        if (!dtsg || typeof dtsg !== 'string') return '';
+        let sum = 0;
+        for (let i = 0; i < dtsg.length; i++) {
+            sum += dtsg.charCodeAt(i);
+        }
+        return '2' + sum;
+    },
+
+    getLsd: () => {
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            if (win._LSD?.token) return win._LSD.token;
+            if (win.LSD?.token) return win.LSD.token;
+            if (typeof win.require === 'function') {
+                const mod = win.require('LSD');
+                if (mod?.token) return mod.token;
+            }
+        } catch (e) {}
+
+        try {
+            const inputEl = document.querySelector('input[name="lsd"]');
+            if (inputEl?.value) return inputEl.value;
+        } catch (e) {}
+
+        try {
+            const scripts = document.querySelectorAll('script:not([src])');
+            for (const script of scripts) {
+                const text = script.textContent || '';
+                if (!text) continue;
+                const match = text.match(/"LSD",\s*\[\],\s*\{\s*"token"\s*:\s*"([^"]+)"/) ||
+                              text.match(/["']lsd["']\s*:\s*["']([^"']+)["']/) ||
+                              text.match(/name=["']lsd["']\s+value=["']([^"']+)["']/);
+                if (match && match[1]) {
+                    return match[1];
+                }
+            }
+        } catch (e) {}
+
+        return '';
     },
 
     getUserId: () => {
@@ -118,6 +197,36 @@ export const Utils = {
             }
         } catch (e) {
         }
+
+        return null;
+    },
+
+    getUsername: () => {
+        // 1. Check window / unsafeWindow objects
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            const u = win._sharedData?.config?.viewer?.username || 
+                      win.__initialData?.data?.viewer?.username || 
+                      win.__initialData?.pending?.viewer?.username ||
+                      win._sharedData?.rawProfileUser?.username;
+            if (u && typeof u === 'string') return u.trim();
+        } catch (e) {}
+
+        // 2. Check profile link in navigation
+        try {
+            const navLink = document.querySelector('nav a[href^="/"][role="link"], a[href^="/"][aria-label*="Profile" i], a[href^="/"][aria-label*="Perfil" i]');
+            if (navLink) {
+                const href = navLink.getAttribute('href') || '';
+                const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
+                if (match) {
+                    const candidate = match[1];
+                    const systemRoutes = ['explore', 'reels', 'direct', 'stories', 'your_activity', 'settings', 'accounts', 'developer', 'about', 'p', 'reel'];
+                    if (!systemRoutes.includes(candidate.toLowerCase())) {
+                        return candidate;
+                    }
+                }
+            }
+        } catch (e) {}
 
         return null;
     },
@@ -292,5 +401,77 @@ export const Utils = {
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(link.href);
+    },
+
+    downloadImage: async (url, filename) => {
+        if (!url) return;
+        const cleanUrl = String(url).replace(/&amp;/g, '&').trim();
+        const safeFilename = filename || 'instagram_profile_hd.jpg';
+
+        if (typeof GM_download === 'function') {
+            try {
+                GM_download({
+                    url: cleanUrl,
+                    name: safeFilename,
+                    saveAs: false,
+                    onerror: () => {
+                        Utils.downloadImageFallback(cleanUrl, safeFilename);
+                    }
+                });
+                return;
+            } catch (e) {
+                console.warn('[IG Analyzer] GM_download failed, fallback to blob:', e);
+            }
+        }
+
+        await Utils.downloadImageFallback(cleanUrl, safeFilename);
+    },
+
+    downloadImageFallback: async (url, filename) => {
+        try {
+            const resp = await fetch(url, { mode: 'cors', credentials: 'omit' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        } catch (err) {
+            console.warn('[IG Analyzer] Blob download failed, opening in new tab:', err);
+            window.open(url, '_blank', 'noopener,noreferrer');
+        }
+    },
+
+    formatNumber: (num) => {
+        if (num === null || num === undefined || isNaN(num)) return '-';
+        const n = Number(num);
+        if (n >= 1000000) {
+            return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+        }
+        if (n >= 10000) {
+            return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+        }
+        return n.toLocaleString();
+    },
+
+    formatDate: (isoOrTimestamp) => {
+        if (!isoOrTimestamp) return '-';
+        try {
+            const d = new Date(isoOrTimestamp);
+            if (isNaN(d.getTime())) return String(isoOrTimestamp);
+            return d.toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        } catch (e) {
+            return String(isoOrTimestamp);
+        }
     }
 };

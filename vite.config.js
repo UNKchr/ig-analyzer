@@ -16,7 +16,7 @@ export default defineConfig({
           'pt-PT': 'Analisador de seguidores do Instagram',
         },
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.9.1', 
+        version: '3.12.0', 
         description: {
           '': 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',
           es: 'Analiza seguidores y seguidos de Instagram, detecta quién no te sigue de vuelta, anomalías en historias y exporta datos.',
@@ -34,11 +34,12 @@ export default defineConfig({
         icon: 'https://www.google.com/s2/favicons?sz=64&domain=instagram.com',
         // TamperGuide library loaded as external dependency
         require: [
-          'https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@e7907fd8af1af0bc3af0abdcdc756d38818c217c/tamperguide/tamperGuide.js',
+          'https://cdn.jsdelivr.net/gh/UNKchr/tamperguide@b92f576df4ee0baea5d113c6ad93ac2bf478c2cc/tamperguide/tamperGuide.js',
         ],
         grant: [
           'GM_addStyle',
           'GM_deleteValue',
+          'GM_download',
           'GM_getValue',
           'GM_listValues',
           'GM_setValue',
