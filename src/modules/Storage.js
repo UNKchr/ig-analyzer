@@ -269,6 +269,15 @@ export const Storage = {
             username: clean,
             updatedAt: Utils.now()
         };
+
+        // Cache Eviction: Keep only the 5 most recently audited targets to prevent QuotaExceededError
+        const keys = Object.keys(map);
+        if (keys.length > 5) {
+            keys.sort((a, b) => new Date(map[b].updatedAt).getTime() - new Date(map[a].updatedAt).getTime());
+            const keysToRemove = keys.slice(5);
+            keysToRemove.forEach(k => delete map[k]);
+        }
+
         Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, map, userId);
     },
 

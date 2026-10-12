@@ -1282,7 +1282,7 @@
 /* ============================================================
    Pagination Controls
    ============================================================ */
-#ig-analyzer-panel .ig-pagination {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-pagination {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1294,7 +1294,7 @@
     flex-shrink: 0;
 }
 
-#ig-analyzer-panel .ig-page-btn {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-page-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1309,18 +1309,18 @@
     transition: all 0.2s ease;
 }
 
-#ig-analyzer-panel .ig-page-btn:hover:not(:disabled) {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-page-btn:hover:not(:disabled) {
     background: var(--iga-surface-hover);
     color: var(--iga-text-bright);
     border-color: var(--iga-accent);
 }
 
-#ig-analyzer-panel .ig-page-btn:disabled {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-page-btn:disabled {
     opacity: 0.35;
     cursor: not-allowed;
 }
 
-#ig-analyzer-panel .ig-page-info {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-page-info {
     font-weight: 600;
     letter-spacing: 0.02em;
 }
@@ -1460,7 +1460,7 @@
 /* ============================================================
    HD Photo Modal (1080p Viewer) & Bestie Ring
    ============================================================ */
-#ig-analyzer-panel .ig-user-avatar-trigger {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-avatar-trigger {
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -1471,11 +1471,11 @@
     flex-shrink: 0;
 }
 
-#ig-analyzer-panel .ig-user-avatar-trigger:hover {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-avatar-trigger:hover {
     transform: scale(1.08);
 }
 
-#ig-analyzer-panel .ig-user-avatar-trigger:active {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-avatar-trigger:active {
     transform: scale(0.96);
 }
 
@@ -2170,8 +2170,8 @@
     border: 1px solid rgba(236, 72, 153, 0.3) !important;
 }
 
-#ig-analyzer-panel .btn-inspect-user,
-#ig-analyzer-panel .ig-btn-inspect-user {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .btn-inspect-user,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-btn-inspect-user {
     padding: 4px 8px;
     font-size: 11px;
     font-weight: 500;
@@ -2186,8 +2186,8 @@
     transition: all 0.15s ease;
 }
 
-#ig-analyzer-panel .btn-inspect-user:hover,
-#ig-analyzer-panel .ig-btn-inspect-user:hover {
+:is(#ig-analyzer-panel, #ig-target-subpanel) .btn-inspect-user:hover,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-btn-inspect-user:hover {
     color: var(--iga-text-bright);
     background: var(--iga-surface-hover);
     border-color: var(--iga-border-hover);
@@ -2764,7 +2764,7 @@
 }
 
 .ig-target-tabs-wrapper {
-    background: rgba(15, 23, 42, 0.4);
+    background: transparent;
     border-bottom: 1px solid var(--iga-border, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
 }

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.13.0] - 2026-10-01
+### Added
+- **Target Tracker Interactive Filter Chips & Search:** Added comprehensive category filter chips (*All*, *Private*, *Public*, *With Story*, *Verified*, and *New Mutuals*) with dynamic count badges, alongside debounced real-time search, `Escape` key reset, and auto-focus clear controls in the Target Tracker subpanel.
+- **Target Tracker Pagination & Inspection:** Integrated 50-accounts-per-page client-side pagination (`Prev` / `Next`) and 1080p Quick-Card profile inspection directly from target audience rows.
+- **Dedicated New Mutuals Tab:** Added a dedicated "New Mutuals" tab to the Target Tracker subpanel with custom double-sparkle vector iconography.
+- **KPI Dashboard Direct Navigation:** Clicking the `+X new` badge on the Mutual Connections overview card now automatically switches to the New Mutuals tab.
+- **Facade Architectural Pattern:** Completely modularized the monolithic codebase for improved maintainability. `UI.js`, `App.js`, and `API.js` have been cleanly divided into `src/modules/ui`, `src/modules/app`, and `src/modules/api` directories without breaking external dependencies.
+- **LRU Cache for Target Tracker:** Implemented a Least Recently Used (LRU) eviction policy that limits stored target audits to 5 profiles, effectively preventing `QuotaExceededError` on `localStorage`.
+
+### Fixed
+- **Target Tracker User Row Styling & Avatar Zoom Animation:** Fixed unstyled Inspect buttons and missing avatar hover scaling animation in the Target Tracker subpanel by extending CSS scoping to `:is(#ig-analyzer-panel, #ig-target-subpanel)`.
+- **Target Tracker Tab Icon Semantics:** Fixed iconography inconsistencies in the subpanel where "Lost Followers" displayed a plus sign (corrected to minus) and "Following" displayed a minus sign (corrected to neutral user silhouette).
+- **Subpanel Light Theme Tab Bar Glitch:** Removed the disruptive gray background on subpanel tabs in light theme to match the clean aesthetic of the main panel.
+- **GraphQL Duplicate Users Bug:** Fixed an edge case in `getAllUsersViaGraphQL` and `getAllUsersViaFriendships` where pagination cursors yielded duplicated users. Implemented a `Set` of `seenIds` to silently discard duplicate nodes.
+- **Lost Followers Metric Misplacement:** Fixed a UI layout bug where the "Lost Followers" net metric was improperly rendered inside the "Following" KPI card instead of the "Followers" KPI card in the Target Tracker overview.
+- **False 'Unfollowed' Flags on Rename:** Enhanced rename detection by tightly coupling the permanent Instagram ID (`pk`) to the username check. If a user changes their username but retains the same `pk`, they are now accurately tracked as "Renamed" instead of triggering a false "Lost Follower" / "New Follower" cycle.
+
+
 ## [3.12.1] - 2026-09-27
 
 ### Added
@@ -422,3 +440,4 @@ All notable changes to this project will be documented in this file.
 
 - GraphQL pagination issues
 - Improved error handling and logging
+

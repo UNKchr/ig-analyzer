@@ -1,7 +1,7 @@
 # Instagram Follower Analyzer
 
 [![Userscript](https://img.shields.io/badge/Tampermonkey-Userscript-blue?logo=tampermonkey)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)
-[![Version](https://img.shields.io/badge/version-3.12.2-emerald.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-3.13.0-emerald.svg)](package.json)
 [![License: Custom](https://img.shields.io/badge/License-CSAL--NC-amber.svg)](LICENSE)
 [![Maintenance](https://img.shields.io/badge/maintained%3F-yes-brightgreen.svg)](https://github.com/UNKchr/ig-analyzer)
 
@@ -29,7 +29,9 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 
 ### 🎯 Target Tracker & Deep Audit Child Subpanel (New in v3.12.0)
 - **Independent Floating Subpanel (`#ig-target-subpanel`):** A secondary floating window operating with high z-index over the main panel, featuring draggable header positioning (`ig_target_position_v1`), native corner resizing (`resize: both`), and full window controls (minimize/expand, close, refresh).
-- **Comprehensive Audience Navigation:** Tabbed navigation (*Overview*, *Mutuals*, *New Followers*, *Lost Followers*, *Followers*, *Following*, and *Logs*) with a fluid animated sliding indicator.
+- **Comprehensive Audience Navigation:** Tabbed navigation (*Overview*, *Mutuals*, *New Mutuals*, *New Followers*, *Lost Followers*, *Followers*, *Following*, and *Logs*) with a fluid animated sliding indicator.
+- **Interactive Filter Chips & Live Search:** Filter any target audience list dynamically with category filter chips (*All*, *Private*, *Public*, *With Story*, *Verified*, and *New Mutuals*) combined with debounced search and 50-per-page pagination.
+- **New Mutuals Isolation:** Automatically calculates and isolates newly formed mutual connections since the last scan into a dedicated tab, complete with floating emerald sparkle badges.
 - **Third-Party Audience Audits:** Monitor any target public Instagram profile directly from the main panel search input or via the quick audit button (`.ig-btn-target-audit`) present on any user row.
 - **Audience Dynamics & Shared Mutuals:** Identifies followers gained and lost between successive audits of target accounts and highlights connections you share in common (*Shared Mutuals*) with emerald badges.
 - **Contextual CSV Export:** Export filtered data specific to the active tab in the target audit window.
@@ -98,7 +100,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 - **Client-Side Virtualized Pagination:** Smooth 50-user pagination with `← Prev` and `Next →` navigation, preventing DOM bloat and browser lag.
 - **Multi-Account Storage Isolation:** Scopes all saved data by Instagram account ID (`${key}_${userId}`), ensuring zero cross-contamination when switching accounts in the same browser profile.
 - **Anti-Formula Injection CSV Export:** Protects exported CSV files against spreadsheet formula injection (CWE-1236) and prepends a UTF-8 BOM (`\uFEFF`) for universal spreadsheet compatibility.
-- **Robust Backup & Restore:** Encrypted/sanitized JSON export and import with strict key validation, prototype pollution defense, and smart account re-scoping.
+- **Robust Backup & Restore:** Sanitized JSON export and import with strict key validation, prototype pollution defense, and smart account re-scoping.
 - **Dark & Light Adaptive Theme:** Automatically synchronizes with Instagram's native theme.
 
 > 💡 **Real-World Use Case — "Did They Block Me, Delete Their Profile, or Just Rename?":**  
@@ -113,7 +115,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 
 1. Install a userscript manager extension in your browser (**[Tampermonkey](https://www.tampermonkey.net/)** is strongly recommended).
 2. Click the installation link below:
-   👉 **[Install Instagram Follower Analyzer (v3.12.1)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)**
+   👉 **[Install Instagram Follower Analyzer (v3.13.0)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)**
 3. Tampermonkey will prompt you to inspect and confirm the script. Click **Install** (or **Update**).
 
 ---
