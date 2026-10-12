@@ -344,7 +344,7 @@ Object.assign(UI, {
 
                     if (hdData.facepileUsers && hdData.facepileUsers.length > 0) {
                         facepileEl.innerHTML = hdData.facepileUsers.slice(0, 5).map((f) => 
-                            `<img class="ig-facepile-avatar" src="${f.profilePicUrl}" alt="Mutual" />`
+                            `<img class="ig-facepile-avatar" src="${Utils.sanitizeImageUrl(f.profilePicUrl) || ''}" alt="" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-flex';" /><span class="ig-facepile-avatar" style="display:none;">${(f.username || '?').charAt(0).toUpperCase()}</span>`
                         ).join('');
                     } else {
                         facepileEl.innerHTML = '';
@@ -368,6 +368,12 @@ Object.assign(UI, {
 
                             pillEl.className = 'ig-hd-res-pill is-hd';
                             pillEl.innerHTML = `${Icons.verified} 1080p Full HD`;
+
+                            UI.updateUserAvatarInDom(safeUsername, cleanHdUrl);
+                            Storage.updateUserProfile(safeUsername, {
+                                profilePicUrl: cleanHdUrl,
+                                fullName: hdData.fullName || u.fullName || ''
+                            });
 
                             btnDownload.onclick = () => {
                                 Utils.downloadImage(cleanHdUrl, `@${safeUsername}_profile_1080p.jpg`);
@@ -415,8 +421,18 @@ Object.assign(UI, {
         }
     },
     
+    lastLogMessage: null,
+    lastLogTimeMs: 0,
+
     log: (msg) => {
         try {
+            const nowMs = Date.now();
+            if (UI.lastLogMessage === msg && (nowMs - (UI.lastLogTimeMs || 0)) < 1200) {
+                return;
+            }
+            UI.lastLogMessage = msg;
+            UI.lastLogTimeMs = nowMs;
+
             const box = document.getElementById("ig-log");
             if (box) {
                 const nowStr = (typeof Utils.now === 'function' ? Utils.now() : new Date().toISOString());

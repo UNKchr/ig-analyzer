@@ -271,6 +271,8 @@ Object.assign(App, {
             } else {
                 UI.log("First run: Initial state established.");
             }
+
+            Storage.syncFreshUserData([...followingDetailed, ...followersDetailed]);
             
             Storage.save({
                 version: 4, 
@@ -300,7 +302,6 @@ Object.assign(App, {
             UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY), "ig-view-deactivated", "Deactivated Accounts");
             UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY), "ig-view-blocked", "Blocked Accounts");
             UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
-            UI.renderPersistedSnapshot(Storage.load());
             
             App.lastResults = notFollowingBackDetailed;
             window.__igLastResults = notFollowingBackDetailed;

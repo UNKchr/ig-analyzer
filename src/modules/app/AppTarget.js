@@ -304,6 +304,7 @@ Object.assign(App, {
                 lastAuditAt: Utils.now()
             };
 
+            Storage.syncFreshUserData([...network.followers, ...network.following]);
             Storage.saveTargetData(validatedUser.username, targetData);
 
             // Update subpanel header summary bar with authoritative counts

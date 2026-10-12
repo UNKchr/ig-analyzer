@@ -68,7 +68,7 @@ Object.assign(UI, {
             '    <span class="ig-bmc-icon">' + Icons.coffee + '</span>',
             '    <span class="ig-bmc-text">Buy me a coffee</span>',
             '  </a>',
-            '  <span class="ig-footer-meta">v3.13.0</span>',
+            '  <span class="ig-footer-meta">v3.13.1</span>',
             '</div>'
         ].join("\n");
         document.body.appendChild(panel);
@@ -104,7 +104,7 @@ Object.assign(UI, {
         if (btnClose) {
             btnClose.addEventListener('click', (e) => {
                 e.stopPropagation();
-                UI.togglePanel();
+                if (panel) panel.style.display = "none";
             });
         }
 
@@ -260,7 +260,12 @@ Object.assign(UI, {
                 }
                 target.classList.add("active");
                 const targetView = panel ? panel.querySelector(`#${targetId}`) : document.getElementById(targetId);
-                if (targetView) targetView.classList.add("active");
+                if (targetView) {
+                    targetView.classList.add("active");
+                    if (typeof UI.loadAvatarsProgressively === 'function') {
+                        UI.loadAvatarsProgressively(targetView);
+                    }
+                }
                 updateIndicator(target, true);
             };
         });
@@ -403,9 +408,36 @@ Object.assign(UI, {
         }
     },
     
+    lastPanelsState: null,
+
     togglePanel: () => {
-        const p = document.getElementById("ig-analyzer-panel");
-        if (p) p.style.display = p.style.display === "none" ? "flex" : "none";
+        const mainPanel = document.getElementById("ig-analyzer-panel");
+        const subpanel = document.getElementById("ig-target-subpanel");
+
+        const isMainVisible = Boolean(
+            mainPanel &&
+            mainPanel.style.display !== "none" &&
+            (mainPanel.offsetParent !== null || window.getComputedStyle(mainPanel).display !== "none")
+        );
+        const isSubVisible = Boolean(
+            subpanel &&
+            subpanel.style.display !== "none" &&
+            (subpanel.offsetParent !== null || window.getComputedStyle(subpanel).display !== "none")
+        );
+
+        if (isMainVisible || isSubVisible) {
+            UI.lastPanelsState = {
+                main: isMainVisible,
+                sub: isSubVisible
+            };
+            if (mainPanel) mainPanel.style.display = "none";
+            if (subpanel) subpanel.style.display = "none";
+        } else {
+            if (mainPanel) mainPanel.style.display = "flex";
+            if (subpanel && UI.lastPanelsState?.sub) {
+                subpanel.style.display = "flex";
+            }
+        }
     },
 
     CHIPS_DEF: [

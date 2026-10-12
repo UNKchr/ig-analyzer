@@ -443,12 +443,22 @@ Object.assign(App, {
             });
         }
 
-        document.addEventListener("keydown", (e) => {
-            const tag = document.activeElement.tagName;
-            if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) return;
-            if (e.key === "F9") UI.togglePanel();
-            if (e.key === "F8") UI.resetPosition();
-        });
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "F9") {
+                e.preventDefault();
+                e.stopPropagation();
+                UI.togglePanel();
+                return;
+            }
+            if (e.key === "F8") {
+                const tag = document.activeElement?.tagName;
+                if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
+                e.preventDefault();
+                e.stopPropagation();
+                UI.resetPosition();
+                return;
+            }
+        }, true);
     }
 
 });

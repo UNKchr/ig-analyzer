@@ -290,6 +290,152 @@ export const Storage = {
         }
     },
 
+    syncFreshUserData: (freshUsersArray, userId = null) => {
+        if (!Array.isArray(freshUsersArray) || freshUsersArray.length === 0) return;
+        const freshMap = new Map();
+        freshUsersArray.forEach((u) => {
+            const username = typeof u === 'string' ? u : u?.username;
+            if (username) {
+                freshMap.set(String(username).toLowerCase(), u);
+            }
+        });
+
+        // 1. Sync NEW_FOLLOWERS_KEY
+        const newFollowers = Storage.getNewFollowersList(userId);
+        let newFollowersChanged = false;
+        if (Array.isArray(newFollowers) && newFollowers.length > 0) {
+            newFollowers.forEach((entry) => {
+                const cleanUser = String(entry.username || '').toLowerCase();
+                const fresh = freshMap.get(cleanUser);
+                if (fresh) {
+                    if (fresh.profilePicUrl && fresh.profilePicUrl !== entry.profilePicUrl) {
+                        entry.profilePicUrl = fresh.profilePicUrl;
+                        newFollowersChanged = true;
+                    }
+                    if (fresh.fullName && fresh.fullName !== entry.fullName) {
+                        entry.fullName = fresh.fullName;
+                        newFollowersChanged = true;
+                    }
+                    if (fresh.isVerified !== undefined) entry.isVerified = Boolean(fresh.isVerified);
+                    if (fresh.isPrivate !== undefined) entry.isPrivate = Boolean(fresh.isPrivate);
+                    if (fresh.isBestie !== undefined) entry.isBestie = Boolean(fresh.isBestie);
+                    if (fresh.followsBack !== undefined) entry.followsBack = fresh.followsBack;
+                }
+            });
+            if (newFollowersChanged) {
+                Storage.setScopedValue(CONFIG.NEW_FOLLOWERS_KEY, newFollowers, userId);
+            }
+        }
+
+        // 2. Sync stored snapshot
+        const snap = Storage.load(userId);
+        if (snap) {
+            let snapChanged = false;
+            const syncList = (list) => {
+                if (!Array.isArray(list)) return;
+                list.forEach((item) => {
+                    const uName = typeof item === 'string' ? item : item?.username;
+                    if (!uName) return;
+                    const fresh = freshMap.get(String(uName).toLowerCase());
+                    if (fresh && typeof item === 'object') {
+                        if (fresh.profilePicUrl && fresh.profilePicUrl !== item.profilePicUrl) {
+                            item.profilePicUrl = fresh.profilePicUrl;
+                            snapChanged = true;
+                        }
+                        if (fresh.fullName && fresh.fullName !== item.fullName) {
+                            item.fullName = fresh.fullName;
+                            snapChanged = true;
+                        }
+                    }
+                });
+            };
+
+            syncList(snap.followersDetailed);
+            syncList(snap.followingDetailed);
+            syncList(snap.mutualsDetailed);
+            syncList(snap.fansDetailed);
+            syncList(snap.notFollowingBackDetailed);
+            syncList(snap.newFollowersDetailed);
+
+            if (snapChanged) {
+                Storage.save(snap, userId);
+            }
+        }
+    },
+
+    updateUserProfile: (username, updates = {}, userId = null) => {
+        if (!username || typeof updates !== 'object') return;
+        const cleanUser = String(username).replace(/^@+/, '').toLowerCase().trim();
+        if (!cleanUser) return;
+
+        // 1. Update in NEW_FOLLOWERS_KEY
+        const newFollowers = Storage.getNewFollowersList(userId);
+        let nfChanged = false;
+        if (Array.isArray(newFollowers)) {
+            const entry = newFollowers.find((x) => String(x.username || '').toLowerCase() === cleanUser);
+            if (entry) {
+                Object.assign(entry, updates);
+                nfChanged = true;
+            }
+            if (nfChanged) {
+                Storage.setScopedValue(CONFIG.NEW_FOLLOWERS_KEY, newFollowers, userId);
+            }
+        }
+
+        // 2. Update in stored snapshot
+        const snap = Storage.load(userId);
+        if (snap) {
+            let snapChanged = false;
+            const updateInList = (list) => {
+                if (!Array.isArray(list)) return;
+                const match = list.find((x) => typeof x === 'object' && String(x.username || '').toLowerCase() === cleanUser);
+                if (match) {
+                    Object.assign(match, updates);
+                    snapChanged = true;
+                }
+            };
+            updateInList(snap.followersDetailed);
+            updateInList(snap.followingDetailed);
+            updateInList(snap.mutualsDetailed);
+            updateInList(snap.fansDetailed);
+            updateInList(snap.notFollowingBackDetailed);
+            updateInList(snap.newFollowersDetailed);
+            if (snapChanged) {
+                Storage.save(snap, userId);
+            }
+        }
+
+        // 3. Update in target tracker if present
+        const targetMap = Storage.getTargetTrackerMap(userId);
+        if (targetMap && typeof targetMap === 'object') {
+            let targetChanged = false;
+            Object.values(targetMap).forEach((tData) => {
+                if (!tData) return;
+                if (String(tData.username || '').toLowerCase() === cleanUser && tData.user) {
+                    Object.assign(tData.user, updates);
+                    targetChanged = true;
+                }
+                const updateInTargetList = (tList) => {
+                    if (!Array.isArray(tList)) return;
+                    const match = tList.find((x) => typeof x === 'object' && String(x.username || '').toLowerCase() === cleanUser);
+                    if (match) {
+                        Object.assign(match, updates);
+                        targetChanged = true;
+                    }
+                };
+                updateInTargetList(tData.followers);
+                updateInTargetList(tData.following);
+                updateInTargetList(tData.mutuals);
+                updateInTargetList(tData.newFollowers);
+                updateInTargetList(tData.newMutuals);
+            });
+            if (targetChanged) {
+                Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, targetMap, userId);
+            }
+        }
+    },
+
+
     resetAll: (userId = null) => {
         const keys = [
             CONFIG.STORAGE_KEY,

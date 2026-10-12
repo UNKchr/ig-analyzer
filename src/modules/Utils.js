@@ -32,18 +32,38 @@ export const Utils = {
     },
 
     sanitizeUrl: (username, customUrl) => {
+        const cleanUser = String(username || '').replace(/^@+/, '').trim();
+        if (cleanUser) {
+            return `https://www.instagram.com/${encodeURIComponent(cleanUser)}/`;
+        }
         if (customUrl) {
             try {
                 const parsed = new URL(customUrl, window.location.origin);
-                if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname.includes('instagram.com')) {
                     return Utils.escapeHtml(parsed.href);
                 }
             } catch (e) {
                 Utils.logError('Error parsing custom URL', e);
             }
         }
-        const safeUser = encodeURIComponent(username || '');
-        return `https://www.instagram.com/${safeUser}/`;
+        return 'https://www.instagram.com/';
+    },
+
+    isCdnUrlExpired: (url) => {
+        if (!url || typeof url !== 'string') return true;
+        try {
+            const clean = url.replace(/&amp;/g, '&');
+            const parsed = new URL(clean, window.location.origin);
+            const oeHex = parsed.searchParams.get('oe');
+            if (oeHex) {
+                const expSec = parseInt(oeHex, 16);
+                if (!isNaN(expSec) && expSec > 0) {
+                    const nowSec = Math.floor(Date.now() / 1000);
+                    return expSec <= nowSec;
+                }
+            }
+        } catch (e) {}
+        return false;
     },
 
     sanitizeImageUrl: (url) => {
@@ -51,8 +71,11 @@ export const Utils = {
         try {
             // Strip corrupted HTML entities (&amp;) to prevent breaking Meta CDN HMAC signature
             const clean = url.replace(/&amp;/g, '&').trim();
+            if (Utils.isCdnUrlExpired(clean)) {
+                return null;
+            }
             const parsed = new URL(clean, window.location.origin);
-            if (parsed.protocol === 'https:') {
+            if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
                 return parsed.href;
             }
         } catch (e) {
@@ -326,16 +349,37 @@ export const Utils = {
         if (!Array.isArray(arr)) return [];
         return arr
         .map((u) => {
-            if (typeof u === "string") return { id: null, username: u };
-            if (u && typeof u.username === "string") {
+            if (typeof u === "string") {
+                const cleanName = String(u).replace(/^@+/, '').trim();
+                return cleanName ? {
+                    id: null,
+                    username: cleanName,
+                    fullName: "",
+                    isPrivate: false,
+                    isVerified: false,
+                    profilePicUrl: null,
+                    latestReelMedia: 0,
+                    isBestie: false,
+                    outgoingRequest: false,
+                    url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
+                } : null;
+            }
+            if (u && typeof u === "object") {
+                const rawName = u.username || u.name || '';
+                const cleanName = String(rawName).replace(/^@+/, '').trim();
+                if (!cleanName) return null;
+                const pic = Utils.sanitizeImageUrl(u.profilePicUrl || u.profile_pic_url || null);
                 return { 
                     id: u.id ? String(u.id) : null, 
-                    username: String(u.username),
+                    username: cleanName,
                     fullName: u.fullName || u.full_name || "",
                     isPrivate: Boolean(u.isPrivate ?? u.is_private),
                     isVerified: Boolean(u.isVerified ?? u.is_verified),
-                    profilePicUrl: u.profilePicUrl || u.profile_pic_url || null,
-                    latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0
+                    profilePicUrl: pic,
+                    latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,
+                    isBestie: Boolean(u.isBestie ?? u.is_bestie),
+                    outgoingRequest: Boolean(u.outgoingRequest ?? u.outgoing_request),
+                    url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
                 };
             }
             return null;
@@ -389,7 +433,11 @@ export const Utils = {
         };
 
         const header = ['Username', 'Profile URL'].map(sanitizeCell).join(',');
-        const rows = data.map((u) => [u.username, u.url].map(sanitizeCell).join(','));
+        const rows = data.map((u) => {
+            const uName = typeof u === 'string' ? u : (u?.username || '');
+            const profileUrl = (typeof u === 'object' && u?.url) ? u.url : Utils.sanitizeUrl(uName);
+            return [uName, profileUrl].map(sanitizeCell).join(',');
+        });
         // Include UTF-8 BOM (\uFEFF) for universal spreadsheet compatibility
         const csvContent = '\uFEFF' + [header, ...rows].join('\r\n');
 

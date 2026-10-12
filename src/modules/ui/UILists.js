@@ -98,7 +98,9 @@ Object.assign(UI, {
                 });
 
                 searchInput.addEventListener('keydown', (e) => {
-                    if (e.key === 'Escape' && searchInput.value) {
+                    if (e.key === 'Escape') {
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
                         e.preventDefault();
                         searchInput.value = '';
                         if (clearBtn) clearBtn.style.display = 'none';
@@ -111,6 +113,8 @@ Object.assign(UI, {
             if (clearBtn && searchInput) {
                 clearBtn.addEventListener('click', (e) => {
                     e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
                     searchInput.value = '';
                     clearBtn.style.display = 'none';
                     state.searchQuery = '';
@@ -147,6 +151,10 @@ Object.assign(UI, {
             if (clearBtn) {
                 clearBtn.style.display = state.searchQuery ? 'inline-flex' : 'none';
             }
+            const searchInput = toolbarEl.querySelector('.ig-search-input');
+            if (searchInput && document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
+                searchInput.value = state.searchQuery || '';
+            }
         }
 
         // Render rows in listEl
@@ -166,17 +174,15 @@ Object.assign(UI, {
                 const isBestieStory = hasStory && Boolean(u.isBestie);
                 const safeAvatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
 
-                let avatarStyle = 'object-fit:cover;';
+                let avatarStyle = '';
                 if (isBestieStory) {
                     avatarStyle += ' outline: 2px solid #22c55e; outline-offset: 1px;';
                 } else if (hasStory) {
                     avatarStyle += ' outline: 2px solid #e1306c; outline-offset: 1px;';
                 }
 
-                const avatarClass = 'ig-user-avatar' + (isBestieStory ? ' has-bestie-ring' : '');
-                const avatarHtml = safeAvatarUrl
-                    ? '<img class="' + avatarClass + '" src="' + safeAvatarUrl + '" alt="' + safeUsername + '" style="' + avatarStyle + '" />'
-                    : '<span class="' + avatarClass + '" style="' + avatarStyle + '">' + safeInitial + '</span>';
+                const avatarClass = 'ig-user-avatar ig-avatar-monogram' + (isBestieStory ? ' has-bestie-ring' : '');
+                const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || '') + '" data-username="' + safeUsername + '" style="' + avatarStyle + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
                 const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${Utils.escapeHtml(u.id || '')}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
 
@@ -209,7 +215,10 @@ Object.assign(UI, {
                 rowsHtml += '</div></div>';
             });
         }
-        if (listEl) listEl.innerHTML = rowsHtml;
+        if (listEl) {
+            listEl.innerHTML = rowsHtml;
+            UI.loadAvatarsProgressively(listEl);
+        }
 
         // Render pagination in paginationEl
         let paginationHtml = '';
@@ -309,7 +318,7 @@ Object.assign(UI, {
     },
 
     renderResults: (users, title, containerId, isExportable = false) => {
-        const safeUsers = Array.isArray(users) ? users : [];
+        const safeUsers = Utils.toDetailedUserArray(users);
         const container = document.getElementById(containerId);
         if (container) {
             container.innerHTML = "";
@@ -397,9 +406,8 @@ Object.assign(UI, {
                 const safeAvatarUrl = known?.profilePicUrl ? Utils.sanitizeImageUrl(known.profilePicUrl) : null;
                 const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : '?';
 
-                const avatarHtml = safeAvatarUrl
-                    ? '<img class="ig-user-avatar" src="' + safeAvatarUrl + '" alt="' + safeUsername + '" style="object-fit:cover;" />'
-                    : '<span class="ig-user-avatar">' + safeInitial + '</span>';
+                const avatarClass = 'ig-user-avatar ig-avatar-monogram';
+                const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || '') + '" data-username="' + safeUsername + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
                 const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
 
@@ -422,6 +430,7 @@ Object.assign(UI, {
 
         html += '</div>';
         container.innerHTML = html;
+        UI.loadAvatarsProgressively(container);
 
         // Bind search input events
         const searchInput = container.querySelector('.ig-whitelist-search-input');
@@ -621,11 +630,11 @@ Object.assign(UI, {
     },
     
     getFilterCounts: (rawUsers, searchQuery = '') => {
-        const query = (searchQuery || '').trim().toLowerCase();
+        const query = (searchQuery || '').trim().toLowerCase().replace(/^@+/, '');
         const baseList = query
             ? (rawUsers || []).filter((u) => {
-                const uName = (u.username || '').toLowerCase();
-                const fName = (u.fullName || '').toLowerCase();
+                const uName = (u?.username || '').toLowerCase();
+                const fName = (u?.fullName || '').toLowerCase();
                 return uName.includes(query) || fName.includes(query);
             })
             : (rawUsers || []);
@@ -645,13 +654,13 @@ Object.assign(UI, {
         const state = UI.paginationState[containerId];
         if (!state) return;
 
-        const query = (state.searchQuery || '').trim().toLowerCase();
+        const query = (state.searchQuery || '').trim().toLowerCase().replace(/^@+/, '');
         const filter = state.filterType || 'all';
 
         state.users = (state.rawUsers || []).filter((u) => {
             if (query) {
-                const uName = (u.username || '').toLowerCase();
-                const fName = (u.fullName || '').toLowerCase();
+                const uName = (u?.username || '').toLowerCase();
+                const fName = (u?.fullName || '').toLowerCase();
                 if (!uName.includes(query) && !fName.includes(query)) {
                     return false;
                 }
@@ -777,5 +786,91 @@ Object.assign(UI, {
         if (Array.isArray(snapshot.history)) {
             UI.renderHistory(snapshot.history);
         }
+    },
+
+    loadAvatarsProgressively: (containerEl, delayMs = 35) => {
+        if (!containerEl) return;
+
+        // If inside a tab view that is currently hidden, defer loading until the tab becomes active
+        const parentView = containerEl.closest('.ig-view');
+        if (parentView && !parentView.classList.contains('active')) {
+            return;
+        }
+
+        const scopeEl = containerEl.classList.contains('ig-view-list')
+            ? containerEl
+            : (containerEl.querySelector('.ig-view-list') || containerEl);
+
+        scopeEl._avatarQueueToken = (scopeEl._avatarQueueToken || 0) + 1;
+        const currentToken = scopeEl._avatarQueueToken;
+
+        const monograms = scopeEl.querySelectorAll('.ig-avatar-monogram[data-avatar-url]');
+        const items = Array.from(monograms).filter((el) => {
+            const url = el.getAttribute('data-avatar-url');
+            return url && !el.classList.contains('is-loaded') && !Utils.isCdnUrlExpired(url);
+        });
+
+        items.forEach((el, index) => {
+            setTimeout(() => {
+                if (scopeEl._avatarQueueToken !== currentToken || !el.isConnected || el.classList.contains('is-loaded')) return;
+                const url = el.getAttribute('data-avatar-url');
+                if (!url || Utils.isCdnUrlExpired(url)) return;
+
+                const img = new Image();
+                img.onload = () => {
+                    if (!el.isConnected || el.classList.contains('is-loaded')) return;
+                    el.classList.add('is-loaded');
+
+                    const imgTag = document.createElement('img');
+                    imgTag.className = 'ig-avatar-img-loaded';
+                    imgTag.src = url;
+                    imgTag.alt = '';
+                    imgTag.loading = 'lazy';
+
+                    el.innerHTML = '';
+                    el.appendChild(imgTag);
+                };
+                img.onerror = () => {
+                    // Safe fallback: leave monogram with initial intact. Never show broken icon.
+                };
+                img.src = url;
+            }, index * delayMs);
+        });
+    },
+
+    updateUserAvatarInDom: (username, newAvatarUrl) => {
+        if (!username || !newAvatarUrl) return;
+        const cleanUser = String(username).replace(/^@+/, '').toLowerCase().trim();
+        const safeUrl = Utils.sanitizeImageUrl(newAvatarUrl);
+        if (!safeUrl) return;
+
+        const triggers = document.querySelectorAll('.ig-user-avatar-trigger, .ig-target-card-avatar, .ig-target-overview-avatar-wrap');
+        triggers.forEach((trigger) => {
+            const trigUser = (trigger.getAttribute('data-username') || '').toLowerCase();
+            const parentRow = trigger.closest('.ig-user-row, .ig-target-card');
+            const rowUser = (parentRow?.getAttribute('data-user') || parentRow?.getAttribute('data-username') || '').toLowerCase();
+
+            if (trigUser === cleanUser || rowUser === cleanUser) {
+                const monogram = trigger.classList.contains('ig-avatar-monogram')
+                    ? trigger
+                    : trigger.querySelector('.ig-avatar-monogram');
+                if (!monogram) return;
+
+                monogram.setAttribute('data-avatar-url', safeUrl);
+                const img = new Image();
+                img.onload = () => {
+                    if (!monogram.isConnected) return;
+                    monogram.classList.add('is-loaded');
+                    const imgTag = document.createElement('img');
+                    imgTag.className = 'ig-avatar-img-loaded';
+                    imgTag.src = safeUrl;
+                    imgTag.alt = '';
+                    imgTag.loading = 'lazy';
+                    monogram.innerHTML = '';
+                    monogram.appendChild(imgTag);
+                };
+                img.src = safeUrl;
+            }
+        });
     }
 });

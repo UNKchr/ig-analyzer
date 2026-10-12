@@ -17,7 +17,7 @@ export default defineConfig({
           'pt-PT': 'Analisador de seguidores do Instagram',
         },
         namespace: 'https://github.com/UNKchr/ig-analyzer',
-        version: '3.13.0', 
+        version: '3.13.1', 
         description: {
           '': 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',
           en: 'Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.',

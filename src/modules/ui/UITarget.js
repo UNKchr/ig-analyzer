@@ -114,7 +114,12 @@ Object.assign(UI, {
                 subpanel.querySelectorAll(".ig-view, .ig-target-view").forEach((v) => v.classList.remove("active"));
                 target.classList.add("active");
                 const targetView = subpanel.querySelector(`#${targetId}`);
-                if (targetView) targetView.classList.add("active");
+                if (targetView) {
+                    targetView.classList.add("active");
+                    if (typeof UI.loadAvatarsProgressively === 'function') {
+                        UI.loadAvatarsProgressively(targetView);
+                    }
+                }
                 updateIndicator(target, true);
 
                 const expBtn = subpanel.querySelector("#ig-target-export-csv");
@@ -353,9 +358,8 @@ Object.assign(UI, {
         const isPrivate = Boolean(u.isPrivate);
         const isRestricted = Boolean(targetData.isRestricted);
 
-        const avatarHtml = avatarUrl
-            ? '<img class="ig-user-avatar" src="' + avatarUrl + '" alt="' + safeUser + '" />'
-            : '<span class="ig-user-avatar">' + (safeUser ? safeUser.charAt(0).toUpperCase() : '?') + '</span>';
+        const safeInitial = safeUser ? safeUser.charAt(0).toUpperCase() : '?';
+        const avatarHtml = '<div class="ig-user-avatar ig-avatar-monogram" data-avatar-url="' + (avatarUrl || '') + '" data-username="' + safeUser + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
         const followersCount = (Array.isArray(targetData.followers) && targetData.followers.length > 0)
             ? targetData.followers.length
@@ -442,6 +446,7 @@ Object.assign(UI, {
         }
 
         container.innerHTML = html;
+        UI.loadAvatarsProgressively(container);
     },
 
     renderTargetLists: (targetData) => {
@@ -450,7 +455,7 @@ Object.assign(UI, {
         const newMutualsSet = new Set(newMutualsNames);
 
         UI.renderTargetSingleList("ig-target-view-mutuals", targetData.mutuals || [], "Mutual Connections", "No mutual connections found.", { newMutualsSet });
-        UI.renderTargetSingleList("ig-target-view-newmutuals", targetData.newMutualsDetailed || [], "New Mutual Connections", "No new mutual connections discovered in this audit.", { newMutualsSet });
+        UI.renderTargetSingleList("ig-target-view-newmutuals", targetData.newMutualsDetailed || targetData.newMutuals || [], "New Mutual Connections", "No new mutual connections discovered in this audit.", { newMutualsSet });
         UI.renderTargetSingleList("ig-target-view-newfollowers", targetData.newFollowers || [], "New Followers Gained", "No new followers detected since last scan.", { isNewBadge: true, newMutualsSet });
         UI.renderTargetSingleList("ig-target-view-lostfollowers", targetData.lostFollowers || [], "Followers Lost", "No lost followers detected since last scan.", { isLostBadge: true });
         UI.renderTargetSingleList("ig-target-view-followers", targetData.followers || [], "Target Followers", "No followers data available.");
@@ -466,11 +471,11 @@ Object.assign(UI, {
     ],
 
     getTargetFilterCounts: (rawUsers, searchQuery = '', options = {}) => {
-        const query = (searchQuery || '').trim().toLowerCase();
+        const query = (searchQuery || '').trim().toLowerCase().replace(/^@+/, '');
         const baseList = query
             ? (rawUsers || []).filter((u) => {
-                const uName = (u.username || '').toLowerCase();
-                const fName = (u.fullName || '').toLowerCase();
+                const uName = (u?.username || '').toLowerCase();
+                const fName = (u?.fullName || '').toLowerCase();
                 return uName.includes(query) || fName.includes(query);
             })
             : (rawUsers || []);
@@ -494,14 +499,14 @@ Object.assign(UI, {
         const state = UI.targetPaginationState[containerId];
         if (!state) return;
 
-        const query = (state.searchQuery || '').trim().toLowerCase();
+        const query = (state.searchQuery || '').trim().toLowerCase().replace(/^@+/, '');
         const filter = state.filterType || 'all';
         const newMutualsSet = state.options?.newMutualsSet;
 
         state.users = (state.rawUsers || []).filter((u) => {
             if (query) {
-                const uName = (u.username || '').toLowerCase();
-                const fName = (u.fullName || '').toLowerCase();
+                const uName = (u?.username || '').toLowerCase();
+                const fName = (u?.fullName || '').toLowerCase();
                 if (!uName.includes(query) && !fName.includes(query)) {
                     return false;
                 }
@@ -569,7 +574,7 @@ Object.assign(UI, {
     },
 
     renderTargetSingleList: (containerId, rawList, title, emptyMsg, options = {}) => {
-        const safeList = Array.isArray(rawList) ? rawList : [];
+        const safeList = Utils.toDetailedUserArray(rawList);
         UI.targetPaginationState[containerId] = {
             rawUsers: safeList,
             users: safeList,
@@ -672,12 +677,16 @@ Object.assign(UI, {
                 });
 
                 searchInput.addEventListener('keydown', (e) => {
-                    if (e.key === 'Escape' && searchInput.value) {
+                    if (e.key === 'Escape') {
                         e.preventDefault();
-                        searchInput.value = '';
-                        if (clearBtn) clearBtn.style.display = 'none';
-                        state.searchQuery = '';
-                        UI.applyTargetFilters(containerId);
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        if (searchInput.value || state.searchQuery) {
+                            searchInput.value = '';
+                            if (clearBtn) clearBtn.style.display = 'none';
+                            state.searchQuery = '';
+                            UI.applyTargetFilters(containerId);
+                        }
                     }
                 });
             }
@@ -685,6 +694,8 @@ Object.assign(UI, {
             if (clearBtn && searchInput) {
                 clearBtn.addEventListener('click', (e) => {
                     e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
                     searchInput.value = '';
                     clearBtn.style.display = 'none';
                     state.searchQuery = '';
@@ -719,6 +730,10 @@ Object.assign(UI, {
             if (clearBtn) {
                 clearBtn.style.display = state.searchQuery ? 'inline-flex' : 'none';
             }
+            const searchInput = toolbarEl.querySelector('.ig-target-list-search');
+            if (searchInput && document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
+                searchInput.value = state.searchQuery || '';
+            }
         }
 
         let rowsHtml = '';
@@ -730,9 +745,9 @@ Object.assign(UI, {
                 const safeUrl = Utils.sanitizeUrl(u.username, u.url);
                 const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : '';
                 const safeAvatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
-                const avatarHtml = safeAvatarUrl
-                    ? '<img class="ig-user-avatar" src="' + safeAvatarUrl + '" alt="' + safeUsername + '" />'
-                    : '<span class="ig-user-avatar">' + (safeUsername ? safeUsername.charAt(0).toUpperCase() : '?') + '</span>';
+                const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : '?';
+                const avatarClass = 'ig-user-avatar ig-avatar-monogram';
+                const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || '') + '" data-username="' + safeUsername + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
                 const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${Utils.escapeHtml(u.id || '')}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
 
@@ -762,7 +777,10 @@ Object.assign(UI, {
             });
         }
 
-        if (listEl) listEl.innerHTML = rowsHtml;
+        if (listEl) {
+            listEl.innerHTML = rowsHtml;
+            UI.loadAvatarsProgressively(listEl);
+        }
 
         let paginationHtml = '';
         if (totalPages > 1) {
@@ -833,9 +851,8 @@ Object.assign(UI, {
                     diffBadge = '<span class="ig-target-card-diff is-negative">' + netFlow + '</span>';
                 }
 
-                const avatarHtml = avatarUrl
-                    ? '<img class="ig-target-card-avatar" src="' + avatarUrl + '" alt="' + safeUser + '" />'
-                    : '<span class="ig-target-card-avatar">' + (safeUser ? safeUser.charAt(0).toUpperCase() : '?') + '</span>';
+                const safeInitial = safeUser ? safeUser.charAt(0).toUpperCase() : '?';
+                const avatarHtml = '<div class="ig-target-card-avatar ig-avatar-monogram" data-avatar-url="' + (avatarUrl || '') + '" data-username="' + safeUser + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
                 const timeStr = t.lastAuditAt ? Utils.formatDate(t.lastAuditAt) : 'Recent';
 
@@ -870,6 +887,7 @@ Object.assign(UI, {
 
         html += '</div>';
         container.innerHTML = html;
+        UI.loadAvatarsProgressively(container);
 
         const searchBtn = container.querySelector("#ig-btn-target-search");
         const searchInput = container.querySelector("#ig-target-search-input");
