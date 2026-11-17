@@ -9,5 +9,11 @@ export const UI = {
 
     // Target Tracker State
     currentTargetUser: null,
-    targetPaginationState: {}
+    targetPaginationState: {},
+
+    // Interactive SVG Chart State (per scope)
+    chartState: {
+        main: { metric: 'followers', range: '30d' },
+        target: { metric: 'followers', range: '30d' }
+    }
 };

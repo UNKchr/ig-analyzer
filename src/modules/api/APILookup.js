@@ -6,69 +6,82 @@ import { Storage } from '../Storage.js';
 
 Object.assign(API, {
     getUserInfo: async (userId, options = {}) => {
-        if (!userId || userId === "0") return null;
+        if (!userId || String(userId) === "0") return null;
         if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
+        const targetIdStr = String(userId).trim();
         const opts = { ...options, optional: true, silent: true };
+        const viewerUsername = Utils.getUsername() || Storage.load(targetIdStr)?.ownerUsername || "";
 
-        // 1. Check window / unsafeWindow objects first (zero network cost)
+        // 1. Check window / unsafeWindow objects ONLY when ID strictly matches target userId
         try {
             const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-            const rawUser = win._sharedData?.rawProfileUser || 
-                            win.__initialData?.data?.user || 
-                            win.__initialData?.pending?.viewer;
-            if (rawUser) {
-                const fCount = rawUser.edge_followed_by?.count ?? rawUser.follower_count;
-                const fgCount = rawUser.edge_follow?.count ?? rawUser.following_count;
+            const candidates = [
+                win.__initialData?.pending?.viewer,
+                win.__initialData?.data?.viewer,
+                win._sharedData?.config?.viewer,
+                win._sharedData?.rawProfileUser,
+                win.__initialData?.data?.user
+            ];
+            for (const cand of candidates) {
+                if (!cand || typeof cand !== 'object') continue;
+                const candId = String(cand.id || cand.pk || '').trim();
+                if (candId !== targetIdStr) continue;
+                const fCount = cand.edge_followed_by?.count ?? cand.follower_count;
+                const fgCount = cand.edge_follow?.count ?? cand.following_count;
                 if (typeof fCount === 'number' || typeof fgCount === 'number') {
                     return {
                         followerCount: Number(fCount || 0),
                         followingCount: Number(fgCount || 0),
-                        username: rawUser.username || "",
-                        fullName: rawUser.full_name || "",
-                        profilePicUrl: rawUser.profile_pic_url || null
+                        username: cand.username || viewerUsername,
+                        fullName: cand.full_name || "",
+                        profilePicUrl: cand.profile_pic_url || null
                     };
                 }
             }
         } catch (e) {}
 
-        // 2. Check DOM meta tags (zero network cost, highly reliable on profile pages)
+        // 2. Check DOM meta tags ONLY when the current route actually belongs to the viewer's own profile
         try {
-            const metaDesc = document.querySelector('meta[property="og:description"], meta[name="description"]')?.content || '';
-            const match = metaDesc.match(/([0-9.,kKmM]+)\s+Followers.*?([0-9.,kKmM]+)\s+Following/i);
-            if (match) {
-                const parseCount = (str) => {
-                    str = str.replace(/,/g, '').trim().toLowerCase();
-                    if (str.endsWith('k')) return Math.round(parseFloat(str) * 1000);
-                    if (str.endsWith('m')) return Math.round(parseFloat(str) * 1000000);
-                    return parseInt(str, 10) || 0;
-                };
-                const followerCount = parseCount(match[1]);
-                const followingCount = parseCount(match[2]);
-                if (followerCount > 0 || followingCount > 0) {
-                    return {
-                        followerCount,
-                        followingCount,
-                        username: Utils.getUsername() || "",
-                        fullName: "",
-                        profilePicUrl: null
+            const currentSlug = typeof window !== 'undefined'
+                ? String(window.location?.pathname || '').replace(/^\/+|\/+$/g, '').toLowerCase()
+                : '';
+            if (viewerUsername && currentSlug && currentSlug === viewerUsername.toLowerCase()) {
+                const metaDesc = document.querySelector('meta[property="og:description"], meta[name="description"]')?.content || '';
+                const match = metaDesc.match(/([0-9.,kKmM]+)\s+Followers.*?([0-9.,kKmM]+)\s+Following/i);
+                if (match) {
+                    const parseCount = (str) => {
+                        str = str.replace(/,/g, '').trim().toLowerCase();
+                        if (str.endsWith('k')) return Math.round(parseFloat(str) * 1000);
+                        if (str.endsWith('m')) return Math.round(parseFloat(str) * 1000000);
+                        return parseInt(str, 10) || 0;
                     };
+                    const followerCount = parseCount(match[1]);
+                    const followingCount = parseCount(match[2]);
+                    if (followerCount > 0 || followingCount > 0) {
+                        return {
+                            followerCount,
+                            followingCount,
+                            username: viewerUsername,
+                            fullName: "",
+                            profilePicUrl: null
+                        };
+                    }
                 }
             }
         } catch (e) {}
 
-        // 3. Official Web endpoint: /api/v1/users/web_profile_info/?username={username}
+        // 3. Official Web endpoint: /api/v1/users/web_profile_info/?username={viewerUsername}
         try {
-            const username = Utils.getUsername();
-            if (username) {
-                const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
+            if (viewerUsername) {
+                const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(viewerUsername)}`;
                 const json = await API.fetchWithRetry(url, opts, 1);
                 const u = json?.data?.user;
-                if (u) {
+                if (u && (!u.id || String(u.id) === targetIdStr)) {
                     return {
                         followerCount: Number(u.edge_followed_by?.count ?? u.follower_count ?? 0),
                         followingCount: Number(u.edge_follow?.count ?? u.following_count ?? 0),
-                        username: u.username || username,
+                        username: u.username || viewerUsername,
                         fullName: u.full_name || "",
                         profilePicUrl: u.profile_pic_url || null
                     };
@@ -76,7 +89,24 @@ Object.assign(API, {
             }
         } catch (e) {
             if (e.name === 'AbortError' || options.signal?.aborted) throw e;
-            // Silent fail for optional metadata — progress bar will fall back to smooth indeterminate animation
+        }
+
+        // 4. Direct ID GraphQL fallback (works on feed, reels, or foreign profiles even without viewerUsername)
+        try {
+            if (typeof API.fetchUserProfileHd === 'function') {
+                const hd = await API.fetchUserProfileHd(targetIdStr, viewerUsername, opts);
+                if (hd && (typeof hd.followerCount === 'number' || typeof hd.followingCount === 'number')) {
+                    return {
+                        followerCount: Number(hd.followerCount ?? 0),
+                        followingCount: Number(hd.followingCount ?? 0),
+                        username: hd.username || viewerUsername,
+                        fullName: hd.fullName || "",
+                        profilePicUrl: hd.hdUrl || null
+                    };
+                }
+            }
+        } catch (e) {
+            if (e.name === 'AbortError' || options.signal?.aborted) throw e;
         }
 
         return null;
@@ -201,9 +231,10 @@ Object.assign(API, {
             params.append("__user", "0");
             params.append("__a", "1");
             params.append("__req", "1");
+            const searchDocId = "27706427925724183";
             params.append("fb_api_caller_class", "RelayModern");
             params.append("fb_api_req_friendly_name", "PolarisSearchBoxRefetchableQuery");
-            params.append("doc_id", "27706427925724183");
+            params.append("doc_id", searchDocId);
             params.append("server_timestamps", "true");
 
             const rankToken = `${Date.now()}|${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`;
@@ -319,19 +350,13 @@ Object.assign(API, {
             }
         }
 
-        // 2. Check window / storage snapshots (followers and following)
+        // 2. Check all local detailed snapshots, nominal lists, renamed records, and target caches (zero network cost)
         try {
-            const pool = [
-                ...(window.__igLastResults || []),
-                ...(Storage.load()?.followers || []),
-                ...(Storage.load()?.following || [])
-            ];
-            const match = pool.find((u) => {
-                const name = typeof u === 'string' ? u : u?.username;
-                return name && name.toLowerCase() === cleanUser && u?.id && String(u.id) !== String(viewerId);
-            });
-            if (match && match.id && String(match.id) !== "0") {
-                return String(match.id);
+            if (typeof Storage.findKnownUserByUsername === 'function') {
+                const known = Storage.findKnownUserByUsername(cleanUser);
+                if (known?.id && String(known.id) !== "0" && (cleanUser === viewerName || String(known.id) !== String(viewerId))) {
+                    return String(known.id);
+                }
             }
         } catch (e) {}
 
@@ -353,6 +378,218 @@ Object.assign(API, {
         }
 
         return null;
+    },
+
+    fetchHighlightsTray: async (targetId, cleanUser, profile = null, options = {}) => {
+        const normalizeItems = (items) => {
+            if (!Array.isArray(items)) return [];
+            return items
+                .map((entry) => {
+                    const node = entry?.node && typeof entry.node === 'object' ? entry.node : entry;
+                    if (!node || typeof node !== 'object') return null;
+                    return {
+                        id: String(node.id || node.pk || ''),
+                        title: String(node.title || 'Untitled'),
+                        mediaCount: Number(node.media_count ?? node.mediaCount ?? node.edge_highlight_media?.count ?? 0)
+                    };
+                })
+                .filter(Boolean);
+        };
+
+        const rawUser = profile?.rawUser || null;
+        if (Array.isArray(rawUser?.edge_highlight_reels?.edges)) {
+            const highlights = normalizeItems(rawUser.edge_highlight_reels.edges);
+            const count = typeof rawUser.highlight_reel_count === 'number'
+                ? Math.max(highlights.length, rawUser.highlight_reel_count)
+                : highlights.length;
+            return { available: true, count, highlights, source: 'profile_raw' };
+        }
+
+        // Tier 1: Native Instagram Web RelayModern GraphQL (PolarisProfileStoryHighlightsTrayContentQuery)
+        const relayDocId = Utils.getRelayDocId("PolarisProfileStoryHighlightsTrayContentQuery", null);
+        if (relayDocId) {
+            const dtsg = Utils.getDtsg();
+            const jazoest = Utils.calculateJazoest(dtsg);
+            const lsd = Utils.getLsd();
+            const viewerId = Utils.getUserId() || "0";
+
+            const params = new URLSearchParams();
+            params.append("av", viewerId);
+            params.append("__d", "www");
+            params.append("__user", "0");
+            params.append("__a", "1");
+            params.append("__req", "1");
+            params.append("fb_api_caller_class", "RelayModern");
+            params.append("fb_api_req_friendly_name", "PolarisProfileStoryHighlightsTrayContentQuery");
+            params.append("doc_id", relayDocId);
+            params.append("server_timestamps", "true");
+            params.append("variables", JSON.stringify({ user_id: String(targetId) }));
+            if (dtsg) params.append("fb_dtsg", dtsg);
+            if (jazoest) params.append("jazoest", jazoest);
+            if (lsd) params.append("lsd", lsd);
+
+            const headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-FB-Friendly-Name": "PolarisProfileStoryHighlightsTrayContentQuery"
+            };
+            if (lsd) headers["X-FB-LSD"] = lsd;
+
+            const relayEndpoints = [
+                "https://www.instagram.com/graphql/query",
+                "https://www.instagram.com/api/graphql"
+            ];
+
+            for (const relayUrl of relayEndpoints) {
+                try {
+                    const relayJson = await API.fetchWithRetry(relayUrl, {
+                        method: "POST",
+                        headers,
+                        body: params.toString(),
+                        optional: true,
+                        silent: true,
+                        signal: options.signal
+                    }, 1);
+
+                    const rawEdges = relayJson?.data?.highlights_tray?.edges
+                        ?? relayJson?.data?.xdt_api__v1__highlights__highlights_tray?.tray
+                        ?? relayJson?.data?.user?.edge_highlight_reels?.edges;
+
+                    if (Array.isArray(rawEdges)) {
+                        const highlights = normalizeItems(rawEdges);
+                        return {
+                            available: true,
+                            count: highlights.length,
+                            highlights,
+                            source: 'relay_graphql'
+                        };
+                    }
+                } catch (relayErr) {
+                    if (relayErr.name === 'AbortError' || options.signal?.aborted) throw relayErr;
+                }
+            }
+        }
+
+        // Tier 2: Instagram Web GraphQL query_hash (edge_highlight_reels)
+        const highlightsHash = CONFIG.HIGHLIGHTS_HASH || "d4d88dc1500312af6f937f7b804c68c3";
+        try {
+            const vars = encodeURIComponent(JSON.stringify({
+                user_id: String(targetId),
+                include_chaining: false,
+                include_reel: true,
+                include_suggested_users: false,
+                include_logged_out_extras: false,
+                include_highlight_reels: true,
+                include_live_status: false
+            }));
+            const gqlJson = await API.fetchWithRetry(`https://www.instagram.com/graphql/query/?query_hash=${highlightsHash}&variables=${vars}`, {
+                optional: true,
+                silent: true,
+                signal: options.signal
+            }, 1);
+
+            const edges = gqlJson?.data?.user?.edge_highlight_reels?.edges;
+            if (Array.isArray(edges)) {
+                const highlights = normalizeItems(edges);
+                return {
+                    available: true,
+                    count: highlights.length,
+                    highlights,
+                    source: 'graphql_hash'
+                };
+            }
+        } catch (gqlErr) {
+            if (gqlErr.name === 'AbortError' || options.signal?.aborted) throw gqlErr;
+        }
+
+        // Tier 3: Legacy REST highlights_tray (quietly handled when Web returns SPA HTML shell)
+        try {
+            const trayJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
+                optional: true,
+                silent: true,
+                signal: options.signal
+            }, 1);
+
+            if (Array.isArray(trayJson?.tray)) {
+                const highlights = normalizeItems(trayJson.tray);
+                return {
+                    available: true,
+                    count: highlights.length,
+                    highlights,
+                    source: 'rest_tray'
+                };
+            }
+        } catch (trayErr) {
+            if (trayErr.name === 'AbortError' || options.signal?.aborted) throw trayErr;
+        }
+
+        // Tier 4: Profile highlight_reel_count from Relay profile or web_profile_info
+        if (typeof rawUser?.highlight_reel_count === 'number') {
+            return {
+                available: true,
+                count: Number(rawUser.highlight_reel_count),
+                highlights: [],
+                source: 'profile_count'
+            };
+        }
+
+        if (cleanUser) {
+            try {
+                const webJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanUser)}`, {
+                    optional: true,
+                    silent: true,
+                    signal: options.signal
+                }, 1);
+
+                const webUser = webJson?.data?.user;
+                if (Array.isArray(webUser?.edge_highlight_reels?.edges)) {
+                    const highlights = normalizeItems(webUser.edge_highlight_reels.edges);
+                    const count = typeof webUser.highlight_reel_count === 'number'
+                        ? Math.max(highlights.length, webUser.highlight_reel_count)
+                        : highlights.length;
+                    return { available: true, count, highlights, source: 'web_profile_info' };
+                }
+                if (typeof webUser?.highlight_reel_count === 'number') {
+                    return {
+                        available: true,
+                        count: Number(webUser.highlight_reel_count),
+                        highlights: [],
+                        source: 'web_profile_count'
+                    };
+                }
+            } catch (webErr) {
+                if (webErr.name === 'AbortError' || options.signal?.aborted) throw webErr;
+            }
+
+            // Tier 5: Authenticated profile SSR HTML fallback (immune to REST/GraphQL deprecations)
+            try {
+                const htmlRes = await fetch(`https://www.instagram.com/${encodeURIComponent(cleanUser)}/`, {
+                    credentials: "include",
+                    signal: options.signal
+                });
+                if (htmlRes.ok && typeof htmlRes.text === 'function') {
+                    const html = await htmlRes.text();
+                    const countMatch = html.match(/\\?"highlight_reel_count\\?"\s*:\s*([0-9]+)/) ||
+                                       html.match(/\\?"edge_highlight_reels\\?"\s*:\s*\{\s*\\?"count\\?"\s*:\s*([0-9]+)/);
+                    if (countMatch && countMatch[1] !== undefined) {
+                        return {
+                            available: true,
+                            count: parseInt(countMatch[1], 10) || 0,
+                            highlights: [],
+                            source: 'auth_html'
+                        };
+                    }
+                }
+            } catch (htmlErr) {
+                if (htmlErr.name === 'AbortError' || options.signal?.aborted) throw htmlErr;
+            }
+        }
+
+        return {
+            available: false,
+            count: 0,
+            highlights: [],
+            source: 'unavailable'
+        };
     },
 
     checkStoryStatus: async (username, userId = null, options = {}) => {
@@ -390,52 +627,83 @@ Object.assign(API, {
             const authHasStory = typeof latestReelMedia === 'number' && latestReelMedia > 0;
             const isBestieStory = typeof latestBestiesReelMedia === 'number' && latestBestiesReelMedia > 0;
 
-            // 2. Query Highlights Tray (Authenticated)
-            let authHighlights = [];
-            let authHighlightsCount = 0;
-            try {
-                const trayJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
-                    optional: true,
-                    signal: options.signal
-                }, 1);
+            // 2. Query Highlights Tray (Multi-tier authenticated resolution)
+            const trayResult = await API.fetchHighlightsTray(targetId, cleanUser, profile, options);
+            const authHighlightsAvailable = Boolean(trayResult?.available);
+            const authHighlights = Array.isArray(trayResult?.highlights) ? trayResult.highlights : [];
+            const authHighlightsCount = Number(trayResult?.count || 0);
 
-                if (Array.isArray(trayJson?.tray)) {
-                    authHighlights = trayJson.tray.map((item) => ({
-                        id: item.id || '',
-                        title: item.title || 'Untitled',
-                        mediaCount: item.media_count || 0
-                    }));
-                    authHighlightsCount = authHighlights.length;
-                }
-            } catch (trayErr) {
-                if (trayErr.name === 'AbortError' || options.signal?.aborted) throw trayErr;
-                console.warn(`[IG Analyzer] Highlights tray query failed for @${cleanUser}:`, trayErr);
-            }
-
-            // 3. For Public Accounts: Query Anonymous / Guest Highlights Tray
+            // 3. For Public Accounts: Query Anonymous / Guest Visibility Safely (without HTML JSON parse errors)
             let anonHighlightsCount = 0;
+            let anonHighlightsAvailable = false;
             let anonHasStory = false;
             if (!isPrivate) {
+                const parseSafeAnonJson = async (res) => {
+                    if (!res || !res.ok) return null;
+                    const ct = (res.headers && typeof res.headers.get === 'function')
+                        ? (res.headers.get('content-type') || '')
+                        : '';
+                    if (ct && ct.toLowerCase().includes('text/html')) {
+                        if (typeof res.text === 'function') await res.text().catch(() => '');
+                        return null;
+                    }
+                    try {
+                        return await res.json();
+                    } catch (err) {
+                        return null;
+                    }
+                };
+
                 try {
-                    const anonRes = await fetch(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
+                    const anonWebRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanUser)}`, {
                         credentials: "omit",
                         headers: {
                             "X-IG-App-ID": "936619743392459",
                             "X-Requested-With": "XMLHttpRequest",
-                            "Accept": "*/*"
+                            "X-ASBD-ID": CONFIG.ASBD_ID || "359341",
+                            "Accept": "application/json, text/plain, */*"
                         },
                         signal: options.signal
                     });
-
-                    if (anonRes.ok) {
-                        const anonJson = await anonRes.json();
-                        if (Array.isArray(anonJson?.tray)) {
-                            anonHighlightsCount = anonJson.tray.length;
+                    const anonWebJson = await parseSafeAnonJson(anonWebRes);
+                    const anonUser = anonWebJson?.data?.user;
+                    if (anonUser) {
+                        if (typeof anonUser.highlight_reel_count === 'number') {
+                            anonHighlightsAvailable = true;
+                            anonHighlightsCount = anonUser.highlight_reel_count;
+                        } else if (Array.isArray(anonUser.edge_highlight_reels?.edges)) {
+                            anonHighlightsAvailable = true;
+                            anonHighlightsCount = anonUser.edge_highlight_reels.edges.length;
+                        }
+                        if (typeof anonUser.latest_reel_media === 'number' && anonUser.latest_reel_media > 0) {
+                            anonHasStory = true;
                         }
                     }
-                } catch (anonErr) {
-                    if (anonErr.name === 'AbortError' || options.signal?.aborted) throw anonErr;
-                    // Optional guest check silent failure
+                } catch (anonWebErr) {
+                    if (anonWebErr.name === 'AbortError' || options.signal?.aborted) throw anonWebErr;
+                }
+
+                if (!anonHighlightsAvailable) {
+                    try {
+                        const anonHtmlRes = await fetch(`https://www.instagram.com/${encodeURIComponent(cleanUser)}/`, {
+                            credentials: "omit",
+                            signal: options.signal
+                        });
+                        if (anonHtmlRes.ok && typeof anonHtmlRes.text === 'function') {
+                            const anonHtml = await anonHtmlRes.text();
+                            const hMatch = anonHtml.match(/\\?"highlight_reel_count\\?"\s*:\s*([0-9]+)/);
+                            if (hMatch && hMatch[1] !== undefined) {
+                                anonHighlightsAvailable = true;
+                                anonHighlightsCount = parseInt(hMatch[1], 10) || 0;
+                            }
+                            const sMatch = anonHtml.match(/\\?"latest_reel_media\\?"\s*:\s*([1-9][0-9]*)/);
+                            if (sMatch) {
+                                anonHasStory = true;
+                            }
+                        }
+                    } catch (anonHtmlErr) {
+                        if (anonHtmlErr.name === 'AbortError' || options.signal?.aborted) throw anonHtmlErr;
+                    }
                 }
             }
 
@@ -446,12 +714,14 @@ Object.assign(API, {
                 profilePicUrl: profile?.hdUrl || null,
                 isPrivate,
                 isGated,
+                authHighlightsAvailable,
                 authHighlightsCount,
                 authHighlights,
                 latestReelMedia,
                 latestBestiesReelMedia,
                 authHasStory,
                 isBestieStory,
+                anonHighlightsAvailable,
                 anonHighlightsCount,
                 anonHasStory,
                 fetchedAt: Date.now()

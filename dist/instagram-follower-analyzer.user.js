@@ -7,7 +7,7 @@
 // @name:pt-BR          Analisador de seguidores do Instagram
 // @name:pt-PT          Analisador de seguidores do Instagram
 // @namespace           https://github.com/UNKchr/ig-analyzer
-// @version             3.13.1
+// @version             3.13.2
 // @author              UNKchr
 // @description         Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
 // @description:en      Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
@@ -45,12 +45,16 @@ currentHdUser: null,
 paginationState: {},
     whitelistSearchQuery: "",
 currentTargetUser: null,
-    targetPaginationState: {}
+    targetPaginationState: {},
+chartState: {
+      main: { metric: "followers", range: "30d" },
+      target: { metric: "followers", range: "30d" }
+    }
   };
   const CONFIG = {
     SCRIPT_ID: "ig-analyzer",
     SCRIPT_NAME: "Instagram Follower Analyzer",
-    BACKUP_SCHEMA_VERSION: 1,
+    BACKUP_SCHEMA_VERSION: 2,
     STORAGE_KEY: "ig_snapshot_v2",
     POSITION_KEY: "ig_panel_position_v2",
     WHITELIST_KEY: "ig_whitelist_v2",
@@ -69,11 +73,19 @@ currentTargetUser: null,
     STORY_MIN_ANOMALIES_FOR_FLAG: 2,
     STORY_STREAK_FOR_MEDIUM_CONFIDENCE: 2,
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
+    FOLLOWING_ALT_HASH: "3dec7e2c57367ef3da3d987d89f9dbc8",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
+    HIGHLIGHTS_HASH: "d4d88dc1500312af6f937f7b804c68c3",
     PAGE_SIZE: 50,
-    BASE_RATE_LIMIT_MS: 2e3,
+    FRIENDSHIPS_PAGE_SIZE: 12,
+FRIENDSHIPS_RATE_LIMIT_MS: 1250,
+BASE_RATE_LIMIT_MS: 2e3,
 MAX_RETRIES: 4,
     COOLDOWN_429_MS: 6e4,
+RATE_LIMIT_STATE_KEY: "ig_rate_limit_buckets_v1",
+    RATE_LIMIT_CIRCUIT_MS: 3e5,
+    BREATHER_EVERY_PAGES: 10,
+BREATHER_PAUSE_MS: 2500,
 MAX_AUTO_VERIFY_ACCOUNTS: 5,
 ASBD_ID: "359341",
 DEBUG: false,
@@ -98,6 +110,45 @@ DEBUG: false,
       }
     }),
     now: () => ( new Date()).toISOString(),
+localDateStr: (dateInput = null) => {
+      if (typeof dateInput === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+        return dateInput.trim();
+      }
+      try {
+        if (dateInput === null || dateInput === void 0) {
+          if (typeof globalThis.Temporal !== "undefined" && typeof globalThis.Temporal.Now?.plainDateISO === "function") {
+            return globalThis.Temporal.Now.plainDateISO().toString();
+          }
+          const now = new Date();
+          return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        }
+        const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+        if (Number.isNaN(d.getTime())) {
+          return Utils.localDateStr(null);
+        }
+        if (typeof globalThis.Temporal !== "undefined" && typeof globalThis.Temporal.Instant?.fromEpochMilliseconds === "function") {
+          const tz = globalThis.Temporal.Now.timeZoneId();
+          return globalThis.Temporal.Instant.fromEpochMilliseconds(d.getTime()).toZonedDateTimeISO(tz).toPlainDate().toString();
+        }
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      } catch (e) {
+        const fallback = new Date();
+        return `${fallback.getFullYear()}-${String(fallback.getMonth() + 1).padStart(2, "0")}-${String(fallback.getDate()).padStart(2, "0")}`;
+      }
+    },
+localTimeStr: (dateInput = null) => {
+      try {
+        if ((dateInput === null || dateInput === void 0) && typeof globalThis.Temporal !== "undefined" && typeof globalThis.Temporal.Now?.plainTimeISO === "function") {
+          const pt = globalThis.Temporal.Now.plainTimeISO();
+          return `${String(pt.hour).padStart(2, "0")}:${String(pt.minute).padStart(2, "0")}:${String(pt.second).padStart(2, "0")}`;
+        }
+        const d = dateInput === null || dateInput === void 0 ? new Date() : dateInput instanceof Date ? dateInput : new Date(dateInput);
+        if (Number.isNaN(d.getTime())) return "";
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+      } catch (e) {
+        return "";
+      }
+    },
     log: (msg) => console.log(`[IG Analyzer] ${msg}`),
     logError: (msg, err) => console.error(`[IG Analyzer Error] ${msg}`, err),
     escapeHtml: (str) => {
@@ -226,6 +277,63 @@ DEBUG: false,
       }
       return "";
     },
+    generateUuid: () => {
+      try {
+        if (typeof globalThis.crypto?.randomUUID === "function") {
+          return globalThis.crypto.randomUUID();
+        }
+      } catch (e) {
+      }
+      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = Math.floor(Math.random() * 16);
+        const v = c === "x" ? r : r & 3 | 8;
+        return v.toString(16);
+      });
+    },
+getRelayDocId: (operationName, fallbackDocId = null) => {
+      if (!operationName || typeof operationName !== "string") return fallbackDocId;
+      const isNumericDocId = (val) => val !== null && val !== void 0 && /^[0-9]{10,25}$/.test(String(val).trim());
+      try {
+        const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+        if (typeof win?.require === "function") {
+          const candidateModules = [
+            `${operationName}_instagramRelayOperation`,
+            `${operationName}$Parameters`,
+            operationName
+          ];
+          for (const modName of candidateModules) {
+            try {
+              const mod = win.require(modName);
+              if (isNumericDocId(mod)) return String(mod).trim();
+              if (isNumericDocId(mod?.default)) return String(mod.default).trim();
+              if (isNumericDocId(mod?.params?.id)) return String(mod.params.id).trim();
+              if (isNumericDocId(mod?.default?.params?.id)) return String(mod.default.params.id).trim();
+              if (isNumericDocId(mod?.id)) return String(mod.id).trim();
+            } catch (innerErr) {
+            }
+          }
+        }
+      } catch (e) {
+      }
+      try {
+        const scripts = document.querySelectorAll("script:not([src])");
+        const escapedOp = operationName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const opRegex = new RegExp(
+          `(?:"${escapedOp}_instagramRelayOperation"[^"0-9]{1,80}"([0-9]{10,25})")|(?:"name"\\s*:\\s*"${escapedOp}"[\\s\\S]{1,160}?"id"\\s*:\\s*"([0-9]{10,25})")`
+        );
+        for (const script of scripts) {
+          const text = script.textContent || "";
+          if (!text || !text.includes(operationName)) continue;
+          const match = text.match(opRegex);
+          const resolved = match?.[1] || match?.[2] || null;
+          if (isNumericDocId(resolved)) {
+            return String(resolved).trim();
+          }
+        }
+      } catch (e) {
+      }
+      return fallbackDocId;
+    },
     getUserId: () => {
       const matchCookie = document.cookie.match(/(?:^|;\s*)ds_user_id=([1-9][0-9]*)/);
       if (matchCookie && matchCookie[1] && matchCookie[1] !== "0") {
@@ -233,7 +341,7 @@ DEBUG: false,
       }
       try {
         const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-        const viewerId = win._sharedData?.config?.viewerId || win.__initialData?.pending?.viewer?.id || win.__initialData?.data?.viewer?.id || win._sharedData?.rawProfileUser?.id;
+        const viewerId = win._sharedData?.config?.viewerId || win._sharedData?.config?.viewer?.id || win.__initialData?.pending?.viewer?.id || win.__initialData?.data?.viewer?.id;
         if (viewerId && String(viewerId) !== "0" && /^[1-9][0-9]*$/.test(String(viewerId))) {
           return String(viewerId);
         }
@@ -257,19 +365,12 @@ DEBUG: false,
         }
       } catch (e) {
       }
-      try {
-        const metaTag = document.querySelector('meta[property="instapp:owner_user_id"]');
-        if (metaTag && metaTag.content && metaTag.content !== "0" && /^[1-9][0-9]*$/.test(metaTag.content)) {
-          return metaTag.content;
-        }
-      } catch (e) {
-      }
       return null;
     },
     getUsername: () => {
       try {
         const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-        const u = win._sharedData?.config?.viewer?.username || win.__initialData?.data?.viewer?.username || win.__initialData?.pending?.viewer?.username || win._sharedData?.rawProfileUser?.username;
+        const u = win._sharedData?.config?.viewer?.username || win.__initialData?.data?.viewer?.username || win.__initialData?.pending?.viewer?.username;
         if (u && typeof u === "string") return u.trim();
       } catch (e) {
       }
@@ -368,73 +469,118 @@ DEBUG: false,
       return a.filter((x) => setB.has(x));
     },
     unique: (arr) => [...new Set(arr)],
-    toDetailedUserArray: (arr) => {
+toDetailedUserArray: (arr) => {
       if (!Array.isArray(arr)) return [];
-      return arr.map((u) => {
+      const seenIds = new Set();
+      const seenUsernames = new Set();
+      const result = [];
+      for (const u of arr) {
+        let normalized = null;
         if (typeof u === "string") {
           const cleanName = String(u).replace(/^@+/, "").trim();
-          return cleanName ? {
-            id: null,
-            username: cleanName,
-            fullName: "",
-            isPrivate: false,
-            isVerified: false,
-            profilePicUrl: null,
-            latestReelMedia: 0,
-            isBestie: false,
-            outgoingRequest: false,
-            url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
-          } : null;
-        }
-        if (u && typeof u === "object") {
+          if (cleanName) {
+            normalized = {
+              id: null,
+              username: cleanName,
+              fullName: "",
+              isPrivate: false,
+              isVerified: false,
+              profilePicUrl: null,
+              latestReelMedia: 0,
+              isBestie: false,
+              outgoingRequest: false,
+              url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
+            };
+          }
+        } else if (u && typeof u === "object") {
           const rawName = u.username || u.name || "";
           const cleanName = String(rawName).replace(/^@+/, "").trim();
-          if (!cleanName) return null;
-          const pic = Utils.sanitizeImageUrl(u.profilePicUrl || u.profile_pic_url || null);
-          return {
-            id: u.id ? String(u.id) : null,
-            username: cleanName,
-            fullName: u.fullName || u.full_name || "",
-            isPrivate: Boolean(u.isPrivate ?? u.is_private),
-            isVerified: Boolean(u.isVerified ?? u.is_verified),
-            profilePicUrl: pic,
-            latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,
-            isBestie: Boolean(u.isBestie ?? u.is_bestie),
-            outgoingRequest: Boolean(u.outgoingRequest ?? u.outgoing_request),
-            url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
-          };
+          if (cleanName) {
+            const pic = Utils.sanitizeImageUrl(u.profilePicUrl || u.profile_pic_url || null);
+            const idStr = u.id && String(u.id) !== "0" && String(u.id) !== "null" && String(u.id) !== "undefined" ? String(u.id) : null;
+            normalized = {
+              id: idStr,
+              username: cleanName,
+              fullName: u.fullName || u.full_name || "",
+              isPrivate: Boolean(u.isPrivate ?? u.is_private),
+              isVerified: Boolean(u.isVerified ?? u.is_verified),
+              profilePicUrl: pic,
+              latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,
+              isBestie: Boolean(u.isBestie ?? u.is_bestie),
+              outgoingRequest: Boolean(u.outgoingRequest ?? u.outgoing_request),
+              url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
+            };
+            if (u.followsBack !== void 0 && u.followsBack !== null) {
+              normalized.followsBack = Boolean(u.followsBack);
+            }
+            if (u.date) {
+              normalized.date = String(u.date);
+            }
+            if (u.isBusiness !== void 0) {
+              normalized.isBusiness = Boolean(u.isBusiness);
+            }
+            if (u.isCreator !== void 0) {
+              normalized.isCreator = Boolean(u.isCreator);
+            }
+            if (u.category) {
+              normalized.category = String(u.category);
+            }
+            if (u.isViewerMutual !== void 0) {
+              normalized.isViewerMutual = Boolean(u.isViewerMutual);
+            }
+            if (u.previousUsername) {
+              normalized.previousUsername = String(u.previousUsername);
+            }
+            if (u.occurrences !== void 0 && u.occurrences !== null) {
+              normalized.occurrences = Number(u.occurrences) || 1;
+            }
+          }
         }
-        return null;
-      }).filter(Boolean);
+        if (!normalized) continue;
+        const lowerName = normalized.username.toLowerCase();
+        if (normalized.id && seenIds.has(normalized.id) || seenUsernames.has(lowerName)) {
+          continue;
+        }
+        if (normalized.id) seenIds.add(normalized.id);
+        seenUsernames.add(lowerName);
+        result.push(normalized);
+      }
+      return result;
     },
+    deduplicateUsers: (arr) => Utils.toDetailedUserArray(arr),
     mapById: (arr) => {
       const map = new Map();
       (arr || []).forEach((u) => {
-        if (u?.id) map.set(String(u.id), u);
+        if (u?.id && String(u.id) !== "0") map.set(String(u.id), u);
       });
       return map;
     },
     intersectionById: (a, b) => {
-      const bIDs = new Set((b || []).map((x) => x?.id).filter(Boolean));
-      return (a || []).filter((x) => x?.id && bIDs.has(x.id));
+      const bIDs = new Set((b || []).map((x) => x?.id ? String(x.id) : null).filter(Boolean));
+      return (a || []).filter((x) => x?.id && bIDs.has(String(x.id)));
     },
-    detectRenamedMutuals: (prevMutuals, currentMutuals) => {
-      const prevById = Utils.mapById(prevMutuals);
-      const currById = Utils.mapById(currentMutuals);
+detectRenamedUsers: (prevUsers, currentUsers) => {
+      const prevById = Utils.mapById(prevUsers);
+      const currById = Utils.mapById(currentUsers);
       const changes = [];
       prevById.forEach((prevUser, id) => {
         const currUser = currById.get(id);
-        if (!currUser) return;
+        if (!currUser || !prevUser?.username || !currUser?.username) return;
         if (prevUser.username !== currUser.username) {
           changes.push({
-            id,
+            id: String(id),
             oldUsername: prevUser.username,
-            newUsername: currUser.username
+            newUsername: currUser.username,
+            fullName: currUser.fullName || prevUser.fullName || "",
+            profilePicUrl: currUser.profilePicUrl || prevUser.profilePicUrl || null,
+            isVerified: Boolean(currUser.isVerified ?? prevUser.isVerified),
+            isPrivate: Boolean(currUser.isPrivate ?? prevUser.isPrivate)
           });
         }
       });
       return changes;
     },
+    detectRenamedMutuals: (prevMutuals, currentMutuals) => Utils.detectRenamedUsers(prevMutuals, currentMutuals),
     exportCSV: (data, filename) => {
       if (!data || !data.length) return;
       const sanitizeCell = (val) => {
@@ -444,17 +590,96 @@ DEBUG: false,
         }
         return `"${text.replace(/"/g, '""')}"`;
       };
-      const header = ["Username", "Profile URL"].map(sanitizeCell).join(",");
+      const hasRenamedCols = data.some((u) => u && typeof u === "object" && (u.oldUsername || u.newUsername));
+      const hasPrevUserCol = !hasRenamedCols && data.some((u) => u && typeof u === "object" && u.previousUsername);
+      const hasOccurrencesCol = !hasRenamedCols && data.some((u) => u && typeof u === "object" && Number(u.occurrences) > 1);
+      const hasDateCol = data.some((u) => u && typeof u === "object" && u.date);
+      let headerCols = ["Username"];
+      if (hasRenamedCols) {
+        headerCols = ["Previous Username", "Current Username", "Relationship"];
+      } else {
+        if (hasPrevUserCol) headerCols.push("Previous Username");
+        if (hasOccurrencesCol) headerCols.push("Occurrences");
+      }
+      if (hasDateCol) headerCols.push("Detected Date");
+      headerCols.push("Profile URL");
+      const header = headerCols.map(sanitizeCell).join(",");
       const rows = data.map((u) => {
-        const uName = typeof u === "string" ? u : u?.username || "";
-        const profileUrl = typeof u === "object" && u?.url ? u.url : Utils.sanitizeUrl(uName);
-        return [uName, profileUrl].map(sanitizeCell).join(",");
+        const isObj = u && typeof u === "object";
+        const uName = typeof u === "string" ? u : u?.newUsername || u?.username || "";
+        const profileUrl = isObj && u?.url ? u.url : Utils.sanitizeUrl(uName);
+        let cols = [uName];
+        if (hasRenamedCols) {
+          cols = [
+            isObj ? u.oldUsername || "" : "",
+            uName,
+            isObj ? u.relationship || "" : ""
+          ];
+        } else {
+          if (hasPrevUserCol) cols.push(isObj ? u.previousUsername || "" : "");
+          if (hasOccurrencesCol) cols.push(isObj ? String(Number(u.occurrences) || 1) : "1");
+        }
+        if (hasDateCol) cols.push(isObj ? u.date || "" : "");
+        cols.push(profileUrl);
+        return cols.map(sanitizeCell).join(",");
       });
       const csvContent = "\uFEFF" + [header, ...rows].join("\r\n");
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.setAttribute("download", filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+    },
+    exportHistoryCSV: (historyList, filename) => {
+      if (!Array.isArray(historyList) || historyList.length === 0) return;
+      const sanitizeCell = (val) => {
+        let text = String(val ?? "");
+        if (/^[=+\-@\t\r]/.test(text)) {
+          text = "'" + text;
+        }
+        return `"${text.replace(/"/g, '""')}"`;
+      };
+      const headerCols = [
+        "Date",
+        "Followers",
+        "Start Followers",
+        "Day Delta Followers",
+        "Intraday Delta Followers",
+        "Following",
+        "Day Delta Following",
+        "Mutuals",
+        "Scans Count"
+      ];
+      const header = headerCols.map(sanitizeCell).join(",");
+      const rows = historyList.map((entry) => {
+        const followers = Number(entry?.followers ?? 0);
+        const startFollowers = Number(entry?.startFollowers ?? followers);
+        const dayDeltaFollowers = Number(entry?.dayDeltaFollowers ?? entry?.lastDeltaFollowers ?? 0);
+        const intradayDeltaFollowers = Number(entry?.intradayDeltaFollowers ?? followers - startFollowers);
+        const following = Number(entry?.following ?? 0);
+        const dayDeltaFollowing = Number(entry?.dayDeltaFollowing ?? entry?.lastDeltaFollowing ?? 0);
+        const mutuals = entry?.mutuals !== void 0 && entry?.mutuals !== null ? Number(entry.mutuals) : "";
+        const scansCount = Number(entry?.scansCount || 1);
+        return [
+          entry?.date || "",
+          followers,
+          startFollowers,
+          dayDeltaFollowers,
+          intradayDeltaFollowers,
+          following,
+          dayDeltaFollowing,
+          mutuals,
+          scansCount
+        ].map(sanitizeCell).join(",");
+      });
+      const csvContent = "\uFEFF" + [header, ...rows].join("\r\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.setAttribute("download", filename || `ig_history_${Utils.localDateStr()}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -510,10 +735,31 @@ DEBUG: false,
       }
       return n.toLocaleString();
     },
+    formatExactNumber: (num) => {
+      if (num === null || num === void 0 || num === "" || isNaN(Number(num))) return "—";
+      return Number(num).toLocaleString();
+    },
     formatDate: (isoOrTimestamp) => {
       if (!isoOrTimestamp) return "-";
       try {
-        const d = new Date(isoOrTimestamp);
+        const raw = String(isoOrTimestamp).trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+          if (typeof globalThis.Temporal !== "undefined" && typeof globalThis.Temporal.PlainDate?.from === "function") {
+            return globalThis.Temporal.PlainDate.from(raw).toLocaleString(void 0, {
+              year: "numeric",
+              month: "short",
+              day: "numeric"
+            });
+          }
+          const [y, m, day] = raw.split("-").map(Number);
+          const localDay = new Date(y, m - 1, day);
+          return localDay.toLocaleDateString(void 0, {
+            year: "numeric",
+            month: "short",
+            day: "numeric"
+          });
+        }
+        const d = isoOrTimestamp instanceof Date ? isoOrTimestamp : new Date(isoOrTimestamp);
         if (isNaN(d.getTime())) return String(isoOrTimestamp);
         return d.toLocaleDateString(void 0, {
           year: "numeric",
@@ -528,10 +774,30 @@ DEBUG: false,
     }
   };
   let currentUserId = null;
+  const GLOBAL_UI_KEYS = new Set([
+    CONFIG.POSITION_KEY,
+    CONFIG.TARGET_SUBPANEL_POSITION_KEY,
+    CONFIG.TOUR_KEY
+  ]);
+  const ACCOUNT_SCOPED_KEYS = [
+    CONFIG.STORAGE_KEY,
+    CONFIG.WHITELIST_KEY,
+    CONFIG.HISTORY_KEY,
+    CONFIG.CHURN_KEY,
+    CONFIG.DEACTIVATED_KEY,
+    CONFIG.BLOCKED_KEY,
+    CONFIG.RENAMED_KEY,
+    CONFIG.NEW_FOLLOWERS_KEY,
+    CONFIG.TARGET_TRACKER_KEY,
+    CONFIG.STORY_ANOMALY_KEY,
+    CONFIG.STORY_OBS_KEY
+  ];
   const Storage = {
     setCurrentUserId: (id) => {
       if (id && String(id) !== "0") {
         currentUserId = String(id);
+      } else if (id === null) {
+        currentUserId = null;
       }
     },
     getCurrentUserId: () => {
@@ -543,35 +809,294 @@ DEBUG: false,
       }
       return currentUserId;
     },
+    isGlobalUiKey: (baseKey) => GLOBAL_UI_KEYS.has(baseKey),
+    getAccountScopedKeys: () => ACCOUNT_SCOPED_KEYS.slice(),
     getKey: (baseKey, userId = null) => {
+      if (GLOBAL_UI_KEYS.has(baseKey)) return baseKey;
       const id = userId || Storage.getCurrentUserId();
       return id ? `${baseKey}_${id}` : baseKey;
     },
     getScopedValue: (baseKey, defaultValue = null, userId = null) => {
+      if (GLOBAL_UI_KEYS.has(baseKey)) {
+        return GM_getValue(baseKey, defaultValue);
+      }
       const id = userId || Storage.getCurrentUserId();
       if (id) {
-        const scopedKey = `${baseKey}_${id}`;
+        const idStr = String(id);
+        const scopedKey = `${baseKey}_${idStr}`;
         const val = GM_getValue(scopedKey, void 0);
         if (val !== void 0 && val !== null) {
           return val;
         }
         const legacyVal = GM_getValue(baseKey, void 0);
         if (legacyVal !== void 0 && legacyVal !== null) {
+          const legacyOwner = legacyVal && typeof legacyVal === "object" && !Array.isArray(legacyVal) && legacyVal.ownerUserId ? String(legacyVal.ownerUserId) : null;
+          if (legacyOwner && legacyOwner !== idStr) {
+            try {
+              const rightfulKey = `${baseKey}_${legacyOwner}`;
+              const existingOwnerVal = GM_getValue(rightfulKey, void 0);
+              if (existingOwnerVal === void 0 || existingOwnerVal === null) {
+                GM_setValue(rightfulKey, legacyVal);
+              }
+              if (typeof GM_deleteValue === "function") {
+                GM_deleteValue(baseKey);
+              }
+            } catch (e) {
+              Utils.logError("Error isolating foreign legacy storage key", e);
+            }
+            return defaultValue;
+          }
+          let migratedVal = legacyVal;
+          if (baseKey === CONFIG.STORAGE_KEY && legacyVal && typeof legacyVal === "object" && !Array.isArray(legacyVal)) {
+            migratedVal = { ...legacyVal, ownerUserId: idStr };
+          }
           try {
-            GM_setValue(scopedKey, legacyVal);
-            Utils.log(`[Storage] Migrated legacy data for "${baseKey}" to account key "${scopedKey}".`);
+            GM_setValue(scopedKey, migratedVal);
+            if (typeof GM_deleteValue === "function") {
+              GM_deleteValue(baseKey);
+            }
+            Utils.log(`[Storage] Migrated legacy data for "${baseKey}" to "${scopedKey}" and removed unscoped copy.`);
           } catch (e) {
             Utils.logError("Error migrating legacy storage key", e);
           }
-          return legacyVal;
+          return migratedVal;
         }
+        return defaultValue;
       }
       return GM_getValue(baseKey, defaultValue);
     },
     setScopedValue: (baseKey, value, userId = null) => {
+      if (GLOBAL_UI_KEYS.has(baseKey)) {
+        GM_setValue(baseKey, value);
+        return;
+      }
       const id = userId || Storage.getCurrentUserId();
       const key = id ? `${baseKey}_${id}` : baseKey;
       GM_setValue(key, value);
+    },
+    hasScopedValue: (baseKey, userId = null) => {
+      if (GLOBAL_UI_KEYS.has(baseKey)) {
+        const gVal = GM_getValue(baseKey, void 0);
+        return gVal !== void 0 && gVal !== null;
+      }
+      const id = userId || Storage.getCurrentUserId();
+      if (id) {
+        const idStr = String(id);
+        const scopedVal = GM_getValue(`${baseKey}_${idStr}`, void 0);
+        if (scopedVal !== void 0 && scopedVal !== null) return true;
+        const legacyVal2 = GM_getValue(baseKey, void 0);
+        if (legacyVal2 === void 0 || legacyVal2 === null) return false;
+        if (legacyVal2 && typeof legacyVal2 === "object" && !Array.isArray(legacyVal2) && legacyVal2.ownerUserId) {
+          return String(legacyVal2.ownerUserId) === idStr;
+        }
+        return true;
+      }
+      const legacyVal = GM_getValue(baseKey, void 0);
+      return legacyVal !== void 0 && legacyVal !== null;
+    },
+    normalizeItemDates: (rawList) => {
+      if (!Array.isArray(rawList)) return { list: [], modified: false };
+      const todayStr = Utils.localDateStr();
+      let modified = false;
+      const list = rawList.map((item) => {
+        if (!item || typeof item !== "object") return item;
+        if (typeof item.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.date > todayStr) {
+          modified = true;
+          return { ...item, date: todayStr };
+        }
+        return item;
+      });
+      return { list, modified };
+    },
+normalizeHistoryRecords: (rawHistory) => {
+      if (!Array.isArray(rawHistory) || rawHistory.length === 0) {
+        return { list: [], modified: false };
+      }
+      const todayStr = Utils.localDateStr();
+      let modified = false;
+      const byDate = new Map();
+      rawHistory.forEach((raw) => {
+        if (!raw || typeof raw !== "object") {
+          modified = true;
+          return;
+        }
+        let dStr = typeof raw.date === "string" ? raw.date.trim() : "";
+        if (!dStr) {
+          dStr = raw.updatedAt ? Utils.localDateStr(raw.updatedAt) : todayStr;
+          modified = true;
+        } else if (/^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > todayStr) {
+          const healedDate = raw.updatedAt ? Utils.localDateStr(raw.updatedAt) : todayStr;
+          dStr = healedDate > todayStr ? todayStr : healedDate;
+          modified = true;
+        }
+        const followers = Number(raw.followers ?? 0);
+        const following = Number(raw.following ?? 0);
+        const hasMutuals = raw.mutuals !== void 0 && raw.mutuals !== null;
+        const mutuals = hasMutuals ? Number(raw.mutuals) : void 0;
+        if (!byDate.has(dStr)) {
+          byDate.set(dStr, {
+            ...raw,
+            date: dStr,
+            followers,
+            following,
+            ...hasMutuals ? { mutuals } : {}
+          });
+        } else {
+          modified = true;
+          const prev = byDate.get(dStr);
+          const startFollowers = Number(prev.startFollowers ?? prev.followers ?? followers);
+          const startFollowing = Number(prev.startFollowing ?? prev.following ?? following);
+          const startMutuals = hasMutuals ? Number(prev.startMutuals ?? prev.mutuals ?? mutuals) : prev.startMutuals;
+          byDate.set(dStr, {
+            ...prev,
+            ...raw,
+            date: dStr,
+            followers,
+            following,
+            ...hasMutuals ? { mutuals, startMutuals } : {},
+            startFollowers,
+            startFollowing,
+            prevScanFollowers: Number(raw.prevScanFollowers ?? prev.followers ?? startFollowers),
+            prevScanFollowing: Number(raw.prevScanFollowing ?? prev.following ?? startFollowing),
+            intradayDeltaFollowers: followers - startFollowers,
+            intradayDeltaFollowing: following - startFollowing,
+            scansCount: (Number(prev.scansCount) || 1) + (Number(raw.scansCount) || 1)
+          });
+        }
+      });
+      const sortedDates = Array.from(byDate.keys()).sort((a, b) => a.localeCompare(b));
+      const originalDates = rawHistory.map((r) => r?.date || "");
+      if (sortedDates.length !== originalDates.length || sortedDates.some((d, idx) => d !== originalDates[idx])) {
+        modified = true;
+      }
+      const list = sortedDates.map((d, idx) => {
+        const entry = byDate.get(d);
+        const prevDay = idx > 0 ? byDate.get(sortedDates[idx - 1]) : null;
+        const startFollowers = Number(entry.startFollowers ?? entry.followers ?? 0);
+        const startFollowing = Number(entry.startFollowing ?? entry.following ?? 0);
+        const intradayDeltaFollowers = Number(entry.followers ?? 0) - startFollowers;
+        const intradayDeltaFollowing = Number(entry.following ?? 0) - startFollowing;
+        const expectedDayDeltaF = prevDay ? Number(entry.followers ?? 0) - Number(prevDay.followers ?? startFollowers) : intradayDeltaFollowers;
+        const expectedDayDeltaIng = prevDay ? Number(entry.following ?? 0) - Number(prevDay.following ?? startFollowing) : intradayDeltaFollowing;
+        if (entry.dayDeltaFollowers === void 0 || modified) {
+          entry.dayDeltaFollowers = expectedDayDeltaF;
+          entry.dayDeltaFollowing = expectedDayDeltaIng;
+          entry.intradayDeltaFollowers = intradayDeltaFollowers;
+          entry.intradayDeltaFollowing = intradayDeltaFollowing;
+        }
+        return entry;
+      });
+      return { list, modified };
+    },
+upsertHistoryRecord: (rawHistory, metrics = {}) => {
+      const todayStr = metrics.dateStr ? Utils.localDateStr(metrics.dateStr) : Utils.localDateStr();
+      const { list: hist } = Storage.normalizeHistoryRecords(rawHistory);
+      const followers = Number(metrics.followers ?? 0);
+      const following = Number(metrics.following ?? 0);
+      const hasMutuals = metrics.mutuals !== void 0 && metrics.mutuals !== null;
+      const mutuals = hasMutuals ? Number(metrics.mutuals) : void 0;
+      const existingIdx = hist.findIndex((h) => h.date === todayStr);
+      if (existingIdx > -1) {
+        const existing = hist[existingIdx];
+        const prevDay = existingIdx > 0 ? hist[existingIdx - 1] : null;
+        const startFollowers = Number(existing.startFollowers ?? existing.followers ?? followers);
+        const startFollowing = Number(existing.startFollowing ?? existing.following ?? following);
+        const startMutuals = hasMutuals ? Number(existing.startMutuals ?? existing.mutuals ?? mutuals) : existing.startMutuals;
+        const prevScanFollowers = Number(existing.followers ?? followers);
+        const prevScanFollowing = Number(existing.following ?? following);
+        const prevScanMutuals = hasMutuals && existing.mutuals !== void 0 && existing.mutuals !== null ? Number(existing.mutuals) : null;
+        const lastDeltaFollowers = followers - prevScanFollowers;
+        const lastDeltaFollowing = following - prevScanFollowing;
+        const lastDeltaMutuals = hasMutuals && prevScanMutuals !== null ? mutuals - prevScanMutuals : 0;
+        const intradayDeltaFollowers = followers - startFollowers;
+        const intradayDeltaFollowing = following - startFollowing;
+        const dayDeltaFollowers = prevDay ? followers - Number(prevDay.followers ?? startFollowers) : intradayDeltaFollowers;
+        const dayDeltaFollowing = prevDay ? following - Number(prevDay.following ?? startFollowing) : intradayDeltaFollowing;
+        let mergedSummary = existing.scanSummary || null;
+        if (metrics.scanSummary && typeof metrics.scanSummary === "object") {
+          const prevSum = existing.scanSummary || {};
+          mergedSummary = {
+            gained: (prevSum.gained || 0) + (metrics.scanSummary.gained || 0),
+            lost: (prevSum.lost || 0) + (metrics.scanSummary.lost || 0),
+            deactivated: (prevSum.deactivated || 0) + (metrics.scanSummary.deactivated || 0),
+            blocked: (prevSum.blocked || 0) + (metrics.scanSummary.blocked || 0),
+            renamed: (prevSum.renamed || 0) + (metrics.scanSummary.renamed || 0),
+            lastScanGained: metrics.scanSummary.gained || 0,
+            lastScanLost: metrics.scanSummary.lost || 0
+          };
+        }
+        hist[existingIdx] = {
+          ...existing,
+          date: todayStr,
+          followers,
+          following,
+          ...hasMutuals ? { mutuals, startMutuals, prevScanMutuals, lastDeltaMutuals } : {},
+          ...metrics.fans !== void 0 ? { fans: Number(metrics.fans) } : {},
+          ...metrics.notFollowingBack !== void 0 ? { notFollowingBack: Number(metrics.notFollowingBack) } : {},
+          startFollowers,
+          startFollowing,
+          prevScanFollowers,
+          prevScanFollowing,
+          lastDeltaFollowers,
+          lastDeltaFollowing,
+          intradayDeltaFollowers,
+          intradayDeltaFollowing,
+          dayDeltaFollowers,
+          dayDeltaFollowing,
+          scansCount: (Number(existing.scansCount) || 1) + 1,
+          ...mergedSummary ? { scanSummary: mergedSummary } : {},
+          updatedAt: Utils.now()
+        };
+      } else {
+        const priorEntries = hist.filter((h) => String(h.date || "") < todayStr);
+        const prevDay = priorEntries.length > 0 ? priorEntries[priorEntries.length - 1] : null;
+        const prevScanFollowers = prevDay ? Number(prevDay.followers ?? followers) : null;
+        const prevScanFollowing = prevDay ? Number(prevDay.following ?? following) : null;
+        const prevScanMutuals = hasMutuals && prevDay && prevDay.mutuals !== void 0 && prevDay.mutuals !== null ? Number(prevDay.mutuals) : null;
+        const lastDeltaFollowers = prevScanFollowers !== null ? followers - prevScanFollowers : 0;
+        const lastDeltaFollowing = prevScanFollowing !== null ? following - prevScanFollowing : 0;
+        const lastDeltaMutuals = hasMutuals && prevScanMutuals !== null ? mutuals - prevScanMutuals : 0;
+        let initialSummary = null;
+        if (metrics.scanSummary && typeof metrics.scanSummary === "object") {
+          initialSummary = {
+            gained: metrics.scanSummary.gained || 0,
+            lost: metrics.scanSummary.lost || 0,
+            deactivated: metrics.scanSummary.deactivated || 0,
+            blocked: metrics.scanSummary.blocked || 0,
+            renamed: metrics.scanSummary.renamed || 0,
+            lastScanGained: metrics.scanSummary.gained || 0,
+            lastScanLost: metrics.scanSummary.lost || 0
+          };
+        }
+        hist.push({
+          date: todayStr,
+          followers,
+          following,
+          ...hasMutuals ? {
+            mutuals,
+            startMutuals: mutuals,
+            prevScanMutuals,
+            lastDeltaMutuals
+          } : {},
+          ...metrics.fans !== void 0 ? { fans: Number(metrics.fans) } : {},
+          ...metrics.notFollowingBack !== void 0 ? { notFollowingBack: Number(metrics.notFollowingBack) } : {},
+          startFollowers: followers,
+          startFollowing: following,
+          prevScanFollowers,
+          prevScanFollowing,
+          lastDeltaFollowers,
+          lastDeltaFollowing,
+          intradayDeltaFollowers: 0,
+          intradayDeltaFollowing: 0,
+          dayDeltaFollowers: lastDeltaFollowers,
+          dayDeltaFollowing: lastDeltaFollowing,
+          scansCount: 1,
+          ...initialSummary ? { scanSummary: initialSummary } : {},
+          updatedAt: Utils.now()
+        });
+        hist.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+      }
+      return hist;
     },
     load: (userId = null) => {
       try {
@@ -583,102 +1108,341 @@ DEBUG: false,
       }
     },
     save: (data, userId = null) => {
-      Storage.setScopedValue(CONFIG.STORAGE_KEY, data, userId);
+      const id = userId || Storage.getCurrentUserId();
+      const payload = data && typeof data === "object" && !Array.isArray(data) && id ? { ...data, ownerUserId: String(id) } : data;
+      Storage.setScopedValue(CONFIG.STORAGE_KEY, payload, id);
     },
     getWhitelist: (userId = null) => {
-      return Storage.getScopedValue(CONFIG.WHITELIST_KEY, [], userId);
+      const raw = Storage.getScopedValue(CONFIG.WHITELIST_KEY, [], userId);
+      return Array.isArray(raw) ? raw : [];
     },
     addToWhitelist: (username, userId = null) => {
+      const clean = String(username || "").replace(/^@+/, "").trim();
+      if (!clean) return;
       const wl = Storage.getWhitelist(userId);
-      if (!wl.includes(username)) {
-        wl.push(username);
+      const lower = clean.toLowerCase();
+      if (!wl.some((u) => String(u || "").toLowerCase() === lower)) {
+        wl.push(clean);
         Storage.setScopedValue(CONFIG.WHITELIST_KEY, wl, userId);
       }
     },
     removeFromWhitelist: (username, userId = null) => {
+      const clean = String(username || "").replace(/^@+/, "").trim().toLowerCase();
+      if (!clean) return;
       const wl = Storage.getWhitelist(userId);
-      const filtered = wl.filter((u) => u !== username);
+      const filtered = wl.filter((u) => String(u || "").toLowerCase() !== clean);
       Storage.setScopedValue(CONFIG.WHITELIST_KEY, filtered, userId);
     },
     clearWhitelist: (userId = null) => {
       Storage.setScopedValue(CONFIG.WHITELIST_KEY, [], userId);
     },
     getNewFollowersList: (userId = null) => {
-      return Storage.getScopedValue(CONFIG.NEW_FOLLOWERS_KEY, [], userId);
+      const raw = Storage.getScopedValue(CONFIG.NEW_FOLLOWERS_KEY, [], userId);
+      const { list, modified } = Storage.normalizeItemDates(raw);
+      if (modified) {
+        Storage.setScopedValue(CONFIG.NEW_FOLLOWERS_KEY, list, userId);
+      }
+      return list;
     },
     addNewFollowersEntries: (entries, userId = null) => {
       if (!Array.isArray(entries) || entries.length === 0) return;
       const list = Storage.getNewFollowersList(userId);
-      const dateStr = Utils.now().split("T")[0];
+      const dateStr = Utils.localDateStr();
       entries.forEach((item) => {
-        const username = typeof item === "string" ? item : item.username;
+        const rawName = typeof item === "string" ? item : item?.username;
+        const username = String(rawName || "").replace(/^@+/, "").trim();
         if (!username) return;
-        const existingIdx = list.findIndex((x) => x.username === username);
+        const lowerName = username.toLowerCase();
+        const itemId = typeof item === "object" && item?.id && String(item.id) !== "0" ? String(item.id) : null;
+        const existingIdx = list.findIndex((x) => {
+          if (itemId && x?.id && String(x.id) === itemId) return true;
+          return String(x?.username || "").toLowerCase() === lowerName;
+        });
         const entryObj = {
-          id: item.id || null,
+          id: itemId || (existingIdx > -1 ? list[existingIdx].id : null) || null,
           username,
-          fullName: item.fullName || "",
-          profilePicUrl: item.profilePicUrl || "",
-          isVerified: Boolean(item.isVerified),
-          isPrivate: Boolean(item.isPrivate),
-          isBestie: Boolean(item.isBestie),
-          followsBack: item.followsBack !== void 0 ? item.followsBack : null,
-          date: dateStr
+          fullName: (typeof item === "object" ? item.fullName : "") || (existingIdx > -1 ? list[existingIdx].fullName : "") || "",
+          profilePicUrl: (typeof item === "object" ? item.profilePicUrl : "") || (existingIdx > -1 ? list[existingIdx].profilePicUrl : "") || "",
+          isVerified: typeof item === "object" && item.isVerified !== void 0 ? Boolean(item.isVerified) : Boolean(existingIdx > -1 && list[existingIdx].isVerified),
+          isPrivate: typeof item === "object" && item.isPrivate !== void 0 ? Boolean(item.isPrivate) : Boolean(existingIdx > -1 && list[existingIdx].isPrivate),
+          isBestie: typeof item === "object" && item.isBestie !== void 0 ? Boolean(item.isBestie) : Boolean(existingIdx > -1 && list[existingIdx].isBestie),
+          followsBack: typeof item === "object" && item.followsBack !== void 0 ? item.followsBack : existingIdx > -1 ? list[existingIdx].followsBack : null,
+          date: typeof item === "object" && item.date ? Utils.localDateStr(item.date) : dateStr
         };
         if (existingIdx > -1) {
-          list[existingIdx] = { ...list[existingIdx], ...entryObj };
-        } else {
-          list.push(entryObj);
+          list.splice(existingIdx, 1);
         }
+        list.push(entryObj);
       });
       Storage.setScopedValue(CONFIG.NEW_FOLLOWERS_KEY, list, userId);
     },
     getHistory: (userId = null) => {
-      return Storage.getScopedValue(CONFIG.HISTORY_KEY, [], userId);
-    },
-    addHistoryEntry: (followersCount, followingCount, userId = null) => {
-      const hist = Storage.getHistory(userId);
-      const dateStr = Utils.now().split("T")[0];
-      const existingIdx = hist.findIndex((h) => h.date === dateStr);
-      if (existingIdx > -1) {
-        hist[existingIdx] = { date: dateStr, followers: followersCount, following: followingCount };
-      } else {
-        hist.push({ date: dateStr, followers: followersCount, following: followingCount });
+      const raw = Storage.getScopedValue(CONFIG.HISTORY_KEY, [], userId);
+      const { list, modified } = Storage.normalizeHistoryRecords(raw);
+      if (modified) {
+        Storage.setScopedValue(CONFIG.HISTORY_KEY, list, userId);
       }
-      Storage.setScopedValue(CONFIG.HISTORY_KEY, hist, userId);
+      return list;
+    },
+    addHistoryEntry: (followersCount, followingCount, userId = null, extraMetrics = {}) => {
+      const raw = Storage.getScopedValue(CONFIG.HISTORY_KEY, [], userId);
+      const updated = Storage.upsertHistoryRecord(raw, {
+        ...extraMetrics,
+        followers: followersCount,
+        following: followingCount
+      });
+      Storage.setScopedValue(CONFIG.HISTORY_KEY, updated, userId);
+      return updated;
     },
     getNominalList: (key, userId = null) => {
-      return Storage.getScopedValue(key, [], userId);
+      const raw = Storage.getScopedValue(key, [], userId);
+      const { list, modified } = Storage.normalizeItemDates(raw);
+      if (modified) {
+        Storage.setScopedValue(key, list, userId);
+      }
+      return list;
     },
-    addNominalEntries: (key, usernames, userId = null) => {
-      if (!usernames || usernames.length === 0) return;
+    clearNominalList: (key, userId = null) => {
+      if (!key) return;
+      Storage.setScopedValue(key, [], userId);
+    },
+addNominalEntries: (key, entries, userId = null) => {
+      if (!Array.isArray(entries) || entries.length === 0) return;
       const list = Storage.getNominalList(key, userId);
-      const dateStr = Utils.now().split("T")[0];
-      usernames.forEach((u) => {
-        if (!list.find((x) => x.username === u)) {
-          list.push({ username: u, date: dateStr });
+      const dateStr = Utils.localDateStr();
+      entries.forEach((item) => {
+        const isObj = item && typeof item === "object";
+        const rawName = isObj ? item.username : item;
+        const username = String(rawName || "").replace(/^@+/, "").trim();
+        if (!username) return;
+        const lowerName = username.toLowerCase();
+        const itemId = isObj && item.id && String(item.id) !== "0" ? String(item.id) : null;
+        const existingIdx = list.findIndex((x) => {
+          if (itemId && x?.id && String(x.id) === itemId) return true;
+          return String(x?.username || "").toLowerCase() === lowerName;
+        });
+        const existing = existingIdx > -1 ? list[existingIdx] : null;
+        const merged = {
+          ...existing || {},
+          id: itemId || existing?.id || null,
+          username,
+          fullName: isObj && item.fullName ? item.fullName : existing?.fullName || "",
+          profilePicUrl: isObj && item.profilePicUrl ? item.profilePicUrl : existing?.profilePicUrl || null,
+          isVerified: isObj && item.isVerified !== void 0 ? Boolean(item.isVerified) : Boolean(existing?.isVerified),
+          isPrivate: isObj && item.isPrivate !== void 0 ? Boolean(item.isPrivate) : Boolean(existing?.isPrivate),
+          ...isObj && item.previousUsername ? { previousUsername: item.previousUsername } : {},
+          occurrences: existing ? (Number(existing.occurrences) || 1) + 1 : 1,
+          date: isObj && item.date ? Utils.localDateStr(item.date) : dateStr
+        };
+        if (existingIdx > -1) {
+          list.splice(existingIdx, 1);
         }
+        list.push(merged);
       });
       Storage.setScopedValue(key, list, userId);
     },
     addRenamedEntries: (entries, userId = null) => {
       if (!Array.isArray(entries) || entries.length === 0) return;
       const list = Storage.getNominalList(CONFIG.RENAMED_KEY, userId);
-      const dateStr = Utils.now().split("T")[0];
+      const dateStr = Utils.localDateStr();
       entries.forEach((entry) => {
         if (!entry?.id || !entry?.oldUsername || !entry?.newUsername) return;
-        const exists = list.find((x) => x.id === entry.id && x.newUsername === entry.newUsername);
-        if (!exists) {
-          list.push({
-            id: entry.id,
-            username: entry.newUsername,
-            oldUsername: entry.oldUsername,
-            newUsername: entry.newUsername,
-            date: dateStr
-          });
+        const idStr = String(entry.id);
+        const existsIdx = list.findIndex(
+          (x) => String(x.id) === idStr && x.oldUsername === entry.oldUsername && x.newUsername === entry.newUsername
+        );
+        const record = {
+          ...existsIdx > -1 ? list[existsIdx] : {},
+          id: idStr,
+          username: entry.newUsername,
+          oldUsername: entry.oldUsername,
+          newUsername: entry.newUsername,
+          relationship: entry.relationship || (existsIdx > -1 ? list[existsIdx].relationship : null) || null,
+          fullName: entry.fullName || (existsIdx > -1 ? list[existsIdx].fullName : "") || "",
+          profilePicUrl: entry.profilePicUrl || (existsIdx > -1 ? list[existsIdx].profilePicUrl : null) || null,
+          isVerified: entry.isVerified !== void 0 ? Boolean(entry.isVerified) : Boolean(existsIdx > -1 && list[existsIdx].isVerified),
+          isPrivate: entry.isPrivate !== void 0 ? Boolean(entry.isPrivate) : Boolean(existsIdx > -1 && list[existsIdx].isPrivate),
+          date: entry.date ? Utils.localDateStr(entry.date) : existsIdx > -1 ? list[existsIdx].date : dateStr
+        };
+        if (existsIdx > -1) {
+          list[existsIdx] = record;
+        } else {
+          list.push(record);
         }
       });
       Storage.setScopedValue(CONFIG.RENAMED_KEY, list, userId);
+    },
+reconcileAudienceState: ({ followersDetailed = [], followingDetailed = [], allRenames = [] } = {}, userId = null) => {
+      const followersByLower = new Map();
+      const followersById = new Map();
+      followersDetailed.forEach((u) => {
+        if (!u?.username) return;
+        followersByLower.set(u.username.toLowerCase(), u);
+        if (u.id && String(u.id) !== "0") followersById.set(String(u.id), u);
+      });
+      const followingByLower = new Map();
+      const followingById = new Map();
+      followingDetailed.forEach((u) => {
+        if (!u?.username) return;
+        followingByLower.set(u.username.toLowerCase(), u);
+        if (u.id && String(u.id) !== "0") followingById.set(String(u.id), u);
+      });
+      const renameByOldLower = new Map();
+      const renameById = new Map();
+      (allRenames || []).forEach((r) => {
+        if (r?.oldUsername && r?.newUsername) {
+          renameByOldLower.set(r.oldUsername.toLowerCase(), r);
+        }
+        if (r?.id && String(r.id) !== "0") {
+          renameById.set(String(r.id), r);
+        }
+      });
+      const rawWhitelist = Storage.getWhitelist(userId);
+      let wlChanged = false;
+      const wlSeen = new Set();
+      const healedWhitelist = [];
+      rawWhitelist.forEach((rawName) => {
+        const clean = String(rawName || "").replace(/^@+/, "").trim();
+        if (!clean) {
+          wlChanged = true;
+          return;
+        }
+        const ren = renameByOldLower.get(clean.toLowerCase());
+        const resolved = ren ? ren.newUsername : clean;
+        if (resolved !== rawName) wlChanged = true;
+        const lower = resolved.toLowerCase();
+        if (!wlSeen.has(lower)) {
+          wlSeen.add(lower);
+          healedWhitelist.push(resolved);
+        } else {
+          wlChanged = true;
+        }
+      });
+      if (wlChanged) {
+        Storage.setScopedValue(CONFIG.WHITELIST_KEY, healedWhitelist, userId);
+      }
+      const resolveLiveAccount = (entry) => {
+        const idStr = entry?.id && String(entry.id) !== "0" ? String(entry.id) : null;
+        const uLower = String(entry?.username || "").toLowerCase();
+        const ren = idStr && renameById.get(idStr) || renameByOldLower.get(uLower) || null;
+        const candidateLower = ren ? ren.newUsername.toLowerCase() : uLower;
+        const inFollower = idStr && followersById.get(idStr) || followersByLower.get(candidateLower) || followersByLower.get(uLower) || null;
+        const inFollowing = idStr && followingById.get(idStr) || followingByLower.get(candidateLower) || followingByLower.get(uLower) || null;
+        return { inFollower, inFollowing, rename: ren };
+      };
+      const reactivatedFollowersLowerSet = new Set();
+      const storedDeactivated = Storage.getNominalList(CONFIG.DEACTIVATED_KEY, userId);
+      let deactivatedChanged = false;
+      const nextDeactivated = [];
+      storedDeactivated.forEach((entry) => {
+        const { inFollower, inFollowing } = resolveLiveAccount(entry);
+        if (inFollower || inFollowing) {
+          deactivatedChanged = true;
+          if (inFollower?.username) {
+            reactivatedFollowersLowerSet.add(inFollower.username.toLowerCase());
+          }
+        } else {
+          nextDeactivated.push(entry);
+        }
+      });
+      if (deactivatedChanged) {
+        Storage.setScopedValue(CONFIG.DEACTIVATED_KEY, nextDeactivated, userId);
+      }
+      const storedBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY, userId);
+      let blockedChanged = false;
+      const nextBlocked = storedBlocked.filter((entry) => {
+        const { inFollower, inFollowing } = resolveLiveAccount(entry);
+        if (inFollower || inFollowing) {
+          blockedChanged = true;
+          return false;
+        }
+        return true;
+      });
+      if (blockedChanged) {
+        Storage.setScopedValue(CONFIG.BLOCKED_KEY, nextBlocked, userId);
+      }
+      const storedChurn = Storage.getNominalList(CONFIG.CHURN_KEY, userId);
+      let churnChanged = false;
+      const nextChurn = [];
+      storedChurn.forEach((entry) => {
+        const { inFollower, inFollowing, rename } = resolveLiveAccount(entry);
+        if (inFollower) {
+          churnChanged = true;
+          return;
+        }
+        if (inFollowing && inFollowing.username !== entry.username) {
+          churnChanged = true;
+          nextChurn.push({
+            ...entry,
+            id: inFollowing.id || entry.id || null,
+            previousUsername: entry.previousUsername || entry.username,
+            username: inFollowing.username,
+            fullName: inFollowing.fullName || entry.fullName || "",
+            profilePicUrl: inFollowing.profilePicUrl || entry.profilePicUrl || null,
+            isVerified: Boolean(inFollowing.isVerified ?? entry.isVerified),
+            isPrivate: Boolean(inFollowing.isPrivate ?? entry.isPrivate)
+          });
+        } else if (rename && rename.newUsername !== entry.username) {
+          churnChanged = true;
+          nextChurn.push({
+            ...entry,
+            id: rename.id || entry.id || null,
+            previousUsername: entry.previousUsername || entry.username,
+            username: rename.newUsername
+          });
+        } else {
+          nextChurn.push(entry);
+        }
+      });
+      if (churnChanged) {
+        Storage.setScopedValue(CONFIG.CHURN_KEY, nextChurn, userId);
+      }
+      const storedNewFollowers = Storage.getNewFollowersList(userId);
+      let nfChanged = false;
+      const nfSeenLower = new Set();
+      const nextNewFollowers = [];
+      storedNewFollowers.forEach((entry) => {
+        const { inFollower, inFollowing } = resolveLiveAccount(entry);
+        if (!inFollower) {
+          nfChanged = true;
+          return;
+        }
+        const liveUsername = inFollower.username;
+        const liveLower = liveUsername.toLowerCase();
+        if (nfSeenLower.has(liveLower)) {
+          nfChanged = true;
+          return;
+        }
+        nfSeenLower.add(liveLower);
+        const liveFollowsBack = Boolean(inFollowing);
+        const liveId = inFollower.id || entry.id || null;
+        const liveFullName = inFollower.fullName || inFollowing?.fullName || entry.fullName || "";
+        const livePic = inFollower.profilePicUrl || inFollowing?.profilePicUrl || entry.profilePicUrl || "";
+        const liveVerified = Boolean(inFollower.isVerified ?? entry.isVerified);
+        const livePrivate = Boolean(inFollower.isPrivate ?? entry.isPrivate);
+        const liveBestie = Boolean(inFollower.isBestie ?? inFollowing?.isBestie ?? entry.isBestie);
+        if (entry.username !== liveUsername || entry.id !== liveId || entry.followsBack !== liveFollowsBack || entry.fullName !== liveFullName || entry.profilePicUrl !== livePic || entry.isVerified !== liveVerified || entry.isPrivate !== livePrivate || entry.isBestie !== liveBestie) {
+          nfChanged = true;
+        }
+        nextNewFollowers.push({
+          ...entry,
+          id: liveId,
+          username: liveUsername,
+          fullName: liveFullName,
+          profilePicUrl: livePic,
+          isVerified: liveVerified,
+          isPrivate: livePrivate,
+          isBestie: liveBestie,
+          followsBack: liveFollowsBack
+        });
+      });
+      if (nfChanged) {
+        Storage.setScopedValue(CONFIG.NEW_FOLLOWERS_KEY, nextNewFollowers, userId);
+      }
+      return {
+        whitelist: healedWhitelist,
+        reactivatedFollowersLowerSet
+      };
     },
     getStoryObservations: (username, userId = null) => {
       const clean = String(username || "").replace(/^@/, "").toLowerCase().trim();
@@ -713,6 +1477,167 @@ DEBUG: false,
         Storage.setScopedValue(CONFIG.STORY_OBS_KEY, obs, userId);
       }
     },
+    mergeTargetEntriesById: (olderEntry = {}, newerEntry = {}) => {
+      const oldUser = olderEntry?.user || {};
+      const newUser = newerEntry?.user || {};
+      const oldHandle = String(oldUser.username || olderEntry?.username || "").replace(/^@+\s*/, "").trim();
+      const newHandle = String(newUser.username || newerEntry?.username || oldHandle || "").replace(/^@+\s*/, "").trim();
+      const newLower = newHandle.toLowerCase();
+      const prevNames = Utils.unique([
+        ...Array.isArray(oldUser.previousUsernames) ? oldUser.previousUsernames : [],
+        ...oldUser.previousUsername ? [oldUser.previousUsername] : [],
+        ...Array.isArray(newUser.previousUsernames) ? newUser.previousUsernames : [],
+        ...newUser.previousUsername ? [newUser.previousUsername] : [],
+        ...oldHandle && oldHandle.toLowerCase() !== newLower ? [oldHandle] : []
+      ].map((n) => String(n || "").replace(/^@+\s*/, "").trim()).filter((n) => n && n.toLowerCase() !== newLower));
+      const previousUsername = prevNames.length > 0 ? prevNames[prevNames.length - 1] : null;
+      const oldHist = Storage.normalizeHistoryRecords(Array.isArray(olderEntry?.history) ? olderEntry.history : []).list;
+      const newHist = Storage.normalizeHistoryRecords(Array.isArray(newerEntry?.history) ? newerEntry.history : []).list;
+      const histByDate = new Map();
+      oldHist.forEach((h) => {
+        if (h?.date) histByDate.set(h.date, { ...h });
+      });
+      newHist.forEach((h) => {
+        if (!h?.date) return;
+        if (!histByDate.has(h.date)) {
+          histByDate.set(h.date, { ...h });
+        } else {
+          const prev = histByDate.get(h.date);
+          const startF = Number(prev.startFollowers ?? prev.followers ?? h.startFollowers ?? h.followers ?? 0);
+          const startIng = Number(prev.startFollowing ?? prev.following ?? h.startFollowing ?? h.following ?? 0);
+          const startMut = prev.startMutuals !== void 0 && prev.startMutuals !== null ? Number(prev.startMutuals) : prev.mutuals !== void 0 && prev.mutuals !== null ? Number(prev.mutuals) : h.startMutuals;
+          const currF = Number(h.followers ?? prev.followers ?? 0);
+          const currIng = Number(h.following ?? prev.following ?? 0);
+          const currMut = h.mutuals !== void 0 && h.mutuals !== null ? Number(h.mutuals) : prev.mutuals;
+          histByDate.set(h.date, {
+            ...prev,
+            ...h,
+            followers: currF,
+            following: currIng,
+            ...currMut !== void 0 && currMut !== null ? { mutuals: currMut } : {},
+            startFollowers: startF,
+            startFollowing: startIng,
+            ...startMut !== void 0 && startMut !== null ? { startMutuals: startMut } : {},
+            lastDeltaFollowers: currF - Number(prev.followers ?? startF),
+            lastDeltaFollowing: currIng - Number(prev.following ?? startIng),
+            scansCount: (Number(prev.scansCount) || 1) + (Number(h.scansCount) || 1),
+            updatedAt: h.updatedAt || prev.updatedAt || Utils.now()
+          });
+        }
+      });
+      const mergedHistory = Storage.normalizeHistoryRecords(Array.from(histByDate.values())).list;
+      for (let i = 0; i < mergedHistory.length; i++) {
+        const cur = mergedHistory[i];
+        const prevDay = i > 0 ? mergedHistory[i - 1] : null;
+        cur.dayDeltaFollowers = prevDay ? cur.followers - prevDay.followers : cur.followers - Number(cur.startFollowers ?? cur.followers);
+        cur.dayDeltaFollowing = prevDay ? cur.following - prevDay.following : cur.following - Number(cur.startFollowing ?? cur.following);
+      }
+      const oldFollowers = Utils.toDetailedUserArray(olderEntry?.followers || []);
+      const oldFollowing = Utils.toDetailedUserArray(olderEntry?.following || []);
+      const oldMutuals = Utils.toDetailedUserArray(olderEntry?.mutuals || []);
+      const newFollowersList = Utils.toDetailedUserArray(newerEntry?.followers || []);
+      const newFollowingList = Utils.toDetailedUserArray(newerEntry?.following || []);
+      const newMutualsList = Utils.toDetailedUserArray(newerEntry?.mutuals || []);
+      const hasNewNetwork = newFollowersList.length > 0 || newFollowingList.length > 0;
+      const hasOldNetwork = oldFollowers.length > 0 || oldFollowing.length > 0;
+      let newFollowersDiff = Utils.toDetailedUserArray(newerEntry?.newFollowers || []);
+      let lostFollowersDiff = Utils.toDetailedUserArray(newerEntry?.lostFollowers || []);
+      let newMutualsDiff = Utils.toDetailedUserArray(newerEntry?.newMutuals || []);
+      let newFollowingDiff = Utils.toDetailedUserArray(newerEntry?.newFollowing || []);
+      let lostFollowingDiff = Utils.toDetailedUserArray(newerEntry?.lostFollowing || []);
+      let lastAuditDelta = newerEntry?.lastAuditDelta || olderEntry?.lastAuditDelta || null;
+      const newerHadNoDiffs = newFollowersDiff.length === 0 && lostFollowersDiff.length === 0 && newMutualsDiff.length === 0;
+      if (hasNewNetwork && hasOldNetwork && newerHadNoDiffs) {
+        const auditDateStr = Utils.localDateStr(newerEntry?.lastAuditAt || newerEntry?.updatedAt || Utils.now());
+        const followerRenames = Utils.detectRenamedUsers(oldFollowers, newFollowersList);
+        const followingRenames = Utils.detectRenamedUsers(oldFollowing, newFollowingList);
+        const mutualRenames = Utils.detectRenamedUsers(oldMutuals, newMutualsList);
+        const fRenOld = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+        const fRenNew = new Set(followerRenames.map((r) => r.newUsername.toLowerCase()));
+        const ingRenOld = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+        const ingRenNew = new Set(followingRenames.map((r) => r.newUsername.toLowerCase()));
+        const mutRenNew = new Set(mutualRenames.map((r) => r.newUsername.toLowerCase()));
+        const oldFByLower = new Map(oldFollowers.map((u) => [u.username.toLowerCase(), u]));
+        const oldFIds = new Set(oldFollowers.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+        const newFByLower = new Map(newFollowersList.map((u) => [u.username.toLowerCase(), u]));
+        const newFIds = new Set(newFollowersList.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+        const oldIngByLower = new Map(oldFollowing.map((u) => [u.username.toLowerCase(), u]));
+        const oldIngIds = new Set(oldFollowing.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+        const newIngByLower = new Map(newFollowingList.map((u) => [u.username.toLowerCase(), u]));
+        const newIngIds = new Set(newFollowingList.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+        const oldMutLower = new Set(oldMutuals.map((u) => u.username.toLowerCase()));
+        const oldMutIds = new Set(oldMutuals.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+        const computedNewF = newFollowersList.filter((u) => {
+          const lower = u.username.toLowerCase();
+          if (u.id && oldFIds.has(String(u.id))) return false;
+          return !oldFByLower.has(lower) && !fRenNew.has(lower);
+        }).map((u) => ({ ...u, date: auditDateStr }));
+        const computedLostF = oldFollowers.filter((u) => {
+          const lower = u.username.toLowerCase();
+          if (u.id && newFIds.has(String(u.id))) return false;
+          return !newFByLower.has(lower) && !fRenOld.has(lower);
+        }).map((u) => ({ ...u, date: auditDateStr }));
+        const computedNewIng = newFollowingList.filter((u) => {
+          const lower = u.username.toLowerCase();
+          if (u.id && oldIngIds.has(String(u.id))) return false;
+          return !oldIngByLower.has(lower) && !ingRenNew.has(lower);
+        }).map((u) => ({ ...u, date: auditDateStr }));
+        const computedLostIng = oldFollowing.filter((u) => {
+          const lower = u.username.toLowerCase();
+          if (u.id && newIngIds.has(String(u.id))) return false;
+          return !newIngByLower.has(lower) && !ingRenOld.has(lower);
+        }).map((u) => ({ ...u, date: auditDateStr }));
+        const computedNewMut = newMutualsList.filter((u) => {
+          const lower = u.username.toLowerCase();
+          if (u.id && oldMutIds.has(String(u.id))) return false;
+          return !oldMutLower.has(lower) && !mutRenNew.has(lower);
+        }).map((u) => ({ ...u, date: auditDateStr }));
+        newFollowersDiff = Utils.toDetailedUserArray([...(olderEntry?.newFollowers || []).filter((u) => newFByLower.has(u.username.toLowerCase())), ...computedNewF]);
+        lostFollowersDiff = Utils.toDetailedUserArray([...(olderEntry?.lostFollowers || []).filter((u) => !newFByLower.has(u.username.toLowerCase())), ...computedLostF]);
+        newMutualsDiff = Utils.toDetailedUserArray([...(olderEntry?.newMutuals || []).filter((u) => newMutualsList.some((m) => m.username.toLowerCase() === u.username.toLowerCase())), ...computedNewMut]);
+        newFollowingDiff = Utils.toDetailedUserArray([...(olderEntry?.newFollowing || []).filter((u) => newIngByLower.has(u.username.toLowerCase())), ...computedNewIng]);
+        lostFollowingDiff = Utils.toDetailedUserArray([...(olderEntry?.lostFollowing || []).filter((u) => !newIngByLower.has(u.username.toLowerCase())), ...computedLostIng]);
+        lastAuditDelta = {
+          gainedFollowers: computedNewF.length,
+          lostFollowers: computedLostF.length,
+          gainedFollowing: computedNewIng.length,
+          lostFollowing: computedLostIng.length,
+          newMutuals: computedNewMut.length,
+          renamed: followerRenames.length + followingRenames.length
+        };
+      } else if (!hasNewNetwork && hasOldNetwork) {
+        newFollowersDiff = Utils.toDetailedUserArray(olderEntry?.newFollowers || []);
+        lostFollowersDiff = Utils.toDetailedUserArray(olderEntry?.lostFollowers || []);
+        newMutualsDiff = Utils.toDetailedUserArray(olderEntry?.newMutuals || []);
+        newFollowingDiff = Utils.toDetailedUserArray(olderEntry?.newFollowing || []);
+        lostFollowingDiff = Utils.toDetailedUserArray(olderEntry?.lostFollowing || []);
+      }
+      const mergedUser = {
+        ...oldUser,
+        ...newUser,
+        id: String(newUser.id || oldUser.id || ""),
+        username: newHandle,
+        ...previousUsername ? { previousUsername, previousUsernames: prevNames } : {}
+      };
+      return {
+        ...olderEntry,
+        ...newerEntry,
+        user: mergedUser,
+        username: newLower,
+        followers: hasNewNetwork ? newFollowersList : oldFollowers,
+        following: hasNewNetwork ? newFollowingList : oldFollowing,
+        mutuals: hasNewNetwork ? newMutualsList : oldMutuals,
+        newFollowers: newFollowersDiff,
+        lostFollowers: lostFollowersDiff,
+        newMutuals: newMutualsDiff,
+        newFollowing: newFollowingDiff,
+        lostFollowing: lostFollowingDiff,
+        lastAuditDelta,
+        history: mergedHistory,
+        lastAuditAt: newerEntry?.lastAuditAt || olderEntry?.lastAuditAt || Utils.now(),
+        updatedAt: newerEntry?.updatedAt || olderEntry?.updatedAt || Utils.now()
+      };
+    },
     getTargetTrackerMap: (userId = null) => {
       const map = Storage.getScopedValue(CONFIG.TARGET_TRACKER_KEY, {}, userId);
       const viewerId = Utils.getUserId();
@@ -724,6 +1649,66 @@ DEBUG: false,
           if (k !== viewerName && viewerId && item?.user && String(item.user.id) === String(viewerId)) {
             delete map[k];
             modified = true;
+            return;
+          }
+          if (item && Array.isArray(item.history) && item.history.length > 0) {
+            const { list: healedHist, modified: histMod } = Storage.normalizeHistoryRecords(item.history);
+            if (histMod) {
+              item.history = healedHist;
+              modified = true;
+            }
+          }
+        });
+        const keysById = new Map();
+        Object.keys(map).forEach((k) => {
+          const item = map[k];
+          const rawId = item?.user?.id;
+          const idStr = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" && String(rawId) !== "null" ? String(rawId).trim() : null;
+          if (!idStr) return;
+          if (!keysById.has(idStr)) keysById.set(idStr, []);
+          keysById.get(idStr).push(k);
+        });
+        keysById.forEach((groupKeys) => {
+          if (groupKeys.length > 1) {
+            const sortedKeys = groupKeys.slice().sort((a, b) => {
+              const tA = new Date(map[a]?.lastAuditAt || map[a]?.updatedAt || 0).getTime() || 0;
+              const tB = new Date(map[b]?.lastAuditAt || map[b]?.updatedAt || 0).getTime() || 0;
+              return tA - tB;
+            });
+            let merged = map[sortedKeys[0]];
+            for (let i = 1; i < sortedKeys.length; i++) {
+              merged = Storage.mergeTargetEntriesById(merged, map[sortedKeys[i]]);
+            }
+            const canonicalKey = String(merged?.user?.username || merged?.username || sortedKeys[sortedKeys.length - 1]).replace(/^@+\s*/, "").toLowerCase().trim();
+            sortedKeys.forEach((k) => delete map[k]);
+            map[canonicalKey] = {
+              ...merged,
+              username: canonicalKey
+            };
+            modified = true;
+          } else if (groupKeys.length === 1) {
+            const k = groupKeys[0];
+            const item = map[k];
+            const liveUsername = String(item?.user?.username || "").replace(/^@+\s*/, "").trim();
+            const liveKey = liveUsername.toLowerCase();
+            if (liveKey && liveKey !== k) {
+              const prevNames = Utils.unique([
+                ...Array.isArray(item.user?.previousUsernames) ? item.user.previousUsernames : [],
+                ...item.user?.previousUsername ? [item.user.previousUsername] : [],
+                k
+              ].filter((n) => n && String(n).toLowerCase() !== liveKey));
+              delete map[k];
+              map[liveKey] = {
+                ...item,
+                username: liveKey,
+                user: {
+                  ...item.user,
+                  username: liveUsername,
+                  ...prevNames.length > 0 ? { previousUsername: prevNames[prevNames.length - 1], previousUsernames: prevNames } : {}
+                }
+              };
+              modified = true;
+            }
           }
         });
         if (modified) {
@@ -732,10 +1717,36 @@ DEBUG: false,
       }
       return map;
     },
-    getTargetData: (username, userId = null) => {
-      const clean = String(username || "").replace(/^@+\s*/, "").toLowerCase().trim();
+    getTargetData: (username, userId = null, targetId = null) => {
+      let rawName = username;
+      let resolvedTargetId = targetId;
+      if (username && typeof username === "object") {
+        rawName = username.username || "";
+        resolvedTargetId = resolvedTargetId || username.id || null;
+      }
+      const clean = String(rawName || "").replace(/^@+\s*/, "").toLowerCase().trim();
+      const cleanId = resolvedTargetId !== null && resolvedTargetId !== void 0 && String(resolvedTargetId).trim() !== "" && String(resolvedTargetId) !== "0" && String(resolvedTargetId) !== "null" ? String(resolvedTargetId).trim() : null;
       const map = Storage.getTargetTrackerMap(userId);
-      return map[clean] || null;
+      if (clean && map[clean]) {
+        return map[clean];
+      }
+      if (map && typeof map === "object") {
+        for (const entry of Object.values(map)) {
+          if (!entry) continue;
+          const entryId = entry?.user?.id ? String(entry.user.id).trim() : null;
+          if (cleanId && entryId && entryId === cleanId) {
+            return entry;
+          }
+          if (clean) {
+            const prevSingle = String(entry?.user?.previousUsername || "").toLowerCase().trim();
+            const prevList = Array.isArray(entry?.user?.previousUsernames) ? entry.user.previousUsernames.map((n) => String(n || "").toLowerCase().trim()) : [];
+            if (prevSingle === clean || prevList.includes(clean)) {
+              return entry;
+            }
+          }
+        }
+      }
+      return null;
     },
     saveTargetData: (username, data, userId = null) => {
       const clean = String(username || "").replace(/^@+\s*/, "").toLowerCase().trim();
@@ -747,11 +1758,24 @@ DEBUG: false,
         return;
       }
       const map = Storage.getTargetTrackerMap(userId);
-      map[clean] = {
+      const incomingId = data?.user?.id && String(data.user.id) !== "0" && String(data.user.id) !== "null" ? String(data.user.id).trim() : null;
+      let mergedPayload = {
         ...data,
         username: clean,
         updatedAt: Utils.now()
       };
+      if (incomingId) {
+        Object.keys(map).forEach((existingKey) => {
+          if (existingKey === clean) return;
+          const existingEntry = map[existingKey];
+          const existingId = existingEntry?.user?.id ? String(existingEntry.user.id).trim() : null;
+          if (existingId && existingId === incomingId) {
+            mergedPayload = Storage.mergeTargetEntriesById(existingEntry, mergedPayload);
+            delete map[existingKey];
+          }
+        });
+      }
+      map[clean] = mergedPayload;
       const keys = Object.keys(map);
       if (keys.length > 5) {
         keys.sort((a, b) => new Date(map[b].updatedAt).getTime() - new Date(map[a].updatedAt).getTime());
@@ -760,13 +1784,29 @@ DEBUG: false,
       }
       Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, map, userId);
     },
-    removeTargetData: (username, userId = null) => {
+    removeTargetData: (username, userId = null, targetId = null) => {
       const clean = String(username || "").replace(/^@+\s*/, "").toLowerCase().trim();
+      const cleanId = targetId && String(targetId) !== "0" && String(targetId) !== "null" ? String(targetId).trim() : null;
       const map = Storage.getTargetTrackerMap(userId);
-      if (map[clean]) {
+      let modified = false;
+      if (clean && map[clean]) {
         delete map[clean];
+        modified = true;
+      }
+      if (cleanId && map && typeof map === "object") {
+        Object.keys(map).forEach((k) => {
+          if (String(map[k]?.user?.id || "") === cleanId) {
+            delete map[k];
+            modified = true;
+          }
+        });
+      }
+      if (modified) {
         Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, map, userId);
       }
+    },
+    deleteTargetData: (username, userId = null, targetId = null) => {
+      return Storage.removeTargetData(username, userId, targetId);
     },
     syncFreshUserData: (freshUsersArray, userId = null) => {
       if (!Array.isArray(freshUsersArray) || freshUsersArray.length === 0) return;
@@ -792,10 +1832,22 @@ DEBUG: false,
               entry.fullName = fresh.fullName;
               newFollowersChanged = true;
             }
-            if (fresh.isVerified !== void 0) entry.isVerified = Boolean(fresh.isVerified);
-            if (fresh.isPrivate !== void 0) entry.isPrivate = Boolean(fresh.isPrivate);
-            if (fresh.isBestie !== void 0) entry.isBestie = Boolean(fresh.isBestie);
-            if (fresh.followsBack !== void 0) entry.followsBack = fresh.followsBack;
+            if (fresh.isVerified !== void 0 && entry.isVerified !== Boolean(fresh.isVerified)) {
+              entry.isVerified = Boolean(fresh.isVerified);
+              newFollowersChanged = true;
+            }
+            if (fresh.isPrivate !== void 0 && entry.isPrivate !== Boolean(fresh.isPrivate)) {
+              entry.isPrivate = Boolean(fresh.isPrivate);
+              newFollowersChanged = true;
+            }
+            if (fresh.isBestie !== void 0 && entry.isBestie !== Boolean(fresh.isBestie)) {
+              entry.isBestie = Boolean(fresh.isBestie);
+              newFollowersChanged = true;
+            }
+            if (fresh.followsBack !== void 0 && entry.followsBack !== fresh.followsBack) {
+              entry.followsBack = fresh.followsBack;
+              newFollowersChanged = true;
+            }
           }
         });
         if (newFollowersChanged) {
@@ -898,34 +1950,208 @@ DEBUG: false,
           Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, targetMap, userId);
         }
       }
+      [CONFIG.CHURN_KEY, CONFIG.DEACTIVATED_KEY, CONFIG.BLOCKED_KEY, CONFIG.RENAMED_KEY].forEach((listKey) => {
+        const list = Storage.getNominalList(listKey, userId);
+        if (!Array.isArray(list) || list.length === 0) return;
+        let listChanged = false;
+        list.forEach((entry) => {
+          if (!entry || typeof entry !== "object") return;
+          const entryName = String(entry.newUsername || entry.username || "").toLowerCase();
+          if (entryName === cleanUser) {
+            Object.assign(entry, updates);
+            listChanged = true;
+          }
+        });
+        if (listChanged) {
+          Storage.setScopedValue(listKey, list, userId);
+        }
+      });
+    },
+findKnownUserByUsername: (username, userId = null) => {
+      const cleanUser = String(username || "").replace(/^@+\s*/, "").trim().toLowerCase();
+      if (!cleanUser) return null;
+      let bestMatch = null;
+      const consider = (candidate) => {
+        if (!candidate || typeof candidate !== "object") return false;
+        const cName = String(candidate.newUsername || candidate.username || "").toLowerCase();
+        const cOld = String(candidate.oldUsername || candidate.previousUsername || "").toLowerCase();
+        if (cName !== cleanUser && cOld !== cleanUser) return false;
+        const normalized = {
+          ...candidate,
+          username: candidate.newUsername || candidate.username || cleanUser
+        };
+        if (!bestMatch) {
+          bestMatch = normalized;
+        } else {
+          bestMatch = {
+            ...bestMatch,
+            ...normalized,
+            id: normalized.id && String(normalized.id) !== "0" ? String(normalized.id) : bestMatch.id,
+            fullName: normalized.fullName || bestMatch.fullName || "",
+            profilePicUrl: normalized.profilePicUrl || bestMatch.profilePicUrl || null
+          };
+        }
+        return Boolean(bestMatch?.id && String(bestMatch.id) !== "0");
+      };
+      try {
+        const activeId = Storage.getCurrentUserId();
+        if ((!userId || String(userId) === String(activeId)) && typeof window !== "undefined" && Array.isArray(window.__igLastResults)) {
+          for (const item of window.__igLastResults) {
+            if (consider(item)) return bestMatch;
+          }
+        }
+      } catch (e) {
+      }
+      const snap = Storage.load(userId);
+      if (snap && typeof snap === "object") {
+        const detailedPools = [
+          snap.followersDetailed,
+          snap.followingDetailed,
+          snap.mutualsDetailed,
+          snap.fansDetailed,
+          snap.notFollowingBackDetailed,
+          snap.newFollowersDetailed
+        ];
+        for (const pool of detailedPools) {
+          if (!Array.isArray(pool)) continue;
+          for (const item of pool) {
+            if (consider(item)) return bestMatch;
+          }
+        }
+      }
+      const nominalPools = [
+        Storage.getNewFollowersList(userId),
+        Storage.getNominalList(CONFIG.CHURN_KEY, userId),
+        Storage.getNominalList(CONFIG.DEACTIVATED_KEY, userId),
+        Storage.getNominalList(CONFIG.BLOCKED_KEY, userId),
+        Storage.getNominalList(CONFIG.RENAMED_KEY, userId)
+      ];
+      for (const pool of nominalPools) {
+        if (!Array.isArray(pool)) continue;
+        for (const item of pool) {
+          if (consider(item)) return bestMatch;
+        }
+      }
+      const targetMap = Storage.getTargetTrackerMap(userId);
+      if (targetMap && typeof targetMap === "object") {
+        for (const tData of Object.values(targetMap)) {
+          if (!tData) continue;
+          if (tData.user && consider(tData.user)) return bestMatch;
+          const tPools = [tData.followers, tData.following, tData.mutuals, tData.newFollowers, tData.lostFollowers];
+          for (const pool of tPools) {
+            if (!Array.isArray(pool)) continue;
+            for (const item of pool) {
+              if (consider(item)) return bestMatch;
+            }
+          }
+        }
+      }
+      return bestMatch;
     },
     resetAll: (userId = null) => {
-      const keys = [
-        CONFIG.STORAGE_KEY,
-        CONFIG.WHITELIST_KEY,
-        CONFIG.HISTORY_KEY,
-        CONFIG.CHURN_KEY,
-        CONFIG.DEACTIVATED_KEY,
-        CONFIG.BLOCKED_KEY,
-        CONFIG.RENAMED_KEY,
-        CONFIG.NEW_FOLLOWERS_KEY,
-        CONFIG.TARGET_TRACKER_KEY,
-        CONFIG.STORY_OBS_KEY
-      ];
-      keys.forEach((k) => {
-        const id = userId || Storage.getCurrentUserId();
+      const id = userId || Storage.getCurrentUserId();
+      ACCOUNT_SCOPED_KEYS.forEach((k) => {
         if (id) {
           GM_deleteValue(`${k}_${id}`);
         }
-        GM_deleteValue(k);
+        const legacyVal = GM_getValue(k, void 0);
+        if (legacyVal !== void 0 && legacyVal !== null) {
+          const legacyOwner = legacyVal && typeof legacyVal === "object" && !Array.isArray(legacyVal) && legacyVal.ownerUserId ? String(legacyVal.ownerUserId) : null;
+          if (!legacyOwner || !id || legacyOwner === String(id)) {
+            GM_deleteValue(k);
+          }
+        }
       });
     }
   };
   const API = {
     friendshipCache: new Map(),
-    hdAvatarCache: new Map()
+    hdAvatarCache: new Map(),
+    rateLimitBuckets: new Map()
   };
+  try {
+    if (typeof sessionStorage !== "undefined" && sessionStorage) {
+      sessionStorage.removeItem(CONFIG.RATE_LIMIT_STATE_KEY || "ig_rate_limit_buckets_v1");
+    }
+  } catch (_e) {
+  }
   Object.assign(API, {
+    getRateLimitBucket: (urlOrBucket = "") => {
+      const raw = String(urlOrBucket || "");
+      if (!raw) return "general";
+      if (raw === "global" || raw === "friendships:followers" || raw === "friendships:following" || raw === "graphql" || raw === "web_profile_info" || raw === "general") {
+        return raw;
+      }
+      if (raw.includes("/api/v1/friendships/")) {
+        if (raw.includes("/followers")) return "friendships:followers";
+        if (raw.includes("/following")) return "friendships:following";
+        return "friendships:other";
+      }
+      if (raw.includes("/graphql/query") || raw.includes("/api/graphql")) {
+        return "graphql";
+      }
+      if (raw.includes("/users/web_profile_info")) {
+        return "web_profile_info";
+      }
+      return "general";
+    },
+    tripRateLimit: (urlOrBucket, cooldownMs = CONFIG.RATE_LIMIT_CIRCUIT_MS, isGlobal = false) => {
+      if (!(API.rateLimitBuckets instanceof Map)) {
+        API.rateLimitBuckets = new Map();
+      }
+      const bucket = API.getRateLimitBucket(urlOrBucket);
+      const duration = Math.max(1e3, Number(cooldownMs) || CONFIG.RATE_LIMIT_CIRCUIT_MS);
+      const until = Date.now() + duration;
+      API.rateLimitBuckets.set(bucket, until);
+      if (isGlobal) {
+        API.rateLimitBuckets.set("global", until);
+      }
+      return { bucket, until, remainingMs: duration };
+    },
+    getRateLimitRemainingMs: (urlOrBucket = "global") => {
+      if (!(API.rateLimitBuckets instanceof Map)) {
+        API.rateLimitBuckets = new Map();
+        return 0;
+      }
+      const now = Date.now();
+      const bucket = API.getRateLimitBucket(urlOrBucket);
+      const globalUntil = API.rateLimitBuckets.get("global") || 0;
+      const bucketUntil = API.rateLimitBuckets.get(bucket) || 0;
+      if (globalUntil > 0 && globalUntil <= now) {
+        API.rateLimitBuckets.delete("global");
+      }
+      if (bucketUntil > 0 && bucketUntil <= now) {
+        API.rateLimitBuckets.delete(bucket);
+      }
+      const effectiveUntil = Math.max(
+        globalUntil > now ? globalUntil : 0,
+        bucketUntil > now ? bucketUntil : 0
+      );
+      return effectiveUntil > now ? effectiveUntil - now : 0;
+    },
+    isRateLimited: (urlOrBucket = "global") => {
+      return API.getRateLimitRemainingMs(urlOrBucket) > 0;
+    },
+    clearRateLimits: (urlOrBucket = null) => {
+      if (!(API.rateLimitBuckets instanceof Map)) {
+        API.rateLimitBuckets = new Map();
+      }
+      if (urlOrBucket) {
+        const bucket = API.getRateLimitBucket(urlOrBucket);
+        API.rateLimitBuckets.delete(bucket);
+      } else {
+        API.rateLimitBuckets.clear();
+      }
+    },
+    isSoftRateLimitPayload: (json) => {
+      if (!json || typeof json !== "object") return false;
+      if (json.spam === true || json.feedback_required === true) return true;
+      const msg = String(json.message || json.error_title || "").toLowerCase();
+      if (msg.includes("wait a few minutes") || msg.includes("please wait") || msg.includes("rate limit") || msg.includes("try again later")) {
+        return true;
+      }
+      return false;
+    },
     fetchWithRetry: async (url, options = {}, retries = CONFIG.MAX_RETRIES, backoff = 3e3) => {
       if (typeof options === "number") {
         retries = options;
@@ -933,6 +2159,13 @@ DEBUG: false,
       }
       if (options.signal?.aborted) {
         throw new DOMException("Aborted", "AbortError");
+      }
+      if (options.respectCircuitBreaker && API.isRateLimited(url)) {
+        const remSec = Math.ceil(API.getRateLimitRemainingMs(url) / 1e3);
+        const bucket = API.getRateLimitBucket(url);
+        const cbErr = new Error(`Instagram rate limit (429) active on ${bucket} (${remSec}s cooldown remaining). Request blocked to safeguard your account.`);
+        Object.defineProperty(cbErr, "isRateLimited", { value: true, enumerable: false, configurable: true });
+        throw cbErr;
       }
       const csrf = Utils.getCsrfToken();
       const defaultHeaders = {
@@ -943,13 +2176,20 @@ DEBUG: false,
         ...csrf ? { "X-CSRFToken": csrf } : {}
       };
       const fetchOptions = {
-        credentials: "include",
-        ...options,
+        credentials: options.credentials || "include",
         headers: {
           ...defaultHeaders,
           ...options.headers || {}
         }
       };
+      if (options.method) fetchOptions.method = options.method;
+      if (options.body !== void 0) fetchOptions.body = options.body;
+      if (options.signal) fetchOptions.signal = options.signal;
+      if (options.mode) fetchOptions.mode = options.mode;
+      if (options.cache) fetchOptions.cache = options.cache;
+      if (options.redirect) fetchOptions.redirect = options.redirect;
+      if (options.referrer) fetchOptions.referrer = options.referrer;
+      if (options.referrerPolicy) fetchOptions.referrerPolicy = options.referrerPolicy;
       let rateLimitCount = 0;
       const maxRateLimitRetries = 2;
       for (let i = 0; i < retries; i++) {
@@ -958,18 +2198,53 @@ DEBUG: false,
         }
         try {
           const res = await fetch(url, fetchOptions);
-          if (res.ok) return await res.json();
-          if (res.status === 429) {
-            if (options.silent || options.optional) {
-              throw new Error(`HTTP 429 on optional endpoint ${url}`);
+          if (res.ok) {
+            const contentType = res.headers && typeof res.headers.get === "function" ? res.headers.get("content-type") || "" : "";
+            if (contentType && contentType.toLowerCase().includes("text/html")) {
+              if (typeof res.text === "function") {
+                await res.text().catch(() => "");
+              }
+              const htmlErr = new Error(`Non-JSON HTML response received from ${url}`);
+              Object.defineProperty(htmlErr, "isNonJson", { value: true, enumerable: false, configurable: true });
+              throw htmlErr;
             }
-            rateLimitCount++;
+            let json;
+            try {
+              json = await res.json();
+            } catch (parseErr) {
+              const nonJsonErr = new Error(`Expected JSON from ${url}, but received non-JSON payload (${parseErr?.message || "parse error"}).`);
+              Object.defineProperty(nonJsonErr, "isNonJson", { value: true, enumerable: false, configurable: true });
+              throw nonJsonErr;
+            }
+            if (API.isSoftRateLimitPayload(json)) {
+              const isGlobalBlock = Boolean(json.feedback_required || json.spam);
+              API.tripRateLimit(url, CONFIG.RATE_LIMIT_CIRCUIT_MS || 3e5, isGlobalBlock);
+              const softErr = new Error(`Instagram rate limit (429) / action block detected: ${json.message || "feedback_required"}`);
+              Object.defineProperty(softErr, "isRateLimited", { value: true, enumerable: false, configurable: true });
+              throw softErr;
+            }
+            return json;
+          }
+          if (res.status === 429) {
             const retryAfterHeader = res.headers ? res.headers.get("Retry-After") : null;
             const retrySeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : null;
             const waitMs = retrySeconds && !isNaN(retrySeconds) && retrySeconds > 0 ? retrySeconds * 1e3 : CONFIG.COOLDOWN_429_MS || 6e4;
+            const circuitMs = Math.max(waitMs, CONFIG.RATE_LIMIT_CIRCUIT_MS || 3e5);
+            if (options.abortOnRateLimit || options.silent || options.optional) {
+              if (options.tripCircuitOn429 !== false) {
+                API.tripRateLimit(url, circuitMs, false);
+              }
+              const optErr = new Error(`Instagram rate limit (429) on ${url}`);
+              Object.defineProperty(optErr, "isRateLimited", { value: true, enumerable: false, configurable: true });
+              throw optErr;
+            }
+            rateLimitCount++;
             if (rateLimitCount >= maxRateLimitRetries) {
+              API.tripRateLimit(url, circuitMs, false);
               UI.log(`[Rate Limit] HTTP 429 persistent. Aborting to safeguard your account.`);
-              throw new Error("Instagram rate limit (429) persistent. Please wait at least 30-60 minutes before retrying.");
+              const persistErr = new Error("Instagram rate limit (429) persistent. Please wait at least 30-60 minutes before retrying.");
+              Object.defineProperty(persistErr, "isRateLimited", { value: true, enumerable: false, configurable: true });
+              throw persistErr;
             }
             UI.setStatus(`Rate limit (429). Cooling down ${Math.round(waitMs / 1e3)}s...`);
             UI.log(`[Safety Cooldown] HTTP 429 detected. Pausing for ${Math.round(waitMs / 1e3)}s before retry ${rateLimitCount}/${maxRateLimitRetries}...`);
@@ -977,6 +2252,13 @@ DEBUG: false,
             continue;
           } else {
             const errText = await res.text().catch(() => "");
+            const lowerErr = errText.toLowerCase();
+            if (lowerErr.includes("wait a few minutes") || lowerErr.includes("feedback_required") || lowerErr.includes('"spam":true')) {
+              API.tripRateLimit(url, CONFIG.RATE_LIMIT_CIRCUIT_MS || 3e5, lowerErr.includes("feedback_required"));
+              const blockErr = new Error(`Instagram rate limit (429) / action guard on ${url}: ${errText.slice(0, 120)}`);
+              Object.defineProperty(blockErr, "isRateLimited", { value: true, enumerable: false, configurable: true });
+              throw blockErr;
+            }
             if (!options.silent) {
               console.warn(`[IG Analyzer] Request to ${url} failed (HTTP ${res.status}):`, errText.slice(0, 300));
             }
@@ -986,7 +2268,7 @@ DEBUG: false,
           if (e.name === "AbortError" || options.signal?.aborted) {
             throw e;
           }
-          if (options.silent || options.optional) {
+          if (e.isRateLimited || options.silent || options.optional || e.isNonJson) {
             throw e;
           }
           if (e.message && e.message.includes("rate limit (429) persistent")) {
@@ -1000,185 +2282,442 @@ DEBUG: false,
     }
   });
   Object.assign(API, {
-    getAllUsersViaGraphQL: async (userId, hash, label, options = {}, expectedTotal = 0) => {
-      const users = [];
-      const seenIds = new Set();
-      let cursor = null;
-      let hasNext = true;
-      let totalCount = expectedTotal || 0;
-      while (hasNext) {
-        if (options.signal?.aborted) {
-          throw new DOMException("Aborted", "AbortError");
+    mergeExtractedUsers: (primaryList = [], secondaryList = []) => {
+      const merged = [];
+      const indexById = new Map();
+      const indexByLower = new Map();
+      const upsert = (rawUser) => {
+        if (!rawUser || typeof rawUser !== "object") return;
+        const username = rawUser.username ? String(rawUser.username).trim() : "";
+        if (!username) return;
+        const rawId = rawUser.id ?? rawUser.pk_id ?? rawUser.strong_id__ ?? rawUser.pk ?? null;
+        const id = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" && String(rawId) !== "null" && String(rawId) !== "undefined" ? String(rawId).trim() : null;
+        const lower = username.toLowerCase();
+        const existingIdx = id && indexById.has(id) ? indexById.get(id) : indexByLower.has(lower) ? indexByLower.get(lower) : -1;
+        if (existingIdx !== -1 && existingIdx !== void 0) {
+          const existing = merged[existingIdx];
+          if (!existing.id && id) {
+            existing.id = id;
+            indexById.set(id, existingIdx);
+          }
+          if (!existing.fullName && rawUser.fullName) existing.fullName = rawUser.fullName;
+          if (!existing.profilePicUrl && rawUser.profilePicUrl) existing.profilePicUrl = rawUser.profilePicUrl;
+          if (!existing.isPrivate && rawUser.isPrivate) existing.isPrivate = true;
+          if (!existing.isVerified && rawUser.isVerified) existing.isVerified = true;
+          if (!existing.latestReelMedia && rawUser.latestReelMedia) existing.latestReelMedia = rawUser.latestReelMedia;
+          return;
         }
-        const vars = encodeURIComponent(JSON.stringify({ id: userId, first: CONFIG.PAGE_SIZE, after: cursor }));
-        const url = "https://www.instagram.com/graphql/query/?query_hash=" + hash + "&variables=" + vars;
-        const json = await API.fetchWithRetry(url, options);
-        const userNode = json?.data?.user;
-        const edge = userNode?.edge_follow || userNode?.edge_followed_by;
-        if (!edge || !Array.isArray(edge.edges)) {
-          console.warn(`[IG Analyzer] Unexpected GraphQL structure for ${label}:`, json);
-          return [];
-        }
-        if (totalCount === 0 && edge.count) totalCount = edge.count;
-        edge.edges.forEach((e) => {
-          const node = e?.node;
-          const username = node?.username;
-          const id = node?.id ? String(node.id) : null;
-          if (!username || !id) return;
-          if (seenIds.has(id)) return;
-          seenIds.add(id);
-          users.push({
-            id,
-            username: String(username)
-          });
-        });
-        hasNext = edge.page_info?.has_next_page === true;
-        cursor = edge.page_info?.end_cursor || null;
-        const total = totalCount > 0 ? totalCount : 0;
-        const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
-        UI.setProgress(users.length, total, progressLabel);
-        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500, options.signal);
-      }
-      if (users.length > 0) {
-        UI.setProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
-      }
-      return users;
+        const entry = {
+          id,
+          username,
+          fullName: rawUser.fullName || rawUser.full_name || "",
+          isPrivate: Boolean(rawUser.isPrivate ?? rawUser.is_private),
+          isVerified: Boolean(rawUser.isVerified ?? rawUser.is_verified),
+          profilePicUrl: rawUser.profilePicUrl || rawUser.profile_pic_url || null,
+          latestReelMedia: rawUser.latestReelMedia ?? rawUser.latest_reel_media ?? 0
+        };
+        const nextIdx = merged.length;
+        merged.push(entry);
+        if (id) indexById.set(id, nextIdx);
+        indexByLower.set(lower, nextIdx);
+      };
+      (Array.isArray(primaryList) ? primaryList : []).forEach(upsert);
+      (Array.isArray(secondaryList) ? secondaryList : []).forEach(upsert);
+      return merged;
     },
-    getAllUsersViaFriendships: async (userId, label, options = {}, expectedTotal = 0) => {
+    getAllUsersViaGraphQL: async (userId, hash, label, options = {}, expectedTotal = 0, callbacks = null) => {
+      const candidateHashes = [
+        hash,
+        ...label === "following" && CONFIG.FOLLOWING_ALT_HASH && CONFIG.FOLLOWING_ALT_HASH !== hash ? [CONFIG.FOLLOWING_ALT_HASH] : []
+      ].filter(Boolean);
+      if (candidateHashes.length === 0) return [];
+      const reportProgress = typeof callbacks?.onProgress === "function" ? callbacks.onProgress : (curr, total, msg) => UI.setProgress(curr, total, msg);
+      let lastErr = null;
+      for (const activeHash of candidateHashes) {
+        const users = [];
+        const seenIds = new Set();
+        const seenUsernames = new Set();
+        const seenCursors = new Set();
+        let cursor = null;
+        let hasNext = true;
+        let totalCount = expectedTotal || 0;
+        let structureValid = true;
+        try {
+          while (hasNext) {
+            if (options.signal?.aborted) {
+              throw new DOMException("Aborted", "AbortError");
+            }
+            const vars = encodeURIComponent(JSON.stringify({
+              id: String(userId),
+              first: options.pageSize || CONFIG.PAGE_SIZE || 50,
+              after: cursor
+            }));
+            const url = "https://www.instagram.com/graphql/query/?query_hash=" + activeHash + "&variables=" + vars;
+            const json = await API.fetchWithRetry(url, options);
+            const userNode = json?.data?.user;
+            const edge = label === "following" ? userNode?.edge_follow || userNode?.edge_followed_by : userNode?.edge_followed_by || userNode?.edge_follow;
+            if (!edge || !Array.isArray(edge.edges)) {
+              structureValid = false;
+              break;
+            }
+            if (totalCount === 0 && edge.count) totalCount = edge.count;
+            edge.edges.forEach((e) => {
+              const node = e?.node;
+              const username = node?.username ? String(node.username).trim() : "";
+              if (!username) return;
+              const rawId = node?.id ?? node?.pk_id ?? node?.pk ?? null;
+              const id = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" ? String(rawId).trim() : null;
+              const lower = username.toLowerCase();
+              if (id && seenIds.has(id) || seenUsernames.has(lower)) return;
+              if (id) seenIds.add(id);
+              seenUsernames.add(lower);
+              users.push({
+                id,
+                username,
+                fullName: node?.full_name || "",
+                isPrivate: Boolean(node?.is_private),
+                isVerified: Boolean(node?.is_verified),
+                profilePicUrl: node?.profile_pic_url || null,
+                latestReelMedia: node?.reel?.latest_reel_media || 0
+              });
+            });
+            const nextCursor = edge.page_info?.has_next_page === true && edge.page_info?.end_cursor ? String(edge.page_info.end_cursor) : null;
+            if (nextCursor && seenCursors.has(nextCursor)) {
+              hasNext = false;
+            } else {
+              if (nextCursor) seenCursors.add(nextCursor);
+              cursor = nextCursor;
+              hasNext = Boolean(nextCursor);
+            }
+            const total = totalCount > 0 ? totalCount : 0;
+            const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
+            reportProgress(users.length, total, progressLabel);
+            if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500, options.signal);
+          }
+          if (structureValid) {
+            if (users.length > 0 && !callbacks?.suppressFinalProgress) {
+              reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
+            }
+            return users;
+          }
+        } catch (err) {
+          if (err.name === "AbortError" || options.signal?.aborted) throw err;
+          if (users.length > 0) {
+            Object.defineProperty(err, "partialUsers", { value: users, enumerable: false, configurable: true });
+          }
+          lastErr = err;
+        }
+      }
+      if (lastErr) throw lastErr;
+      if (!options.silent) {
+        console.warn(`[IG Analyzer] Unexpected GraphQL structure for ${label}.`);
+      }
+      return [];
+    },
+    getAllUsersViaFriendships: async (userId, label, options = {}, expectedTotal = 0, callbacks = null) => {
       const users = [];
       const seenIds = new Set();
+      const seenUsernames = new Set();
+      const seenCursors = new Set();
       let maxId = null;
       let hasNext = true;
+      let limitedByMeta = false;
+      let pagesFetched = 0;
+      let rawItemsCount = 0;
+      let duplicateItemsCount = 0;
       const endpoint = label === "following" ? "following" : "followers";
-      while (hasNext) {
-        if (options.signal?.aborted) {
-          throw new DOMException("Aborted", "AbortError");
-        }
-        let url = `https://www.instagram.com/api/v1/friendships/${userId}/${endpoint}/?count=50&search_surface=follow_list_page`;
-        if (maxId) {
-          url += `&max_id=${encodeURIComponent(maxId)}`;
-        }
-        const json = await API.fetchWithRetry(url, options);
-        const list = json?.users;
-        if (!Array.isArray(list)) {
-          console.warn(`[IG Analyzer] Friendships API returned non-array for ${label}:`, json);
-          break;
-        }
-        list.forEach((u) => {
-          const username = u?.username;
-          const id = u?.pk ? String(u.pk) : u?.id ? String(u.id) : null;
-          if (!username || !id) return;
-          if (seenIds.has(id)) return;
-          seenIds.add(id);
-          users.push({
-            id,
-            username: String(username),
-            fullName: u?.full_name || "",
-            isPrivate: Boolean(u?.is_private),
-            isVerified: Boolean(u?.is_verified),
-            profilePicUrl: u?.profile_pic_url || null,
-            latestReelMedia: u?.latest_reel_media || 0
+      const pageSize = Number(options.pageSize) > 0 ? Number(options.pageSize) : CONFIG.FRIENDSHIPS_PAGE_SIZE;
+      const searchSurface = options.searchSurface ? String(options.searchSurface) : null;
+      const rankToken = options.useRankToken ? options.rankToken || Utils.generateUuid() : null;
+      const reportProgress = typeof callbacks?.onProgress === "function" ? callbacks.onProgress : (curr, total, msg) => UI.setProgress(curr, total, msg);
+      try {
+        while (hasNext) {
+          if (options.signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+          }
+          const params = new URLSearchParams();
+          params.set("count", String(pageSize));
+          if (searchSurface) {
+            params.set("search_surface", String(searchSurface));
+          }
+          if (rankToken) {
+            params.set("rank_token", String(rankToken));
+          }
+          if (maxId !== null) {
+            params.set("max_id", String(maxId));
+          }
+          const url = `https://www.instagram.com/api/v1/friendships/${userId}/${endpoint}/?${params.toString()}`;
+          const json = await API.fetchWithRetry(url, { ...options, abortOnRateLimit: true });
+          pagesFetched++;
+          if (json?.should_limit_list_of_followers || json?.should_limit_list_of_followings) {
+            limitedByMeta = true;
+          }
+          const list = json?.users;
+          if (!Array.isArray(list)) {
+            if (!options.silent) {
+              console.warn(`[IG Analyzer] Friendships API returned non-array for ${label}:`, json);
+            }
+            if (pagesFetched === 1) {
+              throw new Error(`Friendships API returned invalid users payload for ${label}`);
+            }
+            break;
+          }
+          rawItemsCount += list.length;
+          list.forEach((u) => {
+            const username = u?.username ? String(u.username).trim() : "";
+            if (!username) return;
+            const rawId = u?.pk_id ?? u?.strong_id__ ?? u?.pk ?? u?.id ?? null;
+            const id = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" ? String(rawId).trim() : null;
+            const lower = username.toLowerCase();
+            if (id && seenIds.has(id) || seenUsernames.has(lower)) {
+              duplicateItemsCount++;
+              return;
+            }
+            if (id) seenIds.add(id);
+            seenUsernames.add(lower);
+            users.push({
+              id,
+              username,
+              fullName: u?.full_name || "",
+              isPrivate: Boolean(u?.is_private),
+              isVerified: Boolean(u?.is_verified),
+              profilePicUrl: u?.profile_pic_url || null,
+              latestReelMedia: u?.latest_reel_media || 0
+            });
           });
-        });
-        maxId = json?.next_max_id || null;
-        hasNext = Boolean(maxId);
-        const total = expectedTotal > 0 ? expectedTotal : 0;
-        const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
-        UI.setProgress(users.length, total, progressLabel);
-        if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800, options.signal);
+          const rawNext = json?.next_max_id;
+          const nextCursor = rawNext !== void 0 && rawNext !== null && String(rawNext) !== "" ? String(rawNext) : null;
+          if (nextCursor && seenCursors.has(nextCursor)) {
+            console.warn(`[IG Analyzer] Duplicate pagination cursor detected for ${label}, stopping loop.`);
+            hasNext = false;
+          } else {
+            if (nextCursor) seenCursors.add(nextCursor);
+            maxId = nextCursor;
+            hasNext = Boolean(nextCursor);
+          }
+          const total = expectedTotal > 0 ? expectedTotal : 0;
+          const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
+          reportProgress(users.length, total, progressLabel);
+          if (hasNext) {
+            const baseDelay = (CONFIG.FRIENDSHIPS_RATE_LIMIT_MS || CONFIG.BASE_RATE_LIMIT_MS || 1250) + Math.random() * 650;
+            const breatherEvery = CONFIG.BREATHER_EVERY_PAGES || 10;
+            const extraBreather = pagesFetched > 0 && pagesFetched % breatherEvery === 0 ? (CONFIG.BREATHER_PAUSE_MS || 2500) + Math.random() * 800 : 0;
+            await Utils.sleep(baseDelay + extraBreather, options.signal);
+          }
+        }
+      } catch (err) {
+        if (err.name === "AbortError" || options.signal?.aborted) throw err;
+        if (users.length > 0) {
+          Object.defineProperty(err, "partialUsers", { value: users, enumerable: false, configurable: true });
+        }
+        throw err;
       }
-      if (users.length > 0) {
-        UI.setProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
+      if (users.length > 0 && !callbacks?.suppressFinalProgress) {
+        reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
       }
+      Object.defineProperty(users, "_meta", {
+        value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount },
+        enumerable: false,
+        configurable: true
+      });
       return users;
     },
-    getAllUsers: async (userId, hash, label, options = {}, expectedTotal = 0) => {
+    extractCompleteUserList: async (userId, hash, label, options = {}, expectedTotal = 0, callbacks = null) => {
+      const logMsg = typeof callbacks?.onLog === "function" ? callbacks.onLog : (msg) => UI.log(msg);
+      const reportProgress = typeof callbacks?.onProgress === "function" ? callbacks.onProgress : (curr, total, msg) => UI.setProgress(curr, total, msg);
       let users = [];
       let friendshipsSuccess = false;
+      let limitedByMeta = false;
+      let rateLimited = false;
       try {
-        users = await API.getAllUsersViaFriendships(userId, label, options, expectedTotal);
+        const res = await API.getAllUsersViaFriendships(
+          userId,
+          label,
+          {
+            ...options,
+            pageSize: CONFIG.FRIENDSHIPS_PAGE_SIZE || 12,
+            searchSurface: null,
+            useRankToken: false,
+            abortOnRateLimit: true
+          },
+          expectedTotal,
+          {
+            onProgress: reportProgress,
+            suppressFinalProgress: true
+          }
+        );
+        users = res;
+        limitedByMeta = Boolean(res?._meta?.limitedByMeta);
         friendshipsSuccess = true;
       } catch (e) {
         if (e.name === "AbortError" || options.signal?.aborted) throw e;
-        console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e);
-        users = [];
+        users = Array.isArray(e.partialUsers) ? e.partialUsers : [];
         friendshipsSuccess = false;
-      }
-      if (!friendshipsSuccess && hash) {
-        if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        UI.log(`Friendships API failed for '${label}'. Falling back to legacy GraphQL...`);
-        try {
-          users = await API.getAllUsersViaGraphQL(userId, hash, label, options, expectedTotal);
-        } catch (e) {
-          if (e.name === "AbortError" || options.signal?.aborted) throw e;
-          Utils.logError(`GraphQL fallback failed for ${label}`, e);
+        if (e.isRateLimited) {
+          rateLimited = true;
+          logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
+        } else {
+          console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e?.message || e);
         }
       }
+      const isSeverelyTruncated = expectedTotal >= 20 && users.length < expectedTotal * 0.65 && !limitedByMeta;
+      const shouldRunGraphQL = Boolean(hash) && !rateLimited && (!friendshipsSuccess || isSeverelyTruncated);
+      if (shouldRunGraphQL) {
+        if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        if (!friendshipsSuccess) {
+          logMsg(`Friendships API interrupted for '${label}' (${users.length} partial). Completing via GraphQL...`);
+        }
+        const beforeGqlCount = users.length;
+        try {
+          if (friendshipsSuccess && users.length > 0) {
+            await Utils.sleep(800 + Math.random() * 300, options.signal);
+          }
+          const gqlUsers = await API.getAllUsersViaGraphQL(
+            userId,
+            hash,
+            label,
+            friendshipsSuccess ? { ...options, optional: true, silent: true, abortOnRateLimit: true } : { ...options, abortOnRateLimit: true },
+            expectedTotal,
+            {
+              onProgress: (curr, total, msg) => {
+                const mergedEstimate = Math.max(users.length, curr);
+                reportProgress(mergedEstimate, total, msg);
+              },
+              suppressFinalProgress: true
+            }
+          );
+          if (Array.isArray(gqlUsers) && gqlUsers.length > 0) {
+            users = API.mergeExtractedUsers(users, gqlUsers);
+          }
+        } catch (gqlErr) {
+          if (gqlErr.name === "AbortError" || options.signal?.aborted) throw gqlErr;
+          if (Array.isArray(gqlErr.partialUsers) && gqlErr.partialUsers.length > 0) {
+            users = API.mergeExtractedUsers(users, gqlErr.partialUsers);
+          }
+          if (gqlErr.isRateLimited) {
+            rateLimited = true;
+          } else if (!friendshipsSuccess) {
+            Utils.logError(`GraphQL fallback failed for ${label}`, gqlErr);
+          }
+        }
+        if (friendshipsSuccess && users.length > beforeGqlCount) {
+          logMsg(`[Reconciled] Recovered +${users.length - beforeGqlCount} '${label}' account(s) via GraphQL.`);
+        }
+      }
+      if (users.length > 0) {
+        reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
+      }
+      const isPartial = Boolean(
+        rateLimited || limitedByMeta || expectedTotal >= 20 && users.length < expectedTotal * 0.85
+      );
+      return {
+        users,
+        friendshipsSuccess,
+        limitedByMeta,
+        isPartial,
+        rateLimited
+      };
+    },
+    getAllUsers: async (userId, hash, label, options = {}, expectedTotal = 0) => {
+      const result = await API.extractCompleteUserList(userId, hash, label, options, expectedTotal);
+      const users = result.users;
       const withIdCount = users.filter((u) => !!u.id).length;
       UI.log("Total " + label + ": " + users.length + " (with IDs: " + withIdCount + ")");
+      if (expectedTotal > 0 && users.length < expectedTotal) {
+        UI.log(`[Info] Profile header counter: ${expectedTotal} ${label} | Accessible accounts returned by list API: ${users.length}.`);
+      }
       return users;
     }
   });
   Object.assign(API, {
     getUserInfo: async (userId, options = {}) => {
-      if (!userId || userId === "0") return null;
+      if (!userId || String(userId) === "0") return null;
       if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const targetIdStr = String(userId).trim();
       const opts = { ...options, optional: true, silent: true };
+      const viewerUsername = Utils.getUsername() || Storage.load(targetIdStr)?.ownerUsername || "";
       try {
         const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-        const rawUser = win._sharedData?.rawProfileUser || win.__initialData?.data?.user || win.__initialData?.pending?.viewer;
-        if (rawUser) {
-          const fCount = rawUser.edge_followed_by?.count ?? rawUser.follower_count;
-          const fgCount = rawUser.edge_follow?.count ?? rawUser.following_count;
+        const candidates = [
+          win.__initialData?.pending?.viewer,
+          win.__initialData?.data?.viewer,
+          win._sharedData?.config?.viewer,
+          win._sharedData?.rawProfileUser,
+          win.__initialData?.data?.user
+        ];
+        for (const cand of candidates) {
+          if (!cand || typeof cand !== "object") continue;
+          const candId = String(cand.id || cand.pk || "").trim();
+          if (candId !== targetIdStr) continue;
+          const fCount = cand.edge_followed_by?.count ?? cand.follower_count;
+          const fgCount = cand.edge_follow?.count ?? cand.following_count;
           if (typeof fCount === "number" || typeof fgCount === "number") {
             return {
               followerCount: Number(fCount || 0),
               followingCount: Number(fgCount || 0),
-              username: rawUser.username || "",
-              fullName: rawUser.full_name || "",
-              profilePicUrl: rawUser.profile_pic_url || null
+              username: cand.username || viewerUsername,
+              fullName: cand.full_name || "",
+              profilePicUrl: cand.profile_pic_url || null
             };
           }
         }
       } catch (e) {
       }
       try {
-        const metaDesc = document.querySelector('meta[property="og:description"], meta[name="description"]')?.content || "";
-        const match = metaDesc.match(/([0-9.,kKmM]+)\s+Followers.*?([0-9.,kKmM]+)\s+Following/i);
-        if (match) {
-          const parseCount = (str) => {
-            str = str.replace(/,/g, "").trim().toLowerCase();
-            if (str.endsWith("k")) return Math.round(parseFloat(str) * 1e3);
-            if (str.endsWith("m")) return Math.round(parseFloat(str) * 1e6);
-            return parseInt(str, 10) || 0;
-          };
-          const followerCount = parseCount(match[1]);
-          const followingCount = parseCount(match[2]);
-          if (followerCount > 0 || followingCount > 0) {
-            return {
-              followerCount,
-              followingCount,
-              username: Utils.getUsername() || "",
-              fullName: "",
-              profilePicUrl: null
+        const currentSlug = typeof window !== "undefined" ? String(window.location?.pathname || "").replace(/^\/+|\/+$/g, "").toLowerCase() : "";
+        if (viewerUsername && currentSlug && currentSlug === viewerUsername.toLowerCase()) {
+          const metaDesc = document.querySelector('meta[property="og:description"], meta[name="description"]')?.content || "";
+          const match = metaDesc.match(/([0-9.,kKmM]+)\s+Followers.*?([0-9.,kKmM]+)\s+Following/i);
+          if (match) {
+            const parseCount = (str) => {
+              str = str.replace(/,/g, "").trim().toLowerCase();
+              if (str.endsWith("k")) return Math.round(parseFloat(str) * 1e3);
+              if (str.endsWith("m")) return Math.round(parseFloat(str) * 1e6);
+              return parseInt(str, 10) || 0;
             };
+            const followerCount = parseCount(match[1]);
+            const followingCount = parseCount(match[2]);
+            if (followerCount > 0 || followingCount > 0) {
+              return {
+                followerCount,
+                followingCount,
+                username: viewerUsername,
+                fullName: "",
+                profilePicUrl: null
+              };
+            }
           }
         }
       } catch (e) {
       }
       try {
-        const username = Utils.getUsername();
-        if (username) {
-          const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
+        if (viewerUsername) {
+          const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(viewerUsername)}`;
           const json = await API.fetchWithRetry(url, opts, 1);
           const u = json?.data?.user;
-          if (u) {
+          if (u && (!u.id || String(u.id) === targetIdStr)) {
             return {
               followerCount: Number(u.edge_followed_by?.count ?? u.follower_count ?? 0),
               followingCount: Number(u.edge_follow?.count ?? u.following_count ?? 0),
-              username: u.username || username,
+              username: u.username || viewerUsername,
               fullName: u.full_name || "",
               profilePicUrl: u.profile_pic_url || null
+            };
+          }
+        }
+      } catch (e) {
+        if (e.name === "AbortError" || options.signal?.aborted) throw e;
+      }
+      try {
+        if (typeof API.fetchUserProfileHd === "function") {
+          const hd = await API.fetchUserProfileHd(targetIdStr, viewerUsername, opts);
+          if (hd && (typeof hd.followerCount === "number" || typeof hd.followingCount === "number")) {
+            return {
+              followerCount: Number(hd.followerCount ?? 0),
+              followingCount: Number(hd.followingCount ?? 0),
+              username: hd.username || viewerUsername,
+              fullName: hd.fullName || "",
+              profilePicUrl: hd.hdUrl || null
             };
           }
         }
@@ -1267,9 +2806,10 @@ DEBUG: false,
         params.append("__user", "0");
         params.append("__a", "1");
         params.append("__req", "1");
+        const searchDocId = "27706427925724183";
         params.append("fb_api_caller_class", "RelayModern");
         params.append("fb_api_req_friendly_name", "PolarisSearchBoxRefetchableQuery");
-        params.append("doc_id", "27706427925724183");
+        params.append("doc_id", searchDocId);
         params.append("server_timestamps", "true");
         const rankToken = `${Date.now()}|${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`;
         const sessionId = `${Math.random().toString(16).substring(2, 10)}-${Math.random().toString(16).substring(2, 6)}-${Math.random().toString(16).substring(2, 6)}-${Math.random().toString(16).substring(2, 14)}`;
@@ -1370,17 +2910,11 @@ DEBUG: false,
         }
       }
       try {
-        const pool = [
-          ...window.__igLastResults || [],
-          ...Storage.load()?.followers || [],
-          ...Storage.load()?.following || []
-        ];
-        const match = pool.find((u) => {
-          const name = typeof u === "string" ? u : u?.username;
-          return name && name.toLowerCase() === cleanUser && u?.id && String(u.id) !== String(viewerId);
-        });
-        if (match && match.id && String(match.id) !== "0") {
-          return String(match.id);
+        if (typeof Storage.findKnownUserByUsername === "function") {
+          const known = Storage.findKnownUserByUsername(cleanUser);
+          if (known?.id && String(known.id) !== "0" && (cleanUser === viewerName || String(known.id) !== String(viewerId))) {
+            return String(known.id);
+          }
         }
       } catch (e) {
       }
@@ -1400,6 +2934,186 @@ DEBUG: false,
         return String(searched.id);
       }
       return null;
+    },
+    fetchHighlightsTray: async (targetId, cleanUser, profile = null, options = {}) => {
+      const normalizeItems = (items) => {
+        if (!Array.isArray(items)) return [];
+        return items.map((entry) => {
+          const node = entry?.node && typeof entry.node === "object" ? entry.node : entry;
+          if (!node || typeof node !== "object") return null;
+          return {
+            id: String(node.id || node.pk || ""),
+            title: String(node.title || "Untitled"),
+            mediaCount: Number(node.media_count ?? node.mediaCount ?? node.edge_highlight_media?.count ?? 0)
+          };
+        }).filter(Boolean);
+      };
+      const rawUser = profile?.rawUser || null;
+      if (Array.isArray(rawUser?.edge_highlight_reels?.edges)) {
+        const highlights = normalizeItems(rawUser.edge_highlight_reels.edges);
+        const count = typeof rawUser.highlight_reel_count === "number" ? Math.max(highlights.length, rawUser.highlight_reel_count) : highlights.length;
+        return { available: true, count, highlights, source: "profile_raw" };
+      }
+      const relayDocId = Utils.getRelayDocId("PolarisProfileStoryHighlightsTrayContentQuery", null);
+      if (relayDocId) {
+        const dtsg = Utils.getDtsg();
+        const jazoest = Utils.calculateJazoest(dtsg);
+        const lsd = Utils.getLsd();
+        const viewerId = Utils.getUserId() || "0";
+        const params = new URLSearchParams();
+        params.append("av", viewerId);
+        params.append("__d", "www");
+        params.append("__user", "0");
+        params.append("__a", "1");
+        params.append("__req", "1");
+        params.append("fb_api_caller_class", "RelayModern");
+        params.append("fb_api_req_friendly_name", "PolarisProfileStoryHighlightsTrayContentQuery");
+        params.append("doc_id", relayDocId);
+        params.append("server_timestamps", "true");
+        params.append("variables", JSON.stringify({ user_id: String(targetId) }));
+        if (dtsg) params.append("fb_dtsg", dtsg);
+        if (jazoest) params.append("jazoest", jazoest);
+        if (lsd) params.append("lsd", lsd);
+        const headers = {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-FB-Friendly-Name": "PolarisProfileStoryHighlightsTrayContentQuery"
+        };
+        if (lsd) headers["X-FB-LSD"] = lsd;
+        const relayEndpoints = [
+          "https://www.instagram.com/graphql/query",
+          "https://www.instagram.com/api/graphql"
+        ];
+        for (const relayUrl of relayEndpoints) {
+          try {
+            const relayJson = await API.fetchWithRetry(relayUrl, {
+              method: "POST",
+              headers,
+              body: params.toString(),
+              optional: true,
+              silent: true,
+              signal: options.signal
+            }, 1);
+            const rawEdges = relayJson?.data?.highlights_tray?.edges ?? relayJson?.data?.xdt_api__v1__highlights__highlights_tray?.tray ?? relayJson?.data?.user?.edge_highlight_reels?.edges;
+            if (Array.isArray(rawEdges)) {
+              const highlights = normalizeItems(rawEdges);
+              return {
+                available: true,
+                count: highlights.length,
+                highlights,
+                source: "relay_graphql"
+              };
+            }
+          } catch (relayErr) {
+            if (relayErr.name === "AbortError" || options.signal?.aborted) throw relayErr;
+          }
+        }
+      }
+      const highlightsHash = CONFIG.HIGHLIGHTS_HASH;
+      try {
+        const vars = encodeURIComponent(JSON.stringify({
+          user_id: String(targetId),
+          include_chaining: false,
+          include_reel: true,
+          include_suggested_users: false,
+          include_logged_out_extras: false,
+          include_highlight_reels: true,
+          include_live_status: false
+        }));
+        const gqlJson = await API.fetchWithRetry(`https://www.instagram.com/graphql/query/?query_hash=${highlightsHash}&variables=${vars}`, {
+          optional: true,
+          silent: true,
+          signal: options.signal
+        }, 1);
+        const edges = gqlJson?.data?.user?.edge_highlight_reels?.edges;
+        if (Array.isArray(edges)) {
+          const highlights = normalizeItems(edges);
+          return {
+            available: true,
+            count: highlights.length,
+            highlights,
+            source: "graphql_hash"
+          };
+        }
+      } catch (gqlErr) {
+        if (gqlErr.name === "AbortError" || options.signal?.aborted) throw gqlErr;
+      }
+      try {
+        const trayJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
+          optional: true,
+          silent: true,
+          signal: options.signal
+        }, 1);
+        if (Array.isArray(trayJson?.tray)) {
+          const highlights = normalizeItems(trayJson.tray);
+          return {
+            available: true,
+            count: highlights.length,
+            highlights,
+            source: "rest_tray"
+          };
+        }
+      } catch (trayErr) {
+        if (trayErr.name === "AbortError" || options.signal?.aborted) throw trayErr;
+      }
+      if (typeof rawUser?.highlight_reel_count === "number") {
+        return {
+          available: true,
+          count: Number(rawUser.highlight_reel_count),
+          highlights: [],
+          source: "profile_count"
+        };
+      }
+      if (cleanUser) {
+        try {
+          const webJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanUser)}`, {
+            optional: true,
+            silent: true,
+            signal: options.signal
+          }, 1);
+          const webUser = webJson?.data?.user;
+          if (Array.isArray(webUser?.edge_highlight_reels?.edges)) {
+            const highlights = normalizeItems(webUser.edge_highlight_reels.edges);
+            const count = typeof webUser.highlight_reel_count === "number" ? Math.max(highlights.length, webUser.highlight_reel_count) : highlights.length;
+            return { available: true, count, highlights, source: "web_profile_info" };
+          }
+          if (typeof webUser?.highlight_reel_count === "number") {
+            return {
+              available: true,
+              count: Number(webUser.highlight_reel_count),
+              highlights: [],
+              source: "web_profile_count"
+            };
+          }
+        } catch (webErr) {
+          if (webErr.name === "AbortError" || options.signal?.aborted) throw webErr;
+        }
+        try {
+          const htmlRes = await fetch(`https://www.instagram.com/${encodeURIComponent(cleanUser)}/`, {
+            credentials: "include",
+            signal: options.signal
+          });
+          if (htmlRes.ok && typeof htmlRes.text === "function") {
+            const html = await htmlRes.text();
+            const countMatch = html.match(/\\?"highlight_reel_count\\?"\s*:\s*([0-9]+)/) || html.match(/\\?"edge_highlight_reels\\?"\s*:\s*\{\s*\\?"count\\?"\s*:\s*([0-9]+)/);
+            if (countMatch && countMatch[1] !== void 0) {
+              return {
+                available: true,
+                count: parseInt(countMatch[1], 10) || 0,
+                highlights: [],
+                source: "auth_html"
+              };
+            }
+          }
+        } catch (htmlErr) {
+          if (htmlErr.name === "AbortError" || options.signal?.aborted) throw htmlErr;
+        }
+      }
+      return {
+        available: false,
+        count: 0,
+        highlights: [],
+        source: "unavailable"
+      };
     },
     checkStoryStatus: async (username, userId = null, options = {}) => {
       const cleanUser = String(username || "").replace(/^@/, "").trim();
@@ -1426,46 +3140,76 @@ DEBUG: false,
         const isGated = profile?.latestReelMedia === null;
         const authHasStory = typeof latestReelMedia === "number" && latestReelMedia > 0;
         const isBestieStory = typeof latestBestiesReelMedia === "number" && latestBestiesReelMedia > 0;
-        let authHighlights = [];
-        let authHighlightsCount = 0;
-        try {
-          const trayJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
-            optional: true,
-            signal: options.signal
-          }, 1);
-          if (Array.isArray(trayJson?.tray)) {
-            authHighlights = trayJson.tray.map((item) => ({
-              id: item.id || "",
-              title: item.title || "Untitled",
-              mediaCount: item.media_count || 0
-            }));
-            authHighlightsCount = authHighlights.length;
-          }
-        } catch (trayErr) {
-          if (trayErr.name === "AbortError" || options.signal?.aborted) throw trayErr;
-          console.warn(`[IG Analyzer] Highlights tray query failed for @${cleanUser}:`, trayErr);
-        }
+        const trayResult = await API.fetchHighlightsTray(targetId, cleanUser, profile, options);
+        const authHighlightsAvailable = Boolean(trayResult?.available);
+        const authHighlights = Array.isArray(trayResult?.highlights) ? trayResult.highlights : [];
+        const authHighlightsCount = Number(trayResult?.count || 0);
         let anonHighlightsCount = 0;
+        let anonHighlightsAvailable = false;
         let anonHasStory = false;
         if (!isPrivate) {
+          const parseSafeAnonJson = async (res) => {
+            if (!res || !res.ok) return null;
+            const ct = res.headers && typeof res.headers.get === "function" ? res.headers.get("content-type") || "" : "";
+            if (ct && ct.toLowerCase().includes("text/html")) {
+              if (typeof res.text === "function") await res.text().catch(() => "");
+              return null;
+            }
+            try {
+              return await res.json();
+            } catch (err) {
+              return null;
+            }
+          };
           try {
-            const anonRes = await fetch(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
+            const anonWebRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanUser)}`, {
               credentials: "omit",
               headers: {
                 "X-IG-App-ID": "936619743392459",
                 "X-Requested-With": "XMLHttpRequest",
-                "Accept": "*/*"
+                "X-ASBD-ID": CONFIG.ASBD_ID || "359341",
+                "Accept": "application/json, text/plain, */*"
               },
               signal: options.signal
             });
-            if (anonRes.ok) {
-              const anonJson = await anonRes.json();
-              if (Array.isArray(anonJson?.tray)) {
-                anonHighlightsCount = anonJson.tray.length;
+            const anonWebJson = await parseSafeAnonJson(anonWebRes);
+            const anonUser = anonWebJson?.data?.user;
+            if (anonUser) {
+              if (typeof anonUser.highlight_reel_count === "number") {
+                anonHighlightsAvailable = true;
+                anonHighlightsCount = anonUser.highlight_reel_count;
+              } else if (Array.isArray(anonUser.edge_highlight_reels?.edges)) {
+                anonHighlightsAvailable = true;
+                anonHighlightsCount = anonUser.edge_highlight_reels.edges.length;
+              }
+              if (typeof anonUser.latest_reel_media === "number" && anonUser.latest_reel_media > 0) {
+                anonHasStory = true;
               }
             }
-          } catch (anonErr) {
-            if (anonErr.name === "AbortError" || options.signal?.aborted) throw anonErr;
+          } catch (anonWebErr) {
+            if (anonWebErr.name === "AbortError" || options.signal?.aborted) throw anonWebErr;
+          }
+          if (!anonHighlightsAvailable) {
+            try {
+              const anonHtmlRes = await fetch(`https://www.instagram.com/${encodeURIComponent(cleanUser)}/`, {
+                credentials: "omit",
+                signal: options.signal
+              });
+              if (anonHtmlRes.ok && typeof anonHtmlRes.text === "function") {
+                const anonHtml = await anonHtmlRes.text();
+                const hMatch = anonHtml.match(/\\?"highlight_reel_count\\?"\s*:\s*([0-9]+)/);
+                if (hMatch && hMatch[1] !== void 0) {
+                  anonHighlightsAvailable = true;
+                  anonHighlightsCount = parseInt(hMatch[1], 10) || 0;
+                }
+                const sMatch = anonHtml.match(/\\?"latest_reel_media\\?"\s*:\s*([1-9][0-9]*)/);
+                if (sMatch) {
+                  anonHasStory = true;
+                }
+              }
+            } catch (anonHtmlErr) {
+              if (anonHtmlErr.name === "AbortError" || options.signal?.aborted) throw anonHtmlErr;
+            }
           }
         }
         return {
@@ -1475,12 +3219,14 @@ DEBUG: false,
           profilePicUrl: profile?.hdUrl || null,
           isPrivate,
           isGated,
+          authHighlightsAvailable,
           authHighlightsCount,
           authHighlights,
           latestReelMedia,
           latestBestiesReelMedia,
           authHasStory,
           isBestieStory,
+          anonHighlightsAvailable,
           anonHighlightsCount,
           anonHasStory,
           fetchedAt: Date.now()
@@ -1585,9 +3331,13 @@ DEBUG: false,
         params.append("__user", "0");
         params.append("__a", "1");
         params.append("__req", "1");
+        const PROVEN_PROFILE_DOC_ID = "28036671149327607";
+        const liveProfileDocId = Utils.getRelayDocId("PolarisProfilePageContentQuery", null);
+        const profileDocIds = [PROVEN_PROFILE_DOC_ID];
+        if (liveProfileDocId && liveProfileDocId !== PROVEN_PROFILE_DOC_ID) profileDocIds.push(liveProfileDocId);
         params.append("fb_api_caller_class", "RelayModern");
         params.append("fb_api_req_friendly_name", "PolarisProfilePageContentQuery");
-        params.append("doc_id", "28036671149327607");
+        params.append("doc_id", PROVEN_PROFILE_DOC_ID);
         params.append("server_timestamps", "true");
         params.append("variables", JSON.stringify({
           enable_integrity_filters: true,
@@ -1607,18 +3357,22 @@ DEBUG: false,
         };
         if (lsd) headers["X-FB-LSD"] = lsd;
         let user = null;
-        try {
-          const json = await API.fetchWithRetry(url, {
-            method: "POST",
-            headers,
-            body: params.toString(),
-            optional: true,
-            signal: options.signal
-          }, 1);
-          user = json?.data?.user;
-        } catch (graphqlErr) {
-          if (graphqlErr.name === "AbortError" || options.signal?.aborted) throw graphqlErr;
-          console.warn(`[IG Analyzer] GraphQL profile fetch failed for @${cleanUser}:`, graphqlErr);
+        for (const docId of profileDocIds) {
+          params.set("doc_id", docId);
+          try {
+            const json = await API.fetchWithRetry(url, {
+              method: "POST",
+              headers,
+              body: params.toString(),
+              optional: true,
+              signal: options.signal
+            }, 1);
+            user = json?.data?.user || null;
+          } catch (graphqlErr) {
+            if (graphqlErr.name === "AbortError" || options.signal?.aborted) throw graphqlErr;
+            console.warn(`[IG Analyzer] GraphQL profile fetch failed for @${cleanUser} (doc_id ${docId}):`, graphqlErr?.message || graphqlErr);
+          }
+          if (user) break;
         }
         if (user) {
           const rawHdUrl = user?.hd_profile_pic_url_info?.url || user?.profile_pic_url_hd || user?.profile_pic_url || null;
@@ -1634,8 +3388,10 @@ DEBUG: false,
           const isBestie = Boolean(user?.friendship_status?.is_bestie);
           const mutualUsers = Array.isArray(user?.profile_context_links_with_user_ids) ? user.profile_context_links_with_user_ids.map((l) => l?.username).filter(Boolean) : [];
           const facepileUsers = Array.isArray(user?.profile_context_facepile_users) ? user.profile_context_facepile_users.map((f) => ({
-            id: f.id,
-            profilePicUrl: Utils.sanitizeImageUrl(f.profile_pic_url)
+            id: f?.id ? String(f.id) : null,
+            username: f?.username || "",
+            fullName: f?.full_name || "",
+            profilePicUrl: Utils.sanitizeImageUrl(f?.profile_pic_url)
           })) : [];
           const result = {
             id: idStr,
@@ -1718,23 +3474,23 @@ DEBUG: false,
         return name && name.toLowerCase() === cleanUserLower;
       });
       let resolvedId = options.userId && String(options.userId) !== "0" && String(options.userId) !== "null" ? String(options.userId).trim() : null;
+      let resolvedFromKnownSource = Boolean(resolvedId);
       if (cleanUserLower !== viewerName && viewerId && String(resolvedId) === String(viewerId)) {
         resolvedId = null;
+        resolvedFromKnownSource = false;
       }
-      if (!resolvedId && snap) {
-        const findInSnap = (list) => Array.isArray(list) ? list.find((u) => {
-          const name = typeof u === "string" ? u : u?.username;
-          return name && name.toLowerCase() === cleanUserLower && u?.id && String(u.id) !== String(viewerId);
-        }) : null;
-        const matchUser = findInSnap(snap.following) || findInSnap(snap.followers);
-        if (matchUser && matchUser.id) {
-          resolvedId = String(matchUser.id);
+      if (!resolvedId && typeof Storage.findKnownUserByUsername === "function") {
+        const knownUser = Storage.findKnownUserByUsername(cleanUser);
+        if (knownUser?.id && String(knownUser.id) !== "0" && (cleanUserLower === viewerName || String(knownUser.id) !== String(viewerId))) {
+          resolvedId = String(knownUser.id);
+          resolvedFromKnownSource = true;
         }
       }
       if (!resolvedId) {
         const existingTarget = Storage.getTargetData(cleanUser);
         if (existingTarget?.user?.id && (cleanUserLower === viewerName || String(existingTarget.user.id) !== String(viewerId))) {
           resolvedId = String(existingTarget.user.id);
+          resolvedFromKnownSource = true;
         }
       }
       if (!resolvedId) {
@@ -1749,20 +3505,31 @@ DEBUG: false,
       }
       if (cleanUserLower !== viewerName && viewerId && String(resolvedId) === String(viewerId)) {
         resolvedId = null;
+        resolvedFromKnownSource = false;
       }
       if (resolvedId) {
         try {
           const profile = await API.fetchUserProfileHd(resolvedId, cleanUser, { ...options, forceRefresh: true });
           if (profile) {
             const profileUsername = (profile.username || "").toLowerCase();
-            if (profileUsername && profileUsername !== cleanUserLower) {
-              return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
-            }
             if (cleanUserLower !== viewerName && viewerId && String(profile.id) === String(viewerId)) {
               return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
             }
-            let isFollowing = isFollowingInSnap;
-            let isFollowedBy = isFollowerInSnap;
+            const sameNumericId = Boolean(profile.id && String(profile.id) === String(resolvedId));
+            if (profileUsername && profileUsername !== cleanUserLower && !sameNumericId && !resolvedFromKnownSource) {
+              return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
+            }
+            const isRenamedTarget = Boolean(profileUsername && profileUsername !== cleanUserLower && (sameNumericId || resolvedFromKnownSource));
+            const isFollowingInSnapCurrent = isRenamedTarget && Array.isArray(snap?.following) && snap.following.some((u) => {
+              const name = typeof u === "string" ? u : u?.username;
+              return name && name.toLowerCase() === profileUsername;
+            });
+            const isFollowerInSnapCurrent = isRenamedTarget && Array.isArray(snap?.followers) && snap.followers.some((u) => {
+              const name = typeof u === "string" ? u : u?.username;
+              return name && name.toLowerCase() === profileUsername;
+            });
+            let isFollowing = isFollowingInSnap || isFollowingInSnapCurrent;
+            let isFollowedBy = isFollowerInSnap || isFollowerInSnapCurrent;
             let isPrivate = Boolean(profile.isPrivate);
             try {
               const friendshipRes = await API.fetchWithRetry(`https://www.instagram.com/api/v1/friendships/show/${resolvedId}/`, {
@@ -1785,9 +3552,11 @@ DEBUG: false,
             }
             return {
               exists: true,
+              ...isRenamedTarget ? { renamedFrom: cleanUser } : {},
               user: {
                 id: resolvedId,
                 username: profile.username || cleanUser,
+                ...isRenamedTarget ? { previousUsername: cleanUser } : {},
                 fullName: profile.fullName || "",
                 isPrivate,
                 isVerified: Boolean(profile.isVerified),
@@ -1872,14 +3641,16 @@ DEBUG: false,
           if (isNotFound) {
             return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
           }
-          if (!html.includes(`/${cleanUser}/`) && !html.includes(`"${cleanUser}"`)) {
-            return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
+          const idMatch = html.match(/\\?"profile_id\\?"\s*:\s*\\?"([1-9][0-9]{4,})\\?"/) || html.match(/\\?"target_id\\?"\s*:\s*\\?"([1-9][0-9]{4,})\\?"/) || html.match(new RegExp(`\\\\?"username\\\\?"\\s*:\\s*\\\\?"${cleanUser.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\\\?"[\\s\\S]{0,400}?\\\\?"(?:id|pk)\\\\?"\\s*:\\s*\\\\?"([1-9][0-9]{4,})\\\\?"`, "i"));
+          const htmlId = idMatch?.[1] || null;
+          if (htmlId && !options._htmlRetry && (cleanUserLower === viewerName || htmlId !== String(viewerId))) {
+            return API.validateTargetAccount(cleanUser, { ...options, userId: htmlId, _htmlRetry: true });
           }
         }
       } catch (e) {
         if (e.name === "AbortError" || options.signal?.aborted) throw e;
       }
-      return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
+      return { exists: false, error: `Could not verify @${cleanUser} right now (Instagram did not return profile data). Please try again in a few minutes.` };
     },
     fetchTargetNetwork: async (targetUser, options = {}, progressCallback = null, logCallback = null) => {
       if (!targetUser || !targetUser.id) {
@@ -1902,61 +3673,79 @@ DEBUG: false,
         };
       }
       log(`[Extraction] Beginning extraction for target account @${targetUser.username}...`);
-      const extractList = async (label, expectedTotal) => {
-        const users = [];
-        let maxId = null;
-        let hasNext = true;
-        const endpoint = label === "following" ? "following" : "followers";
-        while (hasNext) {
-          if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-          let url = `https://www.instagram.com/api/v1/friendships/${targetUser.id}/${endpoint}/?count=50&search_surface=follow_list_page`;
-          if (maxId) {
-            url += `&max_id=${encodeURIComponent(maxId)}`;
-          }
-          const json = await API.fetchWithRetry(url, options);
-          const list = json?.users;
-          if (!Array.isArray(list)) {
-            log(`[Warning] Received non-array response for ${label}.`);
-            break;
-          }
-          list.forEach((u) => {
-            const username = u?.username;
-            if (!username) return;
-            users.push({
-              id: u?.pk ? String(u.pk) : u?.id ? String(u.id) : null,
-              username: String(username),
-              fullName: u?.full_name || "",
-              isPrivate: Boolean(u?.is_private),
-              isVerified: Boolean(u?.is_verified),
-              profilePicUrl: u?.profile_pic_url || null,
-              latestReelMedia: u?.latest_reel_media || 0
-            });
-          });
-          maxId = json?.next_max_id || null;
-          hasNext = Boolean(maxId);
-          const total = expectedTotal > 0 ? expectedTotal : 0;
-          setProgress(users.length, total, `Extracting target ${label} (${users.length}${total > 0 ? "/" + total : ""})...`);
-          if (hasNext) {
-            await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800, options.signal);
-          }
+      const expectedFollowers = Number(targetUser.followerCount || 0);
+      const expectedFollowing = Number(targetUser.followingCount || 0);
+      log(`Extracting followers for @${targetUser.username} (expected: ~${expectedFollowers})...`);
+      const followersRes = await API.extractCompleteUserList(
+        targetUser.id,
+        CONFIG.FOLLOWERS_HASH,
+        "followers",
+        options,
+        expectedFollowers,
+        {
+          onProgress: (curr, total) => setProgress(curr, total, `Extracting target followers (${curr}${total > 0 ? "/" + total : ""})...`),
+          onLog: (msg) => log(msg)
         }
-        return users;
-      };
-      log(`Extracting followers for @${targetUser.username} (expected: ~${targetUser.followerCount || 0})...`);
-      const followers = await extractList("followers", targetUser.followerCount || 0);
+      );
+      const followers = followersRes.users;
       log(`Extracted ${followers.length} followers for @${targetUser.username}.`);
-      await Utils.sleep(1e3 + Math.random() * 500, options.signal);
-      log(`Extracting following for @${targetUser.username} (expected: ~${targetUser.followingCount || 0})...`);
-      const following = await extractList("following", targetUser.followingCount || 0);
-      log(`Extracted ${following.length} following for @${targetUser.username}.`);
-      const followerUsernames = new Set(followers.map((u) => u.username));
-      const mutuals = following.filter((u) => followerUsernames.has(u.username));
+      if (expectedFollowers > 0 && followers.length < expectedFollowers && !followersRes.rateLimited) {
+        if (followersRes.limitedByMeta || followersRes.isPartial) {
+          log(`[Meta Notice] Instagram restricted full follower enumeration for @${targetUser.username} (${followers.length}/${expectedFollowers} accessible).`);
+        } else {
+          log(`[Info] Profile header counter: ${expectedFollowers} followers | Accessible accounts returned by list API: ${followers.length}.`);
+        }
+      }
+      let followingRes;
+      if (followersRes.rateLimited) {
+        log(`[Anti-Ban Guard] Skipping 'following' extraction because rate limit (429) was detected during 'followers'.`);
+        followingRes = {
+          users: [],
+          isPartial: true,
+          rateLimited: true,
+          limitedByMeta: false
+        };
+      } else {
+        await Utils.sleep(2e3 + Math.random() * 1200, options.signal);
+        log(`Extracting following for @${targetUser.username} (expected: ~${expectedFollowing})...`);
+        followingRes = await API.extractCompleteUserList(
+          targetUser.id,
+          CONFIG.FOLLOWING_HASH,
+          "following",
+          options,
+          expectedFollowing,
+          {
+            onProgress: (curr, total) => setProgress(curr, total, `Extracting target following (${curr}${total > 0 ? "/" + total : ""})...`),
+            onLog: (msg) => log(msg)
+          }
+        );
+      }
+      const following = followingRes.users;
+      if (!followersRes.rateLimited) {
+        log(`Extracted ${following.length} following for @${targetUser.username}.`);
+      }
+      if (expectedFollowing > 0 && following.length < expectedFollowing && !followingRes.rateLimited) {
+        if (followingRes.limitedByMeta || followingRes.isPartial) {
+          log(`[Meta Notice] Instagram restricted full following enumeration for @${targetUser.username} (${following.length}/${expectedFollowing} accessible).`);
+        } else {
+          log(`[Info] Profile header counter: ${expectedFollowing} following | Accessible accounts returned by list API: ${following.length}.`);
+        }
+      }
+      const followerIds = new Set(followers.map((u) => u.id).filter(Boolean));
+      const followerUsernamesLower = new Set(followers.map((u) => u.username.toLowerCase()));
+      const mutuals = following.filter(
+        (u) => u.id && followerIds.has(u.id) || followerUsernamesLower.has(u.username.toLowerCase())
+      );
       log(`Computed ${mutuals.length} mutual connections for @${targetUser.username}.`);
       return {
         followers,
         following,
         mutuals,
-        isRestricted: false
+        isRestricted: false,
+        isPartialFollowers: Boolean(followersRes.isPartial),
+        isPartialFollowing: Boolean(followingRes.isPartial),
+        isRateLimitedFollowers: Boolean(followersRes.rateLimited),
+        isRateLimitedFollowing: Boolean(followingRes.rateLimited)
       };
     }
   });
@@ -1964,6 +3753,42 @@ DEBUG: false,
   const BACKUP_UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
   const BACKUP_TAB_ID = "ig-tab-backup";
   const BACKUP_POPUP_ID = "ig-backup-popup";
+  const ACCOUNT_DATA_KEY_BASES = [
+    CONFIG.STORAGE_KEY,
+    CONFIG.WHITELIST_KEY,
+    CONFIG.HISTORY_KEY,
+    CONFIG.CHURN_KEY,
+    CONFIG.DEACTIVATED_KEY,
+    CONFIG.BLOCKED_KEY,
+    CONFIG.RENAMED_KEY,
+    CONFIG.NEW_FOLLOWERS_KEY,
+    CONFIG.TARGET_TRACKER_KEY,
+    CONFIG.STORY_ANOMALY_KEY,
+    CONFIG.STORY_OBS_KEY
+  ];
+  const GLOBAL_UI_KEY_BASES = [
+    CONFIG.POSITION_KEY,
+    CONFIG.TARGET_SUBPANEL_POSITION_KEY,
+    CONFIG.TOUR_KEY
+  ];
+  const LEGACY_FLAT_KEYS = [
+    "followers",
+    "following",
+    "followersDetailed",
+    "followingDetailed",
+    "notFollowingBackDetailed",
+    "fansDetailed",
+    "mutualsDetailed",
+    "newFollowers",
+    "newFollowersDetailed",
+    "whitelist",
+    "targetTracker",
+    "unfollowers",
+    "deactivated",
+    "blocked",
+    "renamed",
+    "history"
+  ];
   let backupStatusNode = null;
   let backupFileInputNode = null;
   let backupPopupNode = null;
@@ -2007,35 +3832,9 @@ DEBUG: false,
   };
   const isSafeStorageKey = (key) => typeof key === "string" && key.length > 0 && !BACKUP_UNSAFE_KEYS.has(key);
   const ALLOWED_BACKUP_KEY_BASES = [
-    CONFIG.STORAGE_KEY,
-    CONFIG.WHITELIST_KEY,
-    CONFIG.HISTORY_KEY,
-    CONFIG.CHURN_KEY,
-    CONFIG.DEACTIVATED_KEY,
-    CONFIG.BLOCKED_KEY,
-    CONFIG.RENAMED_KEY,
-    CONFIG.NEW_FOLLOWERS_KEY,
-    CONFIG.TARGET_TRACKER_KEY,
-    CONFIG.STORY_ANOMALY_KEY,
-    CONFIG.STORY_OBS_KEY,
-    CONFIG.TOUR_KEY,
-    CONFIG.POSITION_KEY,
-    "followers",
-    "following",
-    "followersDetailed",
-    "followingDetailed",
-    "notFollowingBackDetailed",
-    "fansDetailed",
-    "mutualsDetailed",
-    "newFollowers",
-    "newFollowersDetailed",
-    "whitelist",
-    "targetTracker",
-    "unfollowers",
-    "deactivated",
-    "blocked",
-    "renamed",
-    "history"
+    ...ACCOUNT_DATA_KEY_BASES,
+    ...GLOBAL_UI_KEY_BASES,
+    ...LEGACY_FLAT_KEYS
   ];
   const isAuthorizedBackupKey = (key) => {
     if (!isSafeStorageKey(key)) return false;
@@ -2235,6 +4034,16 @@ DEBUG: false,
   };
   const openBackupPopup = () => {
     const popup = ensureBackupPopup();
+    if (typeof UI.applyCurrentTheme === "function") {
+      UI.applyCurrentTheme();
+    } else {
+      const panel = document.getElementById("ig-analyzer-panel");
+      if (panel?.classList.contains("ig-light-theme")) {
+        popup.classList.add("ig-light-theme");
+      } else {
+        popup.classList.remove("ig-light-theme");
+      }
+    }
     popup.classList.add("is-open");
     popup.setAttribute("aria-hidden", "false");
   };
@@ -2262,11 +4071,11 @@ DEBUG: false,
     if (!isPlainObject(data)) {
       return { valid: false, reason: "The backup data block is missing." };
     }
-    const expectedSchemaVersion = CONFIG.BACKUP_SCHEMA_VERSION;
-    if (meta.schemaVersion !== expectedSchemaVersion) {
+    const maxSupportedSchema = CONFIG.BACKUP_SCHEMA_VERSION;
+    if (typeof meta.schemaVersion !== "number" || !Number.isInteger(meta.schemaVersion) || meta.schemaVersion < 1 || meta.schemaVersion > maxSupportedSchema) {
       return {
         valid: false,
-        reason: `The schema version is not compatible. Expected ${expectedSchemaVersion}.`
+        reason: `The schema version is not compatible. Supported versions: 1..${maxSupportedSchema}.`
       };
     }
     if (typeof meta.scriptId !== "string" || meta.scriptId !== CONFIG.SCRIPT_ID) {
@@ -2277,6 +4086,12 @@ DEBUG: false,
     }
     if (typeof meta.exportedAt !== "string" || Number.isNaN(Date.parse(meta.exportedAt))) {
       return { valid: false, reason: "The export timestamp is invalid." };
+    }
+    if (meta.ownerUserId !== void 0 && meta.ownerUserId !== null && typeof meta.ownerUserId !== "string") {
+      return { valid: false, reason: "The backup ownerUserId field is invalid." };
+    }
+    if (meta.ownerUsername !== void 0 && meta.ownerUsername !== null && typeof meta.ownerUsername !== "string") {
+      return { valid: false, reason: "The backup ownerUsername field is invalid." };
     }
     const dataEntries = Object.entries(data);
     if (typeof meta.keyCount === "number" && meta.keyCount !== dataEntries.length) {
@@ -2302,33 +4117,28 @@ DEBUG: false,
     try {
       const listedKeys = await getCurrentStorageKeys().catch(() => []);
       const currentId = Storage.getCurrentUserId() || Utils.getUserId();
-      const baseKeys = [
-        CONFIG.STORAGE_KEY,
-        CONFIG.WHITELIST_KEY,
-        CONFIG.HISTORY_KEY,
-        CONFIG.CHURN_KEY,
-        CONFIG.DEACTIVATED_KEY,
-        CONFIG.BLOCKED_KEY,
-        CONFIG.RENAMED_KEY,
-        CONFIG.STORY_ANOMALY_KEY,
-        CONFIG.STORY_OBS_KEY,
-        CONFIG.TOUR_KEY,
-        CONFIG.POSITION_KEY
-      ];
-      const allKeys = new Set(listedKeys);
-      baseKeys.forEach((bk) => {
-        allKeys.add(bk);
+      const currentUsername = Utils.getUsername() || null;
+      const allKeys = new Set(listedKeys.filter(isAuthorizedBackupKey));
+      GLOBAL_UI_KEY_BASES.forEach((gk) => allKeys.add(gk));
+      ACCOUNT_DATA_KEY_BASES.forEach((bk) => {
         if (currentId) {
           allKeys.add(`${bk}_${currentId}`);
+        } else {
+          allKeys.add(bk);
         }
       });
       const data = Object.create(null);
       for (const key of allKeys) {
-        if (isSafeStorageKey(key)) {
-          const val = await getStoredValue(key);
-          if (val !== void 0 && val !== null) {
-            data[key] = val;
+        if (!isAuthorizedBackupKey(key)) continue;
+        if (currentId && ACCOUNT_DATA_KEY_BASES.includes(key)) {
+          const scopedCandidate = await getStoredValue(`${key}_${currentId}`);
+          if (scopedCandidate !== void 0 && scopedCandidate !== null) {
+            continue;
           }
+        }
+        const val = await getStoredValue(key);
+        if (val !== void 0 && val !== null) {
+          data[key] = val;
         }
       }
       const metadata = getScriptMetadata();
@@ -2338,6 +4148,8 @@ DEBUG: false,
           scriptName: metadata.scriptName,
           scriptVersion: metadata.scriptVersion,
           schemaVersion: CONFIG.BACKUP_SCHEMA_VERSION,
+          ownerUserId: currentId ? String(currentId) : null,
+          ownerUsername: currentUsername || null,
           exportedAt: Utils.now(),
           keyCount: Object.keys(data).length
         },
@@ -2353,14 +4165,59 @@ DEBUG: false,
       throw error;
     }
   };
-  const clearCurrentStorage = async () => {
+  const clearTargetAccountStorage = async (targetUserId = null) => {
     if (typeof GM_deleteValue !== "function") {
       throw new Error("The GM_deleteValue API is not available in this environment.");
     }
     const currentKeys = await getCurrentStorageKeys();
+    const idStr = targetUserId ? String(targetUserId) : null;
     for (const key of currentKeys) {
-      GM_deleteValue(key);
+      if (!isAuthorizedBackupKey(key)) continue;
+      if (GLOBAL_UI_KEY_BASES.includes(key) || LEGACY_FLAT_KEYS.includes(key)) {
+        GM_deleteValue(key);
+        continue;
+      }
+      if (ACCOUNT_DATA_KEY_BASES.includes(key)) {
+        GM_deleteValue(key);
+        continue;
+      }
+      if (idStr && key.endsWith(`_${idStr}`)) {
+        GM_deleteValue(key);
+        continue;
+      }
+      if (!idStr) {
+        GM_deleteValue(key);
+      }
     }
+  };
+  const promptBackupConfirmation = async (meta, currentUserId2, isAccountMismatch) => {
+    const safetyModal = typeof document !== "undefined" ? document.getElementById("ig-safety-modal") : null;
+    if (safetyModal && typeof UI.confirmAction === "function") {
+      const ownerLine = meta.ownerUsername ? `@${Utils.escapeHtml(String(meta.ownerUsername))}${meta.ownerUserId ? ` (${Utils.escapeHtml(String(meta.ownerUserId))})` : ""}` : meta.ownerUserId ? `ID ${Utils.escapeHtml(String(meta.ownerUserId))}` : "Legacy v1 Backup";
+      const mismatchWarning = isAccountMismatch ? `<div style="margin-top:10px; padding:8px 10px; border-radius:8px; background:var(--iga-warning-subtle); border:1px solid var(--iga-border); color:var(--iga-warning); font-size:11.5px; text-align:left;"><b>Account Notice:</b> This backup was exported from <b>${ownerLine}</b>, which differs from your active account (<b>${Utils.escapeHtml(String(currentUserId2))}</b>). Importing will restore this data into your active account without deleting other saved accounts.</div>` : "";
+      const htmlMsg = [
+        '<div style="text-align:left; font-size:12.5px; line-height:1.55;">',
+        '  <div style="margin-bottom:8px;">This backup will overwrite the data for your active Instagram session:</div>',
+        `  <div><b>Script:</b> ${Utils.escapeHtml(String(meta.scriptName))} (${Utils.escapeHtml(String(meta.scriptVersion))})</div>`,
+        `  <div><b>Source Account:</b> ${ownerLine}</div>`,
+        `  <div><b>Exported At:</b> ${Utils.escapeHtml(Utils.formatDate(String(meta.exportedAt)))}</div>`,
+        mismatchWarning,
+        "</div>"
+      ].join("\n");
+      return UI.confirmAction("Restore Backup", htmlMsg, "Import Backup", true);
+    }
+    const lines = [
+      "This backup will overwrite the current account data.",
+      "",
+      `Script: ${meta.scriptName}`,
+      `Version: ${meta.scriptVersion}`,
+      `Exported at: ${meta.exportedAt}`
+    ];
+    if (isAccountMismatch) {
+      lines.push(`Warning: Backup owner (${meta.ownerUserId}) differs from active account (${currentUserId2}).`);
+    }
+    lines.push("", "Do you want to continue?");
+    return typeof window !== "undefined" && typeof window.confirm === "function" ? window.confirm(lines.join("\n")) : true;
   };
   const importBackup = async (file) => {
     if (!(file instanceof File)) {
@@ -2380,34 +4237,52 @@ DEBUG: false,
         throw new Error(validation.reason);
       }
       const { meta, data } = validation.payload;
-      const confirmationMessage = [
-        "This backup will overwrite all current script data.",
-        "",
-        `Script: ${meta.scriptName}`,
-        `Version: ${meta.scriptVersion}`,
-        `Exported at: ${meta.exportedAt}`,
-        "",
-        "Do you want to continue?"
-      ].join("\n");
-      if (!window.confirm(confirmationMessage)) {
+      const currentUserId2 = Storage.getCurrentUserId() || Utils.getUserId();
+      const backupOwnerId = typeof meta.ownerUserId === "string" && meta.ownerUserId.trim() ? meta.ownerUserId.trim() : null;
+      const isAccountMismatch = Boolean(currentUserId2 && backupOwnerId && String(currentUserId2) !== String(backupOwnerId));
+      const confirmed = await promptBackupConfirmation(meta, currentUserId2, isAccountMismatch);
+      if (!confirmed) {
         writeBackupStatus("Import canceled by the user.", "info");
         return false;
       }
-      await clearCurrentStorage();
+      await clearTargetAccountStorage(currentUserId2);
       for (const [key, value] of Object.entries(data)) {
-        GM_setValue(key, value);
-      }
-      const currentUserId2 = Storage.getCurrentUserId() || Utils.getUserId();
-      let restoredSnapshot = null;
-      if (currentUserId2 && isPlainObject(data[`${CONFIG.STORAGE_KEY}_${currentUserId2}`])) {
-        restoredSnapshot = data[`${CONFIG.STORAGE_KEY}_${currentUserId2}`];
-      } else if (isPlainObject(data[CONFIG.STORAGE_KEY])) {
-        restoredSnapshot = data[CONFIG.STORAGE_KEY];
-      } else {
-        const anySnapKey = Object.keys(data).find((k) => k.startsWith(`${CONFIG.STORAGE_KEY}_`));
-        if (anySnapKey && isPlainObject(data[anySnapKey])) {
-          restoredSnapshot = data[anySnapKey];
+        if (GLOBAL_UI_KEY_BASES.includes(key)) {
+          GM_setValue(key, value);
+          continue;
         }
+        if (LEGACY_FLAT_KEYS.includes(key)) {
+          continue;
+        }
+        if (ACCOUNT_DATA_KEY_BASES.includes(key)) {
+          if (!currentUserId2) {
+            GM_setValue(key, value);
+          }
+          continue;
+        }
+        if (!isAccountMismatch || currentUserId2 && key.endsWith(`_${currentUserId2}`)) {
+          GM_setValue(key, value);
+        }
+      }
+      const pickBackupValueForBase = (baseKey) => {
+        if (currentUserId2 && data[`${baseKey}_${currentUserId2}`] !== void 0) {
+          return data[`${baseKey}_${currentUserId2}`];
+        }
+        if (backupOwnerId && data[`${baseKey}_${backupOwnerId}`] !== void 0) {
+          return data[`${baseKey}_${backupOwnerId}`];
+        }
+        if (data[baseKey] !== void 0) {
+          return data[baseKey];
+        }
+        const anyKey = Object.keys(data).find((k) => k.startsWith(`${baseKey}_`));
+        if (anyKey && data[anyKey] !== void 0) {
+          return data[anyKey];
+        }
+        return void 0;
+      };
+      let restoredSnapshot = pickBackupValueForBase(CONFIG.STORAGE_KEY);
+      if (!isPlainObject(restoredSnapshot)) {
+        restoredSnapshot = null;
       }
       if (!restoredSnapshot && Array.isArray(data.followers)) {
         restoredSnapshot = {
@@ -2430,45 +4305,60 @@ DEBUG: false,
       if (restoredSnapshot) {
         if (currentUserId2) {
           Storage.save(restoredSnapshot, currentUserId2);
-        }
-        GM_setValue(CONFIG.STORAGE_KEY, restoredSnapshot);
-      }
-      const syncListKey = (baseKey) => {
-        let val = null;
-        if (currentUserId2 && data[`${baseKey}_${currentUserId2}`] !== void 0) {
-          val = data[`${baseKey}_${currentUserId2}`];
-        } else if (data[baseKey] !== void 0) {
-          val = data[baseKey];
-        } else {
-          const anyKey = Object.keys(data).find((k) => k.startsWith(`${baseKey}_`));
-          if (anyKey && data[anyKey] !== void 0) {
-            val = data[anyKey];
+          if (typeof GM_deleteValue === "function") {
+            GM_deleteValue(CONFIG.STORAGE_KEY);
           }
+        } else {
+          GM_setValue(CONFIG.STORAGE_KEY, restoredSnapshot);
         }
-        if (val !== null && val !== void 0) {
+      }
+      const legacyFlatFallbackMap = {
+        [CONFIG.HISTORY_KEY]: data.history,
+        [CONFIG.WHITELIST_KEY]: data.whitelist,
+        [CONFIG.CHURN_KEY]: data.unfollowers,
+        [CONFIG.DEACTIVATED_KEY]: data.deactivated,
+        [CONFIG.BLOCKED_KEY]: data.blocked,
+        [CONFIG.RENAMED_KEY]: data.renamed,
+        [CONFIG.NEW_FOLLOWERS_KEY]: data.newFollowersDetailed || data.newFollowers,
+        [CONFIG.TARGET_TRACKER_KEY]: data.targetTracker
+      };
+      ACCOUNT_DATA_KEY_BASES.forEach((baseKey) => {
+        if (baseKey === CONFIG.STORAGE_KEY) return;
+        let val = pickBackupValueForBase(baseKey);
+        if (val === void 0 && legacyFlatFallbackMap[baseKey] !== void 0) {
+          val = legacyFlatFallbackMap[baseKey];
+        }
+        if (val !== void 0 && val !== null) {
           if (currentUserId2) {
             Storage.setScopedValue(baseKey, val, currentUserId2);
+          } else {
+            GM_setValue(baseKey, val);
           }
-          GM_setValue(baseKey, val);
         }
-      };
-      syncListKey(CONFIG.HISTORY_KEY);
-      syncListKey(CONFIG.WHITELIST_KEY);
-      syncListKey(CONFIG.CHURN_KEY);
-      syncListKey(CONFIG.DEACTIVATED_KEY);
-      syncListKey(CONFIG.BLOCKED_KEY);
-      syncListKey(CONFIG.RENAMED_KEY);
-      syncListKey(CONFIG.STORY_OBS_KEY);
-      syncListKey(CONFIG.POSITION_KEY);
+        if (currentUserId2 && typeof GM_deleteValue === "function") {
+          GM_deleteValue(baseKey);
+        }
+      });
+      GLOBAL_UI_KEY_BASES.forEach((globalKey) => {
+        const val = pickBackupValueForBase(globalKey);
+        if (val !== void 0 && val !== null) {
+          GM_setValue(globalKey, val);
+        }
+      });
       writeBackupStatus("Backup restored successfully. Reloading the interface...", "success");
       window.setTimeout(() => window.location.reload(), 400);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "The backup could not be imported.";
       writeBackupStatus(message, "error");
-      window.alert(`Backup import error:
+      const safetyModal = typeof document !== "undefined" ? document.getElementById("ig-safety-modal") : null;
+      if (safetyModal && typeof UI.confirmAction === "function") {
+        await UI.confirmAction("Backup Import Error", Utils.escapeHtml(message), "Close", false);
+      } else if (typeof window !== "undefined" && typeof window.alert === "function") {
+        window.alert(`Backup import error:
 
 ${message}`);
+      }
       return false;
     } finally {
       if (backupFileInputNode) {
@@ -2555,7 +4445,10 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     trendingDown: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>',
     target: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
     sparkles: '<svg width="12" height="12" viewBox="0 0 24 24" fill="#22c55e" stroke="none" style="vertical-align: middle;"><path d="M12 2l2.4 7.2L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>',
-    refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>'
+    refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+    arrowRight: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>',
+    repeat: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
+    chartArea: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 3 5-6"/></svg>'
   };
   Object.assign(UI, {
     init: () => {
@@ -2588,17 +4481,17 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '  <div class="ig-tabs-container" id="ig-tabs">',
         '    <div id="ig-tab-indicator" class="ig-tab-indicator"></div>',
         '    <button class="ig-tab-btn active" data-target="ig-log"><span class="ig-tab-icon">' + Icons.logs + '</span><span class="ig-tab-label">Logs</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-history"><span class="ig-tab-icon">' + Icons.history + '</span><span class="ig-tab-label">History</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-notfollowing"><span class="ig-tab-icon">' + Icons.notFollowing + '</span><span class="ig-tab-label">Not Following</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-fans"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Fans</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-targettracker"><span class="ig-tab-icon">' + Icons.target + '</span><span class="ig-tab-label">Target Tracker</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-whitelist"><span class="ig-tab-icon">' + Icons.shieldCheck + '</span><span class="ig-tab-label">Whitelist</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-view-renamed"><span class="ig-tab-icon">' + Icons.renamed + '</span><span class="ig-tab-label">Renamed</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-history"><span class="ig-tab-icon">' + Icons.history + '</span><span class="ig-tab-label">History</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-history">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-notfollowing"><span class="ig-tab-icon">' + Icons.notFollowing + '</span><span class="ig-tab-label">Not Following</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-notfollowing">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-fans"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Fans</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-fans">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-mutuals">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-targettracker"><span class="ig-tab-icon">' + Icons.target + '</span><span class="ig-tab-label">Target Tracker</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-targettracker">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-newfollowers">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-whitelist"><span class="ig-tab-icon">' + Icons.shieldCheck + '</span><span class="ig-tab-label">Whitelist</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-whitelist">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-unfollowers">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-deactivated">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-blocked">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-view-renamed"><span class="ig-tab-icon">' + Icons.renamed + '</span><span class="ig-tab-label">Renamed</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-renamed">0</span></button>',
         "  </div>",
         "</div>",
         '<div id="ig-log" class="ig-view-container ig-view active"></div>',
@@ -2618,7 +4511,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '    <span class="ig-bmc-icon">' + Icons.coffee + "</span>",
         '    <span class="ig-bmc-text">Buy me a coffee</span>',
         "  </a>",
-        '  <span class="ig-footer-meta">v3.13.1</span>',
+        '  <span class="ig-footer-meta">v3.13.2</span>',
         "</div>"
       ].join("\n");
       document.body.appendChild(panel);
@@ -2667,53 +4560,67 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       UI.renderWhitelist(Storage.getWhitelist());
       UI.renderTargetTrackerMainView();
       UI.renderPersistedSnapshot(Storage.load());
+      UI.updateMainTabCounts();
+      UI.syncMainExportButton();
       Utils.getUserIdAsync().then((asyncId) => {
         if (asyncId && asyncId !== Storage.getCurrentUserId()) {
           Storage.setCurrentUserId(asyncId);
-          UI.renderHistory(Storage.getHistory(asyncId));
-          UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, asyncId), "ig-view-unfollowers", "Recent Unfollowers");
-          UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, asyncId), "ig-view-deactivated", "Deactivated Accounts");
-          UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, asyncId), "ig-view-blocked", "Blocked Accounts");
-          UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, asyncId), "ig-view-renamed", "Username Changes");
+          UI.renderHistory(Storage.getHistory(asyncId), asyncId);
+          UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, asyncId), "ig-view-unfollowers", "Recent Unfollowers", { userId: asyncId });
+          UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, asyncId), "ig-view-deactivated", "Deactivated Accounts", { userId: asyncId });
+          UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, asyncId), "ig-view-blocked", "Blocked Accounts", { userId: asyncId });
+          UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, asyncId), "ig-view-renamed", "Username Changes", { userId: asyncId });
           UI.renderNewFollowers(Storage.getNewFollowersList(asyncId));
           UI.renderWhitelist(Storage.getWhitelist(asyncId));
           UI.renderTargetTrackerMainView(asyncId);
-          UI.renderPersistedSnapshot(Storage.load(asyncId));
+          UI.renderPersistedSnapshot(Storage.load(asyncId), asyncId);
+          UI.updateMainTabCounts(asyncId);
+          UI.syncMainExportButton();
         }
       }).catch(() => {
       });
     },
+    applyCurrentTheme: () => {
+      const panel = document.getElementById("ig-analyzer-panel");
+      const subpanel = document.getElementById("ig-target-subpanel");
+      const safetyModal = document.getElementById("ig-safety-modal");
+      const hdModal = document.getElementById("ig-hd-modal");
+      const backupPopup = document.getElementById("ig-backup-popup");
+      const backupOverlays = typeof document.querySelectorAll === "function" ? Array.from(document.querySelectorAll(".ig-backup-overlay")) : [];
+      const targets = Array.from(new Set([panel, subpanel, safetyModal, hdModal, backupPopup, ...backupOverlays].filter(Boolean)));
+      if (targets.length === 0) return;
+      const html = document.documentElement;
+      const body = document.body;
+      const isExplicitDark = Boolean(
+        html?.classList?.contains("_aa55") || html?.getAttribute?.("data-theme") === "dark" || body && body.getAttribute?.("data-theme") === "dark"
+      );
+      if (isExplicitDark) {
+        targets.forEach((t) => t.classList.remove("ig-light-theme"));
+        return;
+      }
+      const isExplicitLight = Boolean(
+        html?.getAttribute?.("data-theme") === "light" || body && body.getAttribute?.("data-theme") === "light"
+      );
+      if (isExplicitLight) {
+        targets.forEach((t) => t.classList.add("ig-light-theme"));
+        return;
+      }
+      const bodyBg = typeof window !== "undefined" && typeof window.getComputedStyle === "function" && (body || html) ? window.getComputedStyle(body || html).backgroundColor : "";
+      const isLightBg = bodyBg === "rgb(255, 255, 255)" || bodyBg === "#ffffff" || bodyBg === "white" || bodyBg === "rgb(250, 250, 250)" || bodyBg === "#fafafa";
+      if (isLightBg) {
+        targets.forEach((t) => t.classList.add("ig-light-theme"));
+        return;
+      }
+      if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+        targets.forEach((t) => t.classList.add("ig-light-theme"));
+      } else {
+        targets.forEach((t) => t.classList.remove("ig-light-theme"));
+      }
+    },
     setupThemeObserver: () => {
       let rafId = null;
       const checkTheme = () => {
-        const panel = document.getElementById("ig-analyzer-panel");
-        const subpanel = document.getElementById("ig-target-subpanel");
-        const safetyModal = document.getElementById("ig-safety-modal");
-        const targets = [panel, subpanel, safetyModal].filter(Boolean);
-        if (targets.length === 0) return;
-        const html = document.documentElement;
-        const body = document.body;
-        const isExplicitDark = html.classList.contains("_aa55") || html.getAttribute("data-theme") === "dark" || body && body.getAttribute("data-theme") === "dark";
-        if (isExplicitDark) {
-          targets.forEach((t) => t.classList.remove("ig-light-theme"));
-          return;
-        }
-        const isExplicitLight = html.getAttribute("data-theme") === "light" || body && body.getAttribute("data-theme") === "light";
-        if (isExplicitLight) {
-          targets.forEach((t) => t.classList.add("ig-light-theme"));
-          return;
-        }
-        const bodyBg = window.getComputedStyle(body || html).backgroundColor;
-        const isLightBg = bodyBg === "rgb(255, 255, 255)" || bodyBg === "#ffffff" || bodyBg === "white" || bodyBg === "rgb(250, 250, 250)" || bodyBg === "#fafafa";
-        if (isLightBg) {
-          targets.forEach((t) => t.classList.add("ig-light-theme"));
-          return;
-        }
-        if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
-          targets.forEach((t) => t.classList.add("ig-light-theme"));
-        } else {
-          targets.forEach((t) => t.classList.remove("ig-light-theme"));
-        }
+        UI.applyCurrentTheme();
       };
       checkTheme();
       const observer = new MutationObserver(() => {
@@ -2775,6 +4682,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             }
           }
           updateIndicator(target, true);
+          if (typeof UI.syncMainExportButton === "function") {
+            UI.syncMainExportButton();
+          }
         };
       });
       tabsContainer.addEventListener("wheel", (e) => {
@@ -2884,13 +4794,24 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
     },
     resetPosition: () => {
       const panel = document.getElementById("ig-analyzer-panel");
-      if (!panel) return;
-      panel.style.left = "auto";
-      panel.style.top = CONFIG.DEFAULT_POSITION.top + "px";
-      panel.style.right = CONFIG.DEFAULT_POSITION.right + "px";
-      panel.style.width = CONFIG.DEFAULT_POSITION.width + "px";
-      panel.style.height = CONFIG.DEFAULT_POSITION.height + "px";
-      GM_deleteValue(CONFIG.POSITION_KEY);
+      if (panel) {
+        panel.style.left = "auto";
+        panel.style.top = CONFIG.DEFAULT_POSITION.top + "px";
+        panel.style.right = CONFIG.DEFAULT_POSITION.right + "px";
+        panel.style.width = CONFIG.DEFAULT_POSITION.width + "px";
+        panel.style.height = CONFIG.DEFAULT_POSITION.height + "px";
+        GM_deleteValue(CONFIG.POSITION_KEY);
+      }
+      const subpanel = document.getElementById("ig-target-subpanel");
+      if (subpanel) {
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+        subpanel.style.left = Math.max(30, vw - 960) + "px";
+        subpanel.style.top = "90px";
+        subpanel.style.right = "auto";
+        subpanel.style.width = "";
+        subpanel.style.height = "";
+        GM_deleteValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY);
+      }
     },
     toggleMinimize: () => {
       const panel = document.getElementById("ig-analyzer-panel");
@@ -2930,7 +4851,121 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       { id: "pending", label: "Pending", icon: Icons.clock },
       { id: "story", label: "With Story", icon: Icons.storyRing },
       { id: "verified", label: "Verified", icon: Icons.verified }
-    ]
+    ],
+    NOMINAL_CHIPS_DEF: [
+      { id: "all", label: "All", icon: null },
+      { id: "repeat", label: "Repeat 2x+", icon: Icons.repeat },
+      { id: "renamed", label: "Renamed", icon: Icons.renamed },
+      { id: "private", label: "Private", icon: Icons.lock },
+      { id: "verified", label: "Verified", icon: Icons.verified }
+    ],
+    RENAMED_CHIPS_DEF: [
+      { id: "all", label: "All", icon: null },
+      { id: "mutual", label: "Mutual", icon: Icons.mutuals },
+      { id: "fan", label: "Fan", icon: Icons.fans },
+      { id: "following", label: "Following", icon: Icons.user },
+      { id: "verified", label: "Verified", icon: Icons.verified }
+    ],
+    refreshMainTabIndicator: () => {
+      const tabsContainer = document.getElementById("ig-tabs");
+      if (!tabsContainer || typeof UI.updateTabIndicator !== "function") return;
+      const activeBtn = tabsContainer.querySelector(".ig-tab-btn.active");
+      if (activeBtn) {
+        UI.updateTabIndicator(activeBtn, false);
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => UI.updateTabIndicator(activeBtn, false));
+        }
+      }
+    },
+    getActiveExportContext: () => {
+      const activeTab = document.querySelector("#ig-tabs .ig-tab-btn.active");
+      const targetId = activeTab ? activeTab.getAttribute("data-target") : "ig-log";
+      const paginatedSlugs = {
+        "ig-view-notfollowing": "not_following_back",
+        "ig-view-fans": "fans",
+        "ig-view-mutuals": "mutuals",
+        "ig-view-newfollowers": "new_followers",
+        "ig-view-unfollowers": "unfollowers",
+        "ig-view-deactivated": "deactivated",
+        "ig-view-blocked": "blocked",
+        "ig-view-renamed": "renamed"
+      };
+      if (targetId && Object.prototype.hasOwnProperty.call(paginatedSlugs, targetId)) {
+        const state = UI.paginationState[targetId];
+        return {
+          mode: "users",
+          slug: paginatedSlugs[targetId],
+          items: Array.isArray(state?.users) ? state.users : []
+        };
+      }
+      if (targetId === "ig-view-whitelist") {
+        const rawWl = Storage.getWhitelist();
+        const q = String(UI.whitelistSearchQuery || "").trim().toLowerCase();
+        const filtered = q ? rawWl.filter((u) => String(u || "").toLowerCase().includes(q)) : rawWl;
+        const items = filtered.slice().reverse().map((username) => {
+          const known = typeof Storage.findKnownUserByUsername === "function" ? Storage.findKnownUserByUsername(username) : null;
+          return {
+            ...known || {},
+            username: String(username || "").replace(/^@+/, "").trim(),
+            url: Utils.sanitizeUrl(username)
+          };
+        });
+        return { mode: "users", slug: "whitelist", items };
+      }
+      if (targetId === "ig-view-history") {
+        return {
+          mode: "history",
+          slug: "history",
+          items: Storage.getHistory()
+        };
+      }
+      if (targetId === "ig-log") {
+        const nfRaw = UI.paginationState["ig-view-notfollowing"]?.rawUsers;
+        const fallback = Array.isArray(nfRaw) ? nfRaw : Array.isArray(window.__igLastResults) ? window.__igLastResults : [];
+        return {
+          mode: "users",
+          slug: "not_following_back",
+          items: fallback
+        };
+      }
+      return { mode: "none", slug: "none", items: [] };
+    },
+    syncMainExportButton: () => {
+      const exportBtn = document.getElementById("ig-export-csv");
+      if (!exportBtn) return;
+      const ctx = typeof UI.getActiveExportContext === "function" ? UI.getActiveExportContext() : null;
+      exportBtn.disabled = !ctx || !Array.isArray(ctx.items) || ctx.items.length === 0;
+    },
+    updateMainTabCounts: (userId = null) => {
+      const tabsContainer = document.getElementById("ig-tabs");
+      if (!tabsContainer) return;
+      const snap = Storage.load(userId);
+      const countsMap = {
+        "ig-view-history": Storage.getHistory(userId).length,
+        "ig-view-notfollowing": UI.paginationState["ig-view-notfollowing"]?.rawUsers?.length ?? 0,
+        "ig-view-fans": UI.paginationState["ig-view-fans"]?.rawUsers?.length ?? (snap?.fansDetailed?.length ?? 0),
+        "ig-view-mutuals": UI.paginationState["ig-view-mutuals"]?.rawUsers?.length ?? (snap?.mutualsDetailed?.length ?? 0),
+        "ig-view-targettracker": Object.keys(Storage.getTargetTrackerMap(userId) || {}).length,
+        "ig-view-newfollowers": Storage.getNewFollowersList(userId).length,
+        "ig-view-whitelist": Storage.getWhitelist(userId).length,
+        "ig-view-unfollowers": Storage.getNominalList(CONFIG.CHURN_KEY, userId).length,
+        "ig-view-deactivated": Storage.getNominalList(CONFIG.DEACTIVATED_KEY, userId).length,
+        "ig-view-blocked": Storage.getNominalList(CONFIG.BLOCKED_KEY, userId).length,
+        "ig-view-renamed": Storage.getNominalList(CONFIG.RENAMED_KEY, userId).length
+      };
+      Object.entries(countsMap).forEach(([tabId, rawCount]) => {
+        const badge = tabsContainer.querySelector(`[data-tab-count="${tabId}"]`);
+        if (!badge) return;
+        const count = Math.max(0, Number(rawCount) || 0);
+        badge.textContent = count > 0 ? Utils.formatNumber(count) : "0";
+        if (count > 0) {
+          badge.classList.remove("is-empty");
+        } else {
+          badge.classList.add("is-empty");
+        }
+      });
+      UI.refreshMainTabIndicator();
+    }
   });
   Object.assign(UI, {
     confirmAction: (title, message, confirmBtnText = "Yes, Continue", showCancel = true, customIcon = null) => {
@@ -2950,6 +4985,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         }
         if (btnNo) {
           btnNo.style.display = showCancel ? "inline-block" : "none";
+        }
+        if (typeof UI.applyCurrentTheme === "function") {
+          UI.applyCurrentTheme();
         }
         modal.style.display = "flex";
         const closeAndResolve = (value) => {
@@ -3042,6 +5080,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             </div>
         </div>`;
       document.body.insertAdjacentHTML("beforeend", modalHtml);
+      if (typeof UI.applyCurrentTheme === "function") {
+        UI.applyCurrentTheme();
+      }
       const modal = document.getElementById("ig-hd-modal");
       const closeBtn = document.getElementById("ig-hd-close-btn");
       const closeModal = () => {
@@ -3168,16 +5209,76 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         relPills = '<span class="ig-qc-rel-pill is-negative">Does not follow you</span><span class="ig-qc-rel-pill is-neutral">You follow</span>';
       } else if (u.containerId === "ig-view-fans") {
         relPills = `<span class="ig-qc-rel-pill is-positive">Follows you</span><span class="ig-qc-rel-pill">You don't follow</span>`;
+      } else if (u.containerId === "ig-view-newfollowers") {
+        relPills = '<span class="ig-qc-rel-pill is-positive">New Follower</span>' + (u.followsBack === true ? '<span class="ig-qc-rel-pill is-neutral">Mutual</span>' : u.followsBack === false ? '<span class="ig-qc-rel-pill">Fan</span>' : "");
+      } else if (u.containerId === "ig-view-unfollowers") {
+        relPills = '<span class="ig-qc-rel-pill is-negative">Unfollowed you</span>';
+      } else if (u.containerId === "ig-view-deactivated") {
+        relPills = '<span class="ig-qc-rel-pill is-pending">Deactivated</span>';
+      } else if (u.containerId === "ig-view-blocked") {
+        relPills = '<span class="ig-qc-rel-pill is-negative">Unavailable / Blocked</span>';
+      } else if (u.containerId === "ig-view-renamed") {
+        const safeOld = u.oldUsername ? Utils.escapeHtml(u.oldUsername) : "";
+        relPills = safeOld ? `<span class="ig-qc-rel-pill is-neutral">was @${safeOld}</span>` : '<span class="ig-qc-rel-pill is-neutral">Renamed</span>';
+      } else if (u.containerId === "ig-view-whitelist") {
+        relPills = '<span class="ig-qc-rel-pill is-neutral">Whitelisted</span>';
       }
       relBarEl.innerHTML = relPills;
-      pillEl.className = "ig-hd-res-pill";
-      pillEl.innerHTML = '<span class="ig-hd-spinner"></span> Loading 1080p...';
+      const setResPill = (mode, labelText) => {
+        pillEl.innerHTML = "";
+        pillEl.className = mode === "hd" ? "ig-hd-res-pill is-hd" : "ig-hd-res-pill";
+        if (mode === "loading") {
+          const spin = document.createElement("span");
+          spin.className = "ig-hd-spinner";
+          pillEl.appendChild(spin);
+          pillEl.appendChild(document.createTextNode(" " + labelText));
+        } else if (mode === "hd") {
+          pillEl.insertAdjacentHTML("afterbegin", Icons.verified);
+          pillEl.appendChild(document.createTextNode(" " + labelText));
+        } else {
+          pillEl.textContent = labelText;
+        }
+      };
+      setResPill("loading", "Loading 1080p...");
+      if (typeof UI.applyCurrentTheme === "function") {
+        UI.applyCurrentTheme();
+      }
       modal.style.display = "flex";
       modal.setAttribute("aria-hidden", "false");
       try {
-        const hdData = await API.fetchUserProfileHd(u.id, safeUsername, { signal });
+        let targetId = u.id && String(u.id) !== "0" && String(u.id) !== "null" && String(u.id) !== "undefined" ? String(u.id).trim() : null;
+        if (!targetId && safeUsername) {
+          if (typeof Storage.findKnownUserByUsername === "function") {
+            const knownLocal = Storage.findKnownUserByUsername(safeUsername);
+            if (knownLocal?.id && String(knownLocal.id) !== "0") {
+              targetId = String(knownLocal.id);
+            }
+          }
+          if (!targetId && typeof API.resolveUserId === "function") {
+            targetId = await API.resolveUserId(safeUsername, { signal });
+          }
+          if (signal.aborted) return;
+          if (targetId) {
+            u.id = targetId;
+            Storage.updateUserProfile(safeUsername, { id: targetId });
+            if (typeof document.querySelectorAll === "function") {
+              const lowerTarget = safeUsername.toLowerCase();
+              document.querySelectorAll(".ig-user-avatar-trigger, .btn-inspect-user, .ig-btn-inspect-user, .ig-user-row").forEach((node) => {
+                const nodeUser = (node.getAttribute("data-username") || node.getAttribute("data-user") || "").toLowerCase();
+                if (nodeUser === lowerTarget) {
+                  node.setAttribute("data-user-id", targetId);
+                }
+              });
+            }
+          }
+        }
+        const hdData = targetId ? await API.fetchUserProfileHd(targetId, safeUsername, { signal }) : null;
         if (signal.aborted) return;
         if (hdData) {
+          if (hdData.fullName) {
+            fullnameEl.textContent = hdData.fullName;
+          }
+          verifiedEl.style.display = hdData.isVerified || u.isVerified ? "inline-flex" : "none";
           followersEl.textContent = Utils.formatNumber(hdData.followerCount);
           followingEl.textContent = Utils.formatNumber(hdData.followingCount);
           postsEl.textContent = Utils.formatNumber(hdData.mediaCount);
@@ -3202,6 +5303,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           } else {
             bioLinkEl.style.display = "none";
           }
+          facepileEl.innerHTML = "";
           if (typeof hdData.mutualsCount === "number" && hdData.mutualsCount > 0) {
             mutualsCardEl.style.display = "block";
             if (hdData.mutualUsers && hdData.mutualUsers.length > 0) {
@@ -3211,16 +5313,43 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             } else {
               mutualsSummaryEl.textContent = `${hdData.mutualsCount} mutual connection${hdData.mutualsCount === 1 ? "" : "s"}`;
             }
-            if (hdData.facepileUsers && hdData.facepileUsers.length > 0) {
-              facepileEl.innerHTML = hdData.facepileUsers.slice(0, 5).map(
-                (f) => `<img class="ig-facepile-avatar" src="${Utils.sanitizeImageUrl(f.profilePicUrl) || ""}" alt="" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-flex';" /><span class="ig-facepile-avatar" style="display:none;">${(f.username || "?").charAt(0).toUpperCase()}</span>`
-              ).join("");
-            } else {
-              facepileEl.innerHTML = "";
+            if (Array.isArray(hdData.facepileUsers) && hdData.facepileUsers.length > 0) {
+              hdData.facepileUsers.slice(0, 5).forEach((f) => {
+                const fName = String(f?.username || f?.fullName || "").trim();
+                const initial = fName ? fName.charAt(0).toUpperCase() : "M";
+                const safePic = Utils.sanitizeImageUrl(f?.profilePicUrl);
+                const fallbackSpan = document.createElement("span");
+                fallbackSpan.className = "ig-facepile-avatar ig-facepile-fallback";
+                fallbackSpan.textContent = initial;
+                if (f?.username) fallbackSpan.title = "@" + f.username;
+                if (safePic) {
+                  fallbackSpan.style.display = "none";
+                  const fImg = document.createElement("img");
+                  fImg.className = "ig-facepile-avatar";
+                  fImg.src = safePic;
+                  fImg.alt = f?.username ? `@${f.username}` : "";
+                  fImg.loading = "lazy";
+                  if (f?.username) fImg.title = "@" + f.username;
+                  fImg.addEventListener("error", () => {
+                    fImg.style.display = "none";
+                    fallbackSpan.style.display = "inline-flex";
+                  }, { once: true });
+                  facepileEl.appendChild(fImg);
+                } else {
+                  fallbackSpan.style.display = "inline-flex";
+                }
+                facepileEl.appendChild(fallbackSpan);
+              });
             }
           } else {
             mutualsCardEl.style.display = "none";
           }
+          Storage.updateUserProfile(safeUsername, {
+            id: hdData.id || targetId || null,
+            fullName: hdData.fullName || u.fullName || "",
+            isVerified: Boolean(hdData.isVerified ?? u.isVerified),
+            isPrivate: Boolean(hdData.isPrivate ?? u.isPrivate)
+          });
           if (hdData.hdUrl) {
             const cleanHdUrl = Utils.sanitizeImageUrl(hdData.hdUrl);
             if (cleanHdUrl) {
@@ -3232,8 +5361,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
                 fallbackEl.style.display = "none";
                 currentTargetUrl = cleanHdUrl;
                 linkOpenTab.href = cleanHdUrl;
-                pillEl.className = "ig-hd-res-pill is-hd";
-                pillEl.innerHTML = `${Icons.verified} 1080p Full HD`;
+                setResPill("hd", "1080p Full HD");
                 UI.updateUserAvatarInDom(safeUsername, cleanHdUrl);
                 Storage.updateUserProfile(safeUsername, {
                   profilePicUrl: cleanHdUrl,
@@ -3245,27 +5373,30 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
               };
               preload.onerror = () => {
                 if (signal.aborted) return;
-                pillEl.className = "ig-hd-res-pill";
-                pillEl.innerHTML = `Standard Resolution`;
+                setResPill("standard", "Standard Resolution");
               };
               preload.src = cleanHdUrl;
             } else {
-              pillEl.className = "ig-hd-res-pill";
-              pillEl.innerHTML = `Standard Resolution`;
+              setResPill("standard", "Standard Resolution");
             }
           } else {
-            pillEl.className = "ig-hd-res-pill";
-            pillEl.innerHTML = `Standard Resolution`;
+            setResPill("standard", "Standard Resolution");
           }
           if (hdData.isBestie) {
             frameEl.classList.add("has-bestie-ring");
+          } else if (hdData.latestReelMedia && hdData.latestReelMedia > 0) {
+            frameEl.classList.add("has-story-ring");
           }
+        } else {
+          setResPill(
+            "unavailable",
+            initialAvatarUrl ? "Standard Resolution" : "Profile Unavailable"
+          );
         }
       } catch (err) {
         if (signal.aborted) return;
         console.warn("[IG Analyzer] Quick-Card profile fetch skipped/failed:", err);
-        pillEl.className = "ig-hd-res-pill";
-        pillEl.innerHTML = `Standard Resolution`;
+        setResPill("standard", initialAvatarUrl ? "Standard Resolution" : "Profile Unavailable");
       }
     },
     setStatus: (text) => {
@@ -3294,9 +5425,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         UI.lastLogTimeMs = nowMs;
         const box = document.getElementById("ig-log");
         if (box) {
-          const nowStr = typeof Utils.now === "function" ? Utils.now() : ( new Date()).toISOString();
-          const timeParts = nowStr.split("T");
-          const timeStr = (timeParts.length > 1 ? timeParts[1].split(".")[0] : "") || nowStr;
+          const timeStr = (typeof Utils.localTimeStr === "function" ? Utils.localTimeStr() : "") || ((typeof Utils.now === "function" ? Utils.now() : ( new Date()).toISOString()).split("T")[1]?.split(".")[0] || "");
           const entry = document.createElement("div");
           entry.className = "ig-log-entry";
           const timeSpan = document.createElement("span");
@@ -3361,19 +5490,679 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       }
     }
   });
+  const METRIC_CONFIG = {
+    followers: {
+      label: "Followers",
+      startField: "startFollowers",
+      lastDeltaField: "lastDeltaFollowers",
+      intradayField: "intradayDeltaFollowers",
+      stroke: "#3b82f6"
+    },
+    following: {
+      label: "Following",
+      startField: "startFollowing",
+      lastDeltaField: "lastDeltaFollowing",
+      intradayField: "intradayDeltaFollowing",
+      stroke: "#8b5cf6"
+    },
+    mutuals: {
+      label: "Mutuals",
+      startField: "startMutuals",
+      lastDeltaField: "lastDeltaMutuals",
+      intradayField: "intradayDeltaMutuals",
+      stroke: "#10b981"
+    }
+  };
+  const RANGE_LIMITS = {
+    "7d": 7,
+    "30d": 30,
+    "all": Infinity
+  };
+  const roundCoord = (n) => Math.round(Number(n) * 100) / 100;
+  const shortDateLabel = (dateStr) => {
+    const raw = String(dateStr || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      return raw.slice(5);
+    }
+    return raw.slice(0, 10);
+  };
+  Object.assign(UI, {
+buildKpiDelta: (currVal, prevDayVal, startVal, lastDeltaVal, scansCount) => {
+      const curr = Number(currVal ?? 0);
+      const scans = Number(scansCount) || 1;
+      const hasLastDelta = lastDeltaVal !== void 0 && lastDeltaVal !== null;
+      const lastDelta = hasLastDelta ? Number(lastDeltaVal) : 0;
+      if (prevDayVal !== null && prevDayVal !== void 0) {
+        const dayDiff = curr - Number(prevDayVal);
+        const intraDiff = curr - Number(startVal ?? curr);
+        if (dayDiff > 0) {
+          const suffix = scans > 1 && hasLastDelta && lastDelta !== dayDiff && lastDelta !== 0 ? ` (${lastDelta > 0 ? "+" : ""}${lastDelta} last)` : "";
+          return { text: `+${dayDiff.toLocaleString()} vs prev${suffix}`, cls: "is-positive", icon: Icons.trendingUp };
+        }
+        if (dayDiff < 0) {
+          const suffix = scans > 1 && hasLastDelta && lastDelta !== dayDiff && lastDelta !== 0 ? ` (${lastDelta > 0 ? "+" : ""}${lastDelta} last)` : "";
+          return { text: `${dayDiff.toLocaleString()} vs prev${suffix}`, cls: "is-negative", icon: Icons.trendingDown };
+        }
+        if (scans > 1 && intraDiff !== 0) {
+          const sign = intraDiff > 0 ? "+" : "";
+          return {
+            text: `0 vs prev (${sign}${intraDiff.toLocaleString()} today)`,
+            cls: intraDiff > 0 ? "is-positive" : "is-negative",
+            icon: intraDiff > 0 ? Icons.trendingUp : Icons.trendingDown
+          };
+        }
+        return { text: "No change vs prev", cls: "is-neutral", icon: Icons.neutral };
+      }
+      if (scans > 1) {
+        const intraDiff = curr - Number(startVal ?? curr);
+        if (intraDiff > 0) {
+          return { text: `+${intraDiff.toLocaleString()} today`, cls: "is-positive", icon: Icons.trendingUp };
+        }
+        if (intraDiff < 0) {
+          return { text: `${intraDiff.toLocaleString()} today`, cls: "is-negative", icon: Icons.trendingDown };
+        }
+        if (hasLastDelta && lastDelta !== 0) {
+          const sign = lastDelta > 0 ? "+" : "";
+          return {
+            text: `0 today (${sign}${lastDelta.toLocaleString()} last)`,
+            cls: lastDelta > 0 ? "is-positive" : "is-negative",
+            icon: lastDelta > 0 ? Icons.trendingUp : Icons.trendingDown
+          };
+        }
+        return { text: "No change today", cls: "is-neutral", icon: Icons.neutral };
+      }
+      return { text: "First record", cls: "is-neutral", icon: Icons.neutral };
+    },
+formatDeltaPillHtml: (dayDelta, { intradayDelta = 0, scansCount = 1, isBaselineRow = false } = {}) => {
+      const scans = Number(scansCount) || 1;
+      const intra = Number(intradayDelta || 0);
+      if (isBaselineRow) {
+        if (scans > 1 && intra !== 0) {
+          const cls = intra > 0 ? "is-positive" : "is-negative";
+          const sign = intra > 0 ? "+" : "";
+          return `<span class="ig-delta-pill ${cls}" title="Intraday change on baseline day">${sign}${intra.toLocaleString()}</span>`;
+        }
+        return '<span class="ig-delta-pill is-neutral" title="Opening baseline">—</span>';
+      }
+      const diff = Number(dayDelta || 0);
+      if (diff > 0) {
+        return `<span class="ig-delta-pill is-positive">+${diff.toLocaleString()}</span>`;
+      }
+      if (diff < 0) {
+        return `<span class="ig-delta-pill is-negative">${diff.toLocaleString()}</span>`;
+      }
+      if (scans > 1 && intra !== 0) {
+        const cls = intra > 0 ? "is-positive" : "is-negative";
+        const sign = intra > 0 ? "+" : "";
+        return `<span class="ig-delta-pill ${cls}" title="Net 0 vs previous day, ${sign}${intra} intraday">${sign}${intra.toLocaleString()} today</span>`;
+      }
+      return '<span class="ig-delta-pill is-neutral">0</span>';
+    },
+computeTrendSeries: (historyList, { metric = "followers", range = "30d" } = {}) => {
+      const normalized = Storage.normalizeHistoryRecords(Array.isArray(historyList) ? historyList : []).list;
+      const cfg = METRIC_CONFIG[metric] || METRIC_CONFIG.followers;
+      const metricKey = METRIC_CONFIG[metric] ? metric : "followers";
+      const limit = RANGE_LIMITS[range] || 30;
+      const withMetric = [];
+      normalized.forEach((entry, idx) => {
+        const rawVal = entry?.[metricKey];
+        if (rawVal !== void 0 && rawVal !== null && !Number.isNaN(Number(rawVal))) {
+          withMetric.push({ entry, fullIdx: idx });
+        }
+      });
+      const viewWidth = 520;
+      const viewHeight = 158;
+      const padLeft = 48;
+      const padRight = 16;
+      const padTop = 14;
+      const padBottom = 26;
+      const plotW = viewWidth - padLeft - padRight;
+      const plotH = viewHeight - padTop - padBottom;
+      const bottomY = padTop + plotH;
+      if (withMetric.length === 0) {
+        return {
+          isEmpty: true,
+          metric: metricKey,
+          metricLabel: cfg.label,
+          range,
+          points: [],
+          viewWidth,
+          viewHeight
+        };
+      }
+      const windowed = Number.isFinite(limit) ? withMetric.slice(-limit) : withMetric;
+      let mode = "multi-day";
+      let rawPoints = [];
+      if (windowed.length === 1) {
+        const { entry } = windowed[0];
+        const currVal = Number(entry[metricKey] ?? 0);
+        const startRaw = entry[cfg.startField];
+        const startVal = startRaw !== void 0 && startRaw !== null && !Number.isNaN(Number(startRaw)) ? Number(startRaw) : currVal;
+        const scans = Number(entry.scansCount) || 1;
+        if (scans > 1) {
+          mode = "intraday-single-day";
+          rawPoints = [
+            {
+              date: entry.date,
+              displayDate: `${entry.date} (Open)`,
+              axisLabel: "Start",
+              value: startVal,
+              startValue: startVal,
+              delta: 0,
+              intradayDelta: 0,
+              scansCount: 1,
+              isOpeningAnchor: true
+            },
+            {
+              date: entry.date,
+              displayDate: `${entry.date} (Current)`,
+              axisLabel: "Now",
+              value: currVal,
+              startValue: startVal,
+              delta: currVal - startVal,
+              intradayDelta: currVal - startVal,
+              scansCount: scans,
+              isOpeningAnchor: false
+            }
+          ];
+        } else {
+          mode = "single-baseline";
+          rawPoints = [
+            {
+              date: entry.date,
+              displayDate: entry.date,
+              axisLabel: shortDateLabel(entry.date),
+              value: currVal,
+              startValue: startVal,
+              delta: 0,
+              intradayDelta: 0,
+              scansCount: 1,
+              isBaselineOnly: true
+            }
+          ];
+        }
+      } else {
+        rawPoints = windowed.map(({ entry, fullIdx }, idx) => {
+          const val = Number(entry[metricKey] ?? 0);
+          const startRaw = entry[cfg.startField];
+          const startVal = startRaw !== void 0 && startRaw !== null && !Number.isNaN(Number(startRaw)) ? Number(startRaw) : val;
+          let prevVal = null;
+          if (idx > 0) {
+            prevVal = Number(windowed[idx - 1].entry[metricKey] ?? 0);
+          } else if (fullIdx > 0) {
+            const prevCandidate = normalized[fullIdx - 1]?.[metricKey];
+            if (prevCandidate !== void 0 && prevCandidate !== null && !Number.isNaN(Number(prevCandidate))) {
+              prevVal = Number(prevCandidate);
+            }
+          }
+          const delta = prevVal !== null ? val - prevVal : val - startVal;
+          const intradayDelta = val - startVal;
+          return {
+            date: entry.date,
+            displayDate: entry.date,
+            axisLabel: shortDateLabel(entry.date),
+            value: val,
+            startValue: startVal,
+            delta,
+            intradayDelta,
+            scansCount: Number(entry.scansCount) || 1,
+            hasPrevDay: prevVal !== null
+          };
+        });
+      }
+      const values = rawPoints.map((p) => p.value);
+      const rawMin = Math.min(...values);
+      const rawMax = Math.max(...values);
+      const rawSpan = rawMax - rawMin;
+      let yMin = 0;
+      let yMax = 4;
+      if (rawSpan === 0) {
+        yMin = Math.max(0, rawMin - 2);
+        yMax = yMin + 4;
+      } else {
+        const pad = Math.max(1, Math.ceil(rawSpan * 0.18));
+        yMin = Math.max(0, rawMin - pad);
+        yMax = rawMax + pad;
+        if (yMax - yMin < 2) {
+          yMax = yMin + 2;
+        }
+      }
+      const ySpan = Math.max(1, yMax - yMin);
+      const yMid = Math.round((yMin + yMax) / 2);
+      const count = rawPoints.length;
+      const points = rawPoints.map((p, idx) => {
+        const xRatio = count === 1 ? 0.5 : idx / (count - 1);
+        const x = roundCoord(padLeft + xRatio * plotW);
+        const yRatio = (p.value - yMin) / ySpan;
+        const y = roundCoord(bottomY - yRatio * plotH);
+        let hitX = padLeft;
+        let hitW = plotW;
+        if (count > 1) {
+          const prevX = idx === 0 ? padLeft : padLeft + (idx - 1) / (count - 1) * plotW;
+          const nextX = idx === count - 1 ? padLeft + plotW : padLeft + (idx + 1) / (count - 1) * plotW;
+          const leftEdge = idx === 0 ? padLeft : (prevX + x) / 2;
+          const rightEdge = idx === count - 1 ? padLeft + plotW : (x + nextX) / 2;
+          hitX = roundCoord(leftEdge);
+          hitW = roundCoord(Math.max(6, rightEdge - leftEdge));
+        }
+        return {
+          ...p,
+          index: idx,
+          x,
+          y,
+          xRatio: roundCoord(xRatio),
+          hitX,
+          hitW
+        };
+      });
+      let linePath = "";
+      let areaPath = "";
+      if (points.length === 1) {
+        const pt = points[0];
+        linePath = `M ${padLeft} ${pt.y} L ${padLeft + plotW} ${pt.y}`;
+        areaPath = `M ${padLeft} ${bottomY} L ${padLeft} ${pt.y} L ${padLeft + plotW} ${pt.y} L ${padLeft + plotW} ${bottomY} Z`;
+      } else {
+        linePath = points.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`).join(" ");
+        const firstPt = points[0];
+        const lastPt = points[points.length - 1];
+        areaPath = `M ${firstPt.x} ${bottomY} ` + points.map((pt) => `L ${pt.x} ${pt.y}`).join(" ") + ` L ${lastPt.x} ${bottomY} Z`;
+      }
+      const firstVal = points[0].value;
+      const lastVal = points[points.length - 1].value;
+      const windowDelta = lastVal - firstVal;
+      let strokeColor = cfg.stroke;
+      if (metricKey === "followers") {
+        if (windowDelta > 0) strokeColor = "#22c55e";
+        else if (windowDelta < 0) strokeColor = "#ef4444";
+        else strokeColor = "#3b82f6";
+      }
+      return {
+        isEmpty: false,
+        mode,
+        metric: metricKey,
+        metricLabel: cfg.label,
+        range,
+        strokeColor,
+        points,
+        linePath,
+        areaPath,
+        yMin,
+        yMid,
+        yMax,
+        rawMin,
+        rawMax,
+        windowDelta,
+        viewWidth,
+        viewHeight,
+        padLeft,
+        padRight,
+        padTop,
+        padBottom,
+        plotW,
+        plotH,
+        bottomY
+      };
+    },
+renderChartPointReadoutHtml: (pt, metricLabel) => {
+      if (!pt) return "";
+      const exactVal = Utils.formatExactNumber(pt.value);
+      const safeDate = Utils.escapeHtml(pt.displayDate || pt.date || "");
+      const scans = Number(pt.scansCount) || 1;
+      let deltaBadge = "";
+      if (pt.isBaselineOnly || pt.isOpeningAnchor) {
+        deltaBadge = '<span class="ig-chart-readout-delta is-neutral">Baseline</span>';
+      } else if (pt.delta > 0) {
+        deltaBadge = `<span class="ig-chart-readout-delta is-positive">+${pt.delta.toLocaleString()}</span>`;
+      } else if (pt.delta < 0) {
+        deltaBadge = `<span class="ig-chart-readout-delta is-negative">${pt.delta.toLocaleString()}</span>`;
+      } else {
+        deltaBadge = '<span class="ig-chart-readout-delta is-neutral">0</span>';
+      }
+      let intraNote = "";
+      if (scans > 1 && !pt.isOpeningAnchor) {
+        const intraSign = pt.intradayDelta > 0 ? "+" : "";
+        intraNote = `<span class="ig-chart-readout-intra">Open ${Utils.formatExactNumber(pt.startValue)} (${intraSign}${pt.intradayDelta.toLocaleString()} · ${scans}x)</span>`;
+      }
+      return [
+        `<span class="ig-chart-readout-date">${safeDate}</span>`,
+        `<span class="ig-chart-readout-val">${exactVal} <span class="ig-chart-readout-unit">${Utils.escapeHtml(metricLabel)}</span></span>`,
+        deltaBadge,
+        intraNote
+      ].filter(Boolean).join(" ");
+    },
+renderTrendChartCard: (historyList, { scope = "main", isRestricted = false } = {}) => {
+      const normalized = Storage.normalizeHistoryRecords(Array.isArray(historyList) ? historyList : []).list;
+      if (normalized.length === 0) return "";
+      const hasMutualsData = !isRestricted && normalized.some(
+        (h) => h.mutuals !== void 0 && h.mutuals !== null && !Number.isNaN(Number(h.mutuals))
+      );
+      if (!UI.chartState[scope]) {
+        UI.chartState[scope] = { metric: "followers", range: "30d" };
+      }
+      let activeMetric = UI.chartState[scope].metric || "followers";
+      if (activeMetric === "mutuals" && !hasMutualsData) {
+        activeMetric = "followers";
+        UI.chartState[scope].metric = "followers";
+      }
+      const activeRange = UI.chartState[scope].range || "30d";
+      const series = UI.computeTrendSeries(normalized, { metric: activeMetric, range: activeRange });
+      if (series.isEmpty) return "";
+      const latestPt = series.points[series.points.length - 1];
+      const firstPt = series.points[0];
+      const gradId = `ig-trend-grad-${scope}-${series.metric}`;
+      let windowSummaryHtml = "";
+      if (series.mode === "single-baseline") {
+        windowSummaryHtml = '<span class="ig-chart-window-pill is-neutral">Baseline Point</span>';
+      } else {
+        const wSign = series.windowDelta > 0 ? "+" : "";
+        const wCls = series.windowDelta > 0 ? "is-positive" : series.windowDelta < 0 ? "is-negative" : "is-neutral";
+        const rangeText = activeRange === "all" ? "All-time" : activeRange.toUpperCase();
+        windowSummaryHtml = `<span class="ig-chart-window-pill ${wCls}">${wSign}${series.windowDelta.toLocaleString()} (${rangeText})</span>`;
+      }
+      const metricsList = [
+        { id: "followers", label: "Followers" },
+        { id: "following", label: "Following" },
+        ...hasMutualsData ? [{ id: "mutuals", label: "Mutuals" }] : []
+      ];
+      const metricButtonsHtml = metricsList.map((m) => `<button type="button" class="ig-chart-seg-btn${series.metric === m.id ? " is-active" : ""}" data-chart-metric="${m.id}">${m.label}</button>`).join("");
+      const rangeButtonsHtml = [
+        { id: "7d", label: "7D" },
+        { id: "30d", label: "30D" },
+        { id: "all", label: "All" }
+      ].map((r) => `<button type="button" class="ig-chart-seg-btn${activeRange === r.id ? " is-active" : ""}" data-chart-range="${r.id}">${r.label}</button>`).join("");
+      const midYCoord = roundCoord(series.padTop + series.plotH / 2);
+      const showDots = series.points.length <= 32;
+      const dotsSvg = series.points.map((pt, idx) => {
+        const isLast = idx === series.points.length - 1;
+        if (!showDots && !isLast && idx !== 0) return "";
+        const r = isLast ? 3.8 : 2.6;
+        return `<circle class="ig-chart-dot${isLast ? " is-latest" : ""}" cx="${pt.x}" cy="${pt.y}" r="${r}" fill="${series.strokeColor}" />`;
+      }).join("");
+      const hitRectsSvg = series.points.map((pt) => {
+        const aria = `${pt.displayDate}: ${pt.value.toLocaleString()} ${series.metricLabel} (${pt.delta >= 0 ? "+" : ""}${pt.delta})`;
+        return `<rect class="ig-chart-hit" tabindex="0" role="button" aria-label="${Utils.escapeHtml(aria)}" x="${pt.hitX}" y="${series.padTop}" width="${pt.hitW}" height="${series.plotH}" data-point-index="${pt.index}" data-x="${pt.x}" data-y="${pt.y}" data-x-ratio="${pt.xRatio}" data-date="${Utils.escapeHtml(pt.displayDate)}" data-val="${pt.value}" data-delta="${pt.delta}" data-intra="${pt.intradayDelta}" data-scans="${pt.scansCount}" data-start="${pt.startValue}" data-baseline="${pt.isBaselineOnly || pt.isOpeningAnchor ? "1" : "0"}" />`;
+      }).join("");
+      let xAxisSvg = "";
+      if (series.points.length === 1) {
+        xAxisSvg = `<text x="${latestPt.x}" y="${series.viewHeight - 6}" text-anchor="middle" class="ig-chart-axis-text">${Utils.escapeHtml(latestPt.axisLabel)}</text>`;
+      } else {
+        const midPt = series.points.length >= 5 ? series.points[Math.floor(series.points.length / 2)] : null;
+        xAxisSvg = [
+          `<text x="${series.padLeft}" y="${series.viewHeight - 6}" text-anchor="start" class="ig-chart-axis-text">${Utils.escapeHtml(firstPt.axisLabel)}</text>`,
+          midPt ? `<text x="${midPt.x}" y="${series.viewHeight - 6}" text-anchor="middle" class="ig-chart-axis-text">${Utils.escapeHtml(midPt.axisLabel)}</text>` : "",
+          `<text x="${series.padLeft + series.plotW}" y="${series.viewHeight - 6}" text-anchor="end" class="ig-chart-axis-text">${Utils.escapeHtml(latestPt.axisLabel)}</text>`
+        ].join("");
+      }
+      const lineDashAttr = series.mode === "single-baseline" ? ' stroke-dasharray="5 4"' : "";
+      return [
+        `<div class="ig-trend-chart-card" data-chart-scope="${Utils.escapeHtml(scope)}" data-metric-label="${Utils.escapeHtml(series.metricLabel)}">`,
+        `  <div class="ig-chart-header">`,
+        `    <div class="ig-chart-title-group">`,
+        `      <span class="ig-chart-title">${Icons.chartArea} Audience Trend</span>`,
+        `      ${windowSummaryHtml}`,
+        `    </div>`,
+        `    <div class="ig-chart-controls">`,
+        `      <div class="ig-chart-seg-group" role="group" aria-label="Chart metric">${metricButtonsHtml}</div>`,
+        `      <div class="ig-chart-seg-group" role="group" aria-label="Chart time range">${rangeButtonsHtml}</div>`,
+        `    </div>`,
+        `  </div>`,
+        `  <div class="ig-chart-readout" data-default-index="${latestPt.index}">`,
+        `    ${UI.renderChartPointReadoutHtml(latestPt, series.metricLabel)}`,
+        `  </div>`,
+        `  <div class="ig-chart-stage">`,
+        `    <svg class="ig-trend-svg" viewBox="0 0 ${series.viewWidth} ${series.viewHeight}" preserveAspectRatio="none" role="img" aria-label="${Utils.escapeHtml(series.metricLabel)} trend chart">`,
+        `      <defs>`,
+        `        <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">`,
+        `          <stop offset="0%" stop-color="${series.strokeColor}" stop-opacity="0.30" />`,
+        `          <stop offset="100%" stop-color="${series.strokeColor}" stop-opacity="0.01" />`,
+        `        </linearGradient>`,
+        `      </defs>`,
+        `      <line x1="${series.padLeft}" y1="${series.padTop}" x2="${series.padLeft + series.plotW}" y2="${series.padTop}" class="ig-chart-grid-line" />`,
+        `      <line x1="${series.padLeft}" y1="${midYCoord}" x2="${series.padLeft + series.plotW}" y2="${midYCoord}" class="ig-chart-grid-line is-mid" />`,
+        `      <line x1="${series.padLeft}" y1="${series.bottomY}" x2="${series.padLeft + series.plotW}" y2="${series.bottomY}" class="ig-chart-grid-line" />`,
+        `      <text x="${series.padLeft - 6}" y="${series.padTop + 4}" text-anchor="end" class="ig-chart-axis-text">${Utils.escapeHtml(Utils.formatNumber(series.yMax))}</text>`,
+        `      <text x="${series.padLeft - 6}" y="${midYCoord + 3}" text-anchor="end" class="ig-chart-axis-text">${Utils.escapeHtml(Utils.formatNumber(series.yMid))}</text>`,
+        `      <text x="${series.padLeft - 6}" y="${series.bottomY + 3}" text-anchor="end" class="ig-chart-axis-text">${Utils.escapeHtml(Utils.formatNumber(series.yMin))}</text>`,
+        `      <path d="${series.areaPath}" fill="url(#${gradId})" class="ig-chart-area" />`,
+        `      <path d="${series.linePath}" fill="none" stroke="${series.strokeColor}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"${lineDashAttr} class="ig-chart-line" />`,
+        `      <line x1="${latestPt.x}" y1="${series.padTop}" x2="${latestPt.x}" y2="${series.bottomY}" class="ig-chart-crosshair" style="opacity:0;" />`,
+        `      ${dotsSvg}`,
+        `      <circle class="ig-chart-active-dot" cx="${latestPt.x}" cy="${latestPt.y}" r="5" fill="${series.strokeColor}" style="opacity:0;" />`,
+        `      ${xAxisSvg}`,
+        `      ${hitRectsSvg}`,
+        `    </svg>`,
+        `    <div class="ig-chart-tooltip" style="display:none;" aria-hidden="true"></div>`,
+        `  </div>`,
+        `</div>`
+      ].join("\n");
+    },
+bindChartInteractions: (mountEl, { historyList, scope = "main", isRestricted = false } = {}) => {
+      if (!mountEl) return;
+      mountEl._chartConfig = { historyList, scope, isRestricted };
+      if (mountEl.getAttribute("data-chart-bound") === "1") return;
+      mountEl.setAttribute("data-chart-bound", "1");
+      const activateHit = (hitEl) => {
+        const card = hitEl.closest(".ig-trend-chart-card");
+        if (!card) return;
+        const x = Number(hitEl.getAttribute("data-x") || 0);
+        const y = Number(hitEl.getAttribute("data-y") || 0);
+        const xRatio = Number(hitEl.getAttribute("data-x-ratio") || 0.5);
+        const pt = {
+          displayDate: hitEl.getAttribute("data-date") || "",
+          value: Number(hitEl.getAttribute("data-val") || 0),
+          delta: Number(hitEl.getAttribute("data-delta") || 0),
+          intradayDelta: Number(hitEl.getAttribute("data-intra") || 0),
+          scansCount: Number(hitEl.getAttribute("data-scans") || 1),
+          startValue: Number(hitEl.getAttribute("data-start") || 0),
+          isBaselineOnly: hitEl.getAttribute("data-baseline") === "1"
+        };
+        const metricLabel = card.getAttribute("data-metric-label") || "Followers";
+        const crosshair = card.querySelector(".ig-chart-crosshair");
+        if (crosshair) {
+          crosshair.setAttribute("x1", String(x));
+          crosshair.setAttribute("x2", String(x));
+          crosshair.style.opacity = "1";
+        }
+        const activeDot = card.querySelector(".ig-chart-active-dot");
+        if (activeDot) {
+          activeDot.setAttribute("cx", String(x));
+          activeDot.setAttribute("cy", String(y));
+          activeDot.style.opacity = "1";
+        }
+        const readout = card.querySelector(".ig-chart-readout");
+        if (readout) {
+          readout.innerHTML = UI.renderChartPointReadoutHtml(pt, metricLabel);
+        }
+        const tooltip = card.querySelector(".ig-chart-tooltip");
+        if (tooltip) {
+          const sign = pt.delta > 0 ? "+" : "";
+          const deltaCls = pt.isBaselineOnly ? "is-neutral" : pt.delta > 0 ? "is-positive" : pt.delta < 0 ? "is-negative" : "is-neutral";
+          const deltaLabel = pt.isBaselineOnly ? "Baseline" : `${sign}${pt.delta.toLocaleString()} vs prev`;
+          tooltip.innerHTML = `<div class="ig-chart-tt-date">${Utils.escapeHtml(pt.displayDate)}</div><div class="ig-chart-tt-val">${Utils.formatExactNumber(pt.value)}</div><div class="ig-chart-tt-delta ${deltaCls}">${Utils.escapeHtml(deltaLabel)}</div>`;
+          tooltip.style.display = "block";
+          const leftPct = Math.min(92, Math.max(8, Math.round(x / 520 * 100)));
+          tooltip.style.left = `${leftPct}%`;
+          if (xRatio > 0.6) tooltip.classList.add("is-right");
+          else tooltip.classList.remove("is-right");
+        }
+      };
+      const resetChartHover = () => {
+        const card = mountEl.querySelector(".ig-trend-chart-card");
+        if (!card) return;
+        const crosshair = card.querySelector(".ig-chart-crosshair");
+        const activeDot = card.querySelector(".ig-chart-active-dot");
+        const tooltip = card.querySelector(".ig-chart-tooltip");
+        if (crosshair) crosshair.style.opacity = "0";
+        if (activeDot) activeDot.style.opacity = "0";
+        if (tooltip) tooltip.style.display = "none";
+        const readout = card.querySelector(".ig-chart-readout");
+        const defaultIdx = readout ? readout.getAttribute("data-default-index") : null;
+        const latestHit = defaultIdx !== null ? card.querySelector(`.ig-chart-hit[data-point-index="${defaultIdx}"]`) : null;
+        if (readout && latestHit) {
+          const metricLabel = card.getAttribute("data-metric-label") || "Followers";
+          const pt = {
+            displayDate: latestHit.getAttribute("data-date") || "",
+            value: Number(latestHit.getAttribute("data-val") || 0),
+            delta: Number(latestHit.getAttribute("data-delta") || 0),
+            intradayDelta: Number(latestHit.getAttribute("data-intra") || 0),
+            scansCount: Number(latestHit.getAttribute("data-scans") || 1),
+            startValue: Number(latestHit.getAttribute("data-start") || 0),
+            isBaselineOnly: latestHit.getAttribute("data-baseline") === "1"
+          };
+          readout.innerHTML = UI.renderChartPointReadoutHtml(pt, metricLabel);
+        }
+      };
+      mountEl.addEventListener("click", (e) => {
+        const metricBtn = e.target.closest("[data-chart-metric]");
+        const rangeBtn = e.target.closest("[data-chart-range]");
+        if (!metricBtn && !rangeBtn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cfg = mountEl._chartConfig;
+        if (!cfg) return;
+        if (!UI.chartState[cfg.scope]) {
+          UI.chartState[cfg.scope] = { metric: "followers", range: "30d" };
+        }
+        if (metricBtn) {
+          UI.chartState[cfg.scope].metric = metricBtn.getAttribute("data-chart-metric") || "followers";
+        }
+        if (rangeBtn) {
+          UI.chartState[cfg.scope].range = rangeBtn.getAttribute("data-chart-range") || "30d";
+        }
+        mountEl.innerHTML = UI.renderTrendChartCard(cfg.historyList, {
+          scope: cfg.scope,
+          isRestricted: cfg.isRestricted
+        });
+      });
+      mountEl.addEventListener("pointerover", (e) => {
+        const hit = e.target.closest(".ig-chart-hit");
+        if (hit) activateHit(hit);
+      });
+      mountEl.addEventListener("pointerleave", () => {
+        resetChartHover();
+      });
+      mountEl.addEventListener("focusin", (e) => {
+        const hit = e.target.closest(".ig-chart-hit");
+        if (hit) activateHit(hit);
+      });
+      mountEl.addEventListener("focusout", (e) => {
+        if (!mountEl.contains(e.relatedTarget)) {
+          resetChartHover();
+        }
+      });
+    },
+renderAudienceCompositionCard: ({
+      followers = 0,
+      following = 0,
+      mutuals = 0,
+      fans = null,
+      notFollowingBack = null,
+      mode = "main"
+    } = {}) => {
+      const fCount = Math.max(0, Number(followers || 0));
+      const ingCount = Math.max(0, Number(following || 0));
+      const mutCount = Math.max(0, Number(mutuals || 0));
+      const fansCount = fans !== null && fans !== void 0 ? Math.max(0, Number(fans)) : Math.max(0, fCount - mutCount);
+      const notBackCount = notFollowingBack !== null && notFollowingBack !== void 0 ? Math.max(0, Number(notFollowingBack)) : Math.max(0, ingCount - mutCount);
+      const unionTotal = mutCount + fansCount + notBackCount;
+      if (unionTotal === 0) return "";
+      const mutPct = roundCoord(mutCount / unionTotal * 100);
+      const fansPct = roundCoord(fansCount / unionTotal * 100);
+      const notBackPct = roundCoord(Math.max(0, 100 - mutPct - fansPct));
+      const followBackRate = ingCount > 0 ? `${(mutCount / ingCount * 100).toFixed(1)}%` : "—";
+      const fanShare = fCount > 0 ? `${(fansCount / fCount * 100).toFixed(1)}%` : "—";
+      const ffRatio = ingCount > 0 ? `${(fCount / ingCount).toFixed(2)}x` : "—";
+      const fansLabel = mode === "target" ? "Followers Only" : "Fans";
+      const notBackLabel = mode === "target" ? "Following Only" : "Not Following Back";
+      const cardTitle = mode === "target" ? "Network Composition" : "Audience Composition & Reciprocity";
+      return [
+        `<div class="ig-composition-card">`,
+        `  <div class="ig-comp-header">`,
+        `    <span class="ig-comp-title">${Icons.mutuals} ${cardTitle}</span>`,
+        `    <span class="ig-comp-ratio-pill" title="Followers to Following ratio">F/F Ratio: <strong>${ffRatio}</strong></span>`,
+        `  </div>`,
+        `  <div class="ig-comp-bar" role="img" aria-label="Mutuals ${mutPct}%, ${fansLabel} ${fansPct}%, ${notBackLabel} ${notBackPct}%">`,
+        mutCount > 0 ? `    <div class="ig-comp-seg is-mutuals" style="width:${mutPct}%" title="Mutuals: ${mutCount.toLocaleString()} (${mutPct}%)"></div>` : "",
+        fansCount > 0 ? `    <div class="ig-comp-seg is-fans" style="width:${fansPct}%" title="${fansLabel}: ${fansCount.toLocaleString()} (${fansPct}%)"></div>` : "",
+        notBackCount > 0 ? `    <div class="ig-comp-seg is-notback" style="width:${notBackPct}%" title="${notBackLabel}: ${notBackCount.toLocaleString()} (${notBackPct}%)"></div>` : "",
+        `  </div>`,
+        `  <div class="ig-comp-legend">`,
+        `    <span class="ig-comp-legend-item"><span class="ig-comp-dot is-mutuals"></span>Mutuals <strong>${mutCount.toLocaleString()}</strong></span>`,
+        `    <span class="ig-comp-legend-item"><span class="ig-comp-dot is-fans"></span>${fansLabel} <strong>${fansCount.toLocaleString()}</strong></span>`,
+        `    <span class="ig-comp-legend-item"><span class="ig-comp-dot is-notback"></span>${notBackLabel} <strong>${notBackCount.toLocaleString()}</strong></span>`,
+        `  </div>`,
+        `  <div class="ig-comp-metrics">`,
+        `    <div class="ig-comp-metric-box">`,
+        `      <span class="ig-comp-metric-label">Reciprocity</span>`,
+        `      <span class="ig-comp-metric-val">${followBackRate}</span>`,
+        `    </div>`,
+        `    <div class="ig-comp-metric-box">`,
+        `      <span class="ig-comp-metric-label">${fansLabel} Share</span>`,
+        `      <span class="ig-comp-metric-val">${fanShare}</span>`,
+        `    </div>`,
+        `    <div class="ig-comp-metric-box">`,
+        `      <span class="ig-comp-metric-label">Total Reach</span>`,
+        `      <span class="ig-comp-metric-val">${unionTotal.toLocaleString()}</span>`,
+        `    </div>`,
+        `  </div>`,
+        `</div>`
+      ].filter(Boolean).join("\n");
+    },
+renderSparklineSvg: (historyList, { metric = "followers", width = 68, height = 22 } = {}) => {
+      const series = UI.computeTrendSeries(historyList, { metric, range: "30d" });
+      if (series.isEmpty || series.points.length === 0) return "";
+      const pts = series.points;
+      const vals = pts.map((p) => p.value);
+      const minV = Math.min(...vals);
+      const maxV = Math.max(...vals);
+      const span = Math.max(1, maxV - minV);
+      const pad = 2.5;
+      const innerW = width - pad * 2;
+      const innerH = height - pad * 2;
+      let stroke = "#60a5fa";
+      if (series.windowDelta > 0) stroke = "#22c55e";
+      else if (series.windowDelta < 0) stroke = "#ef4444";
+      if (pts.length === 1) {
+        const cy = roundCoord(height / 2);
+        return `<svg class="ig-sparkline-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true"><line x1="${pad}" y1="${cy}" x2="${width - pad}" y2="${cy}" stroke="${stroke}" stroke-width="1.6" stroke-dasharray="3 2" opacity="0.7" /><circle cx="${roundCoord(width / 2)}" cy="${cy}" r="2.4" fill="${stroke}" /></svg>`;
+      }
+      const coords = pts.map((p, idx) => {
+        const x = roundCoord(pad + idx / (pts.length - 1) * innerW);
+        const yRatio = maxV === minV ? 0.5 : (p.value - minV) / span;
+        const y = roundCoord(height - pad - yRatio * innerH);
+        return { x, y };
+      });
+      const pathD = coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x} ${c.y}`).join(" ");
+      const lastC = coords[coords.length - 1];
+      return `<svg class="ig-sparkline-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true"><path d="${pathD}" fill="none" stroke="${stroke}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" /><circle cx="${lastC.x}" cy="${lastC.y}" r="2.2" fill="${stroke}" /></svg>`;
+    }
+  });
   Object.assign(UI, {
     renderResultsPage: (containerId) => {
       const state = UI.paginationState[containerId];
       if (!state) return;
       const container = document.getElementById(containerId);
       if (!container) return;
-      const { rawUsers, users, title, isExportable, pageSize, searchQuery, filterType } = state;
+      const {
+        rawUsers,
+        users,
+        title,
+        isExportable,
+        pageSize,
+        searchQuery,
+        filterType,
+        listVariant = "standard",
+        clearNominalKey = null,
+        emptyMessage = "No data available yet."
+      } = state;
       const safeTitle = Utils.escapeHtml(title);
       const totalRaw = (rawUsers || []).length;
       const totalFiltered = (users || []).length;
       if (totalRaw === 0) {
-        container.innerHTML = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">0</span></div><div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No data available yet.</div>";
-        if (isExportable) {
+        container.innerHTML = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">0</span></div><div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>" + Utils.escapeHtml(emptyMessage) + "</div>";
+        if (isExportable && typeof UI.syncMainExportButton === "function") {
+          UI.syncMainExportButton();
+        } else if (isExportable) {
           const exportBtn = document.getElementById("ig-export-csv");
           if (exportBtn) exportBtn.disabled = true;
         }
@@ -3389,23 +6178,25 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       let listEl = container.querySelector(".ig-view-list");
       let paginationEl = container.querySelector(".ig-view-pagination");
       const badgeCountText = totalFiltered !== totalRaw ? `${totalFiltered} / ${totalRaw}` : `${totalRaw}`;
+      const clearNominalBtnHtml = clearNominalKey ? `<button type="button" class="ig-btn-clear-nominal" data-clear-key="${Utils.escapeHtml(clearNominalKey)}" data-container="${Utils.escapeHtml(containerId)}" data-title="${safeTitle}" title="Clear ${safeTitle}">${Icons.trash} Clear</button>` : "";
+      const headerInnerHtml = '<div class="ig-section-title" style="margin-bottom:0;">' + safeTitle + ' <span class="ig-badge">' + badgeCountText + "</span></div>" + clearNominalBtnHtml;
+      const chipsDef = listVariant === "nominal" ? UI.NOMINAL_CHIPS_DEF || UI.CHIPS_DEF : listVariant === "renamed" ? UI.RENAMED_CHIPS_DEF || UI.CHIPS_DEF : UI.CHIPS_DEF;
+      const searchPlaceholder = listVariant === "renamed" ? "Search by @old, @current or full name..." : listVariant === "nominal" ? "Search by @username, previous @handle or name..." : "Search by @username or full name...";
       if (!toolbarEl) {
-        const counts = UI.getFilterCounts(rawUsers, searchQuery);
+        const counts = UI.getFilterCounts(rawUsers, searchQuery, listVariant);
         let chipsHtml = "";
-        UI.CHIPS_DEF.forEach((chip) => {
+        chipsDef.forEach((chip) => {
           const isActive = (filterType || "all") === chip.id;
           const iconHtml = chip.icon ? `<span class="ig-chip-icon">${chip.icon}</span>` : "";
           chipsHtml += `<button type="button" class="ig-filter-chip${isActive ? " is-active" : ""}" data-filter="${chip.id}">` + iconHtml + `<span class="ig-chip-label">${chip.label}</span><span class="ig-chip-count">${counts[chip.id] || 0}</span></button>`;
         });
         const clearStyle = searchQuery ? "display: inline-flex;" : "display: none;";
         const skeletonHtml = [
-          '<div class="ig-view-header">',
-          '  <div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + badgeCountText + "</span></div>",
-          "</div>",
+          '<div class="ig-view-header ig-view-header-row">' + headerInnerHtml + "</div>",
           '<div class="ig-filter-toolbar">',
           '  <div class="ig-search-box">',
           '    <span class="ig-search-icon">' + Icons.search + "</span>",
-          '    <input type="text" class="ig-search-input" placeholder="Search by @username or full name..." value="' + Utils.escapeHtml(searchQuery || "") + '" autocomplete="off" spellcheck="false" />',
+          '    <input type="text" class="ig-search-input" placeholder="' + searchPlaceholder + '" value="' + Utils.escapeHtml(searchQuery || "") + '" autocomplete="off" spellcheck="false" />',
           '    <button type="button" class="ig-search-clear" title="Clear search" style="' + clearStyle + '">' + Icons.clear + "</button>",
           "  </div>",
           '  <div class="ig-filter-chips">' + chipsHtml + "</div>",
@@ -3473,7 +6264,8 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         }
       } else {
         if (headerEl) {
-          headerEl.innerHTML = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + badgeCountText + "</span></div>";
+          headerEl.className = "ig-view-header ig-view-header-row";
+          headerEl.innerHTML = headerInnerHtml;
         }
         UI.updateFilterChips(containerId);
         const clearBtn = toolbarEl.querySelector(".ig-search-clear");
@@ -3509,19 +6301,25 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           const avatarClass = "ig-user-avatar ig-avatar-monogram" + (isBestieStory ? " has-bestie-ring" : "");
           const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || "") + '" data-username="' + safeUsername + '" style="' + avatarStyle + '"><span class="ig-monogram-letter">' + safeInitial + "</span></div>";
           const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${Utils.escapeHtml(u.id || "")}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
-          const badgesHtml = UI.renderUserBadgesHtml(u);
-          rowsHtml += '<div class="ig-user-row" id="' + uniqueId + '" data-user-id="' + Utils.escapeHtml(u.id || "") + '">';
+          const badgesHtml = UI.renderUserBadgesHtml(u, { variant: listVariant });
+          let identityHtml = '<span class="ig-username">' + safeUsername + "</span>";
+          if (listVariant === "renamed") {
+            const safeOld = Utils.escapeHtml(u.oldUsername || "-");
+            const safeNew = Utils.escapeHtml(u.newUsername || u.username || "-");
+            identityHtml = `<span class="ig-rename-flow"><span class="ig-rename-old" title="Previous handle: @${safeOld}">@${safeOld}</span><span class="ig-rename-arrow">${Icons.arrowRight}</span><span class="ig-rename-new" title="Current handle: @${safeNew}">@${safeNew}</span></span>`;
+          }
+          rowsHtml += '<div class="ig-user-row" id="' + uniqueId + '" data-user="' + safeUsername + '" data-user-id="' + Utils.escapeHtml(u.id || "") + '">';
           rowsHtml += '<div class="ig-user-info">' + avatarTriggerHtml;
-          rowsHtml += '<div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
-          rowsHtml += '<div style="display:flex; align-items:center; min-width:0; flex-wrap:wrap;">';
-          rowsHtml += '<span class="ig-username">' + safeUsername + "</span>";
+          rowsHtml += '<div class="ig-user-text-col">';
+          rowsHtml += '<div class="ig-user-title-line">';
+          rowsHtml += identityHtml;
           if (isVerified) {
             rowsHtml += '<span title="Verified" style="display:inline-flex; align-items:center;">' + Icons.verified + "</span>";
           }
           rowsHtml += '<span class="ig-user-badges" id="' + uniqueId + '-badges">' + badgesHtml + "</span>";
           rowsHtml += "</div>";
           if (safeFullName) {
-            rowsHtml += '<span style="font-size:11px; color:#8e8e8e; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px;">' + safeFullName + "</span>";
+            rowsHtml += '<span class="ig-user-fullname">' + safeFullName + "</span>";
           }
           rowsHtml += "</div></div>";
           rowsHtml += '<div class="ig-user-actions">';
@@ -3529,8 +6327,10 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             rowsHtml += '<button class="ig-btn-whitelist btn-whitelist" data-user="' + safeUsername + '" data-container="' + containerId + '">Ignore</button>';
           }
           rowsHtml += '<button class="ig-btn-inspect-user btn-inspect-user" data-user-id="' + Utils.escapeHtml(u.id || "") + '" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + " Inspect</button>";
-          if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing" || containerId === "ig-view-newfollowers") {
+          if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing" || containerId === "ig-view-newfollowers" || containerId === "ig-view-unfollowers" || containerId === "ig-view-renamed") {
             rowsHtml += '<button class="ig-btn-target-audit btn-target-audit" data-user="' + safeUsername + '" data-user-id="' + Utils.escapeHtml(u.id || "") + '" title="Audit Account Network in Subpanel">' + Icons.target + " Audit</button>";
+          }
+          if (containerId === "ig-view-mutuals" || containerId === "ig-view-fans" || containerId === "ig-view-notfollowing" || containerId === "ig-view-newfollowers") {
             rowsHtml += '<button class="ig-btn-spy-story btn-spy-story" data-user="' + safeUsername + '" data-user-id="' + Utils.escapeHtml(u.id || "") + '">' + Icons.spy + " Check Story</button>";
           }
           rowsHtml += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
@@ -3550,11 +6350,13 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         paginationHtml += "</div>";
       }
       if (paginationEl) paginationEl.innerHTML = paginationHtml;
-      if (isExportable) {
+      if (isExportable && typeof UI.syncMainExportButton === "function") {
+        UI.syncMainExportButton();
+      } else if (isExportable) {
         const exportBtn = document.getElementById("ig-export-csv");
         if (exportBtn) exportBtn.disabled = totalFiltered === 0 && totalRaw === 0;
       }
-      const userIdsToFetch = pageUsers.map((u) => u.id).filter((id) => id && id !== "0" && id !== "null" && id !== "undefined");
+      const userIdsToFetch = listVariant === "standard" ? pageUsers.map((u) => u.id).filter((id) => id && id !== "0" && id !== "null" && id !== "undefined") : [];
       if (userIdsToFetch.length > 0 && typeof API.fetchFriendshipStatusesMany === "function") {
         API.fetchFriendshipStatusesMany(userIdsToFetch).then((statusMap) => {
           const currentState = UI.paginationState[containerId];
@@ -3596,8 +6398,12 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           console.warn("[IG Analyzer] Error updating friendship statuses batch:", err);
         });
       }
+      if (typeof UI.syncMainExportButton === "function") {
+        UI.syncMainExportButton();
+      }
     },
-    renderUserBadgesHtml: (u) => {
+    renderUserBadgesHtml: (u, options = {}) => {
+      const variant = options.variant || "standard";
       let badges = "";
       if (u?.isPrivate) {
         badges += '<span class="ig-badge-pill ig-badge-private" title="Private Account">' + Icons.lock + "</span>";
@@ -3613,13 +6419,30 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       } else if (u?.isCreator) {
         badges += '<span class="ig-badge-pill ig-badge-creator" title="' + (u.category ? Utils.escapeHtml(u.category) : "Content Creator") + '">' + Icons.creator + " Creator</span>";
       }
-      if (u?.followsBack === true) {
-        badges += '<span class="ig-badge-pill ig-badge-mutual" title="Mutual Follower">' + Icons.mutuals + " Mutual</span>";
-      } else if (u?.followsBack === false) {
-        badges += '<span class="ig-badge-pill ig-badge-fan" title="You do not follow them back">' + Icons.fans + " Fan</span>";
+      if (variant === "renamed") {
+        if (u?.relationship === "mutual") {
+          badges += '<span class="ig-badge-pill ig-badge-mutual" title="Mutual Follower">' + Icons.mutuals + " Mutual</span>";
+        } else if (u?.relationship === "fan") {
+          badges += '<span class="ig-badge-pill ig-badge-fan" title="Follower (Fan)">' + Icons.fans + " Fan</span>";
+        } else if (u?.relationship === "following") {
+          badges += '<span class="ig-badge-pill ig-badge-following" title="Account you follow">' + Icons.user + " Following</span>";
+        }
+      } else {
+        if (u?.followsBack === true) {
+          badges += '<span class="ig-badge-pill ig-badge-mutual" title="Mutual Follower">' + Icons.mutuals + " Mutual</span>";
+        } else if (u?.followsBack === false) {
+          badges += '<span class="ig-badge-pill ig-badge-fan" title="You do not follow them back">' + Icons.fans + " Fan</span>";
+        }
+        if (Number(u?.occurrences) > 1) {
+          badges += '<span class="ig-badge-pill ig-badge-repeat" title="Detected ' + Number(u.occurrences) + ' times">' + Icons.repeat + " " + Number(u.occurrences) + "x</span>";
+        }
+        if (u?.previousUsername) {
+          const safePrev = Utils.escapeHtml(u.previousUsername);
+          badges += '<span class="ig-badge-pill ig-badge-prev-user" title="Previously @' + safePrev + '">' + Icons.renamed + " was @" + safePrev + "</span>";
+        }
       }
       if (u?.date) {
-        badges += '<span class="ig-badge-pill ig-badge-date" title="First detected on ' + Utils.escapeHtml(u.date) + '">' + Icons.clock + " " + Utils.escapeHtml(u.date) + "</span>";
+        badges += '<span class="ig-badge-pill ig-badge-date" title="Detected on ' + Utils.escapeHtml(u.date) + '">' + Icons.clock + " " + Utils.escapeHtml(u.date) + "</span>";
       }
       return badges;
     },
@@ -3635,12 +6458,18 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         title,
         containerId,
         isExportable,
+        listVariant: "standard",
+        clearNominalKey: null,
+        emptyMessage: "No data available yet.",
         page: 1,
         pageSize: 50,
         searchQuery: "",
         filterType: "all"
       };
       UI.renderResultsPage(containerId);
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts();
+      }
     },
     renderNewFollowers: (users, containerId = "ig-view-newfollowers") => {
       const safeUsers = Array.isArray(users) ? users : [];
@@ -3654,27 +6483,20 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       const total = rawList.length;
       if (total === 0) {
         container.innerHTML = '<div class="ig-view-header"><div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">0</span></div></div><div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.shieldCheck + "</span>No ignored accounts in whitelist.</div>";
+        if (typeof UI.updateMainTabCounts === "function") {
+          UI.updateMainTabCounts();
+        }
+        if (typeof UI.syncMainExportButton === "function") {
+          UI.syncMainExportButton();
+        }
         return;
       }
       const query = (UI.whitelistSearchQuery || "").trim().toLowerCase();
       const filteredList = query ? rawList.filter((u) => String(u || "").toLowerCase().includes(query)) : rawList;
       const badgeText = filteredList.length !== total ? `${filteredList.length} / ${total}` : `${total}`;
-      let html = [
-        '<div class="ig-view-header" style="display:flex; justify-content:space-between; align-items:center;">',
-        '  <div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + badgeText + "</span></div>",
-        '  <button type="button" class="ig-btn-clear-whitelist btn-clear-whitelist" title="Clear all ignored accounts">' + Icons.trash + " Clear All</button>",
-        "</div>",
-        '<div class="ig-filter-toolbar">',
-        '  <div class="ig-search-box">',
-        '    <span class="ig-search-icon">' + Icons.search + "</span>",
-        '    <input type="text" class="ig-search-input ig-whitelist-search-input" placeholder="Search ignored accounts..." value="' + Utils.escapeHtml(UI.whitelistSearchQuery || "") + '" autocomplete="off" spellcheck="false" />',
-        '    <button type="button" class="ig-search-clear ig-whitelist-search-clear" title="Clear search" style="' + (UI.whitelistSearchQuery ? "display:inline-flex;" : "display:none;") + '">' + Icons.clear + "</button>",
-        "  </div>",
-        "</div>",
-        '<div class="ig-view-list">'
-      ].join("\n");
+      let rowsHtml = "";
       if (filteredList.length === 0) {
-        html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.search + "</span>No accounts match your search.</div>";
+        rowsHtml = '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.search + "</span>No accounts match your search.</div>";
       } else {
         const snapshot = Storage.load();
         const knownUsersMap = new Map();
@@ -3685,219 +6507,421 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             ...snapshot.notFollowingBackDetailed || []
           ];
           candidates.forEach((u) => {
-            if (u?.username && !knownUsersMap.has(u.username)) {
-              knownUsersMap.set(u.username, u);
+            if (u?.username && !knownUsersMap.has(u.username.toLowerCase())) {
+              knownUsersMap.set(u.username.toLowerCase(), u);
             }
           });
         }
         filteredList.slice().reverse().forEach((username, idx) => {
           const safeUsername = Utils.escapeHtml(username);
           const safeUrl = Utils.sanitizeUrl(username);
-          const known = knownUsersMap.get(username);
+          const lower = String(username || "").toLowerCase();
+          const known = knownUsersMap.get(lower) || (typeof Storage.findKnownUserByUsername === "function" ? Storage.findKnownUserByUsername(username) : null);
+          const safeUserId = Utils.escapeHtml(known?.id || "");
           const safeFullName = known?.fullName ? Utils.escapeHtml(known.fullName) : "";
           const safeAvatarUrl = known?.profilePicUrl ? Utils.sanitizeImageUrl(known.profilePicUrl) : null;
           const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : "?";
-          const avatarClass = "ig-user-avatar ig-avatar-monogram";
+          const hasStory = Boolean(known?.latestReelMedia && known.latestReelMedia > 0);
+          const avatarClass = "ig-user-avatar ig-avatar-monogram" + (hasStory ? known?.isBestie ? " has-bestie-ring" : " has-story-ring" : "");
           const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || "") + '" data-username="' + safeUsername + '"><span class="ig-monogram-letter">' + safeInitial + "</span></div>";
-          const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
-          html += '<div class="ig-user-row" id="wl-row-' + idx + '" data-user="' + safeUsername + '">';
-          html += '<div class="ig-user-info">' + avatarTriggerHtml;
-          html += '<div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
-          html += '<span class="ig-username">' + safeUsername + "</span>";
+          const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${safeUserId}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
+          rowsHtml += '<div class="ig-user-row" id="wl-row-' + idx + '" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '">';
+          rowsHtml += '<div class="ig-user-info">' + avatarTriggerHtml;
+          rowsHtml += '<div class="ig-user-text-col">';
+          rowsHtml += '<span class="ig-username">' + safeUsername + "</span>";
           if (safeFullName) {
-            html += '<span style="font-size:11px; color:#8e8e8e; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px;">' + safeFullName + "</span>";
+            rowsHtml += '<span class="ig-user-fullname">' + safeFullName + "</span>";
           }
-          html += "</div></div>";
-          html += '<div class="ig-user-actions">';
-          html += '<button class="ig-btn-unwhitelist btn-unwhitelist" data-user="' + safeUsername + '" title="Restore to Not Following">' + Icons.restore + " Restore</button>";
-          html += '<button class="ig-btn-inspect-user btn-inspect-user" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + " Inspect</button>";
-          html += '<button class="ig-btn-target-audit btn-target-audit" data-user="' + safeUsername + '" title="Audit Account Network in Subpanel">' + Icons.target + " Audit</button>";
-          html += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
-          html += "</div></div>";
+          rowsHtml += "</div></div>";
+          rowsHtml += '<div class="ig-user-actions">';
+          rowsHtml += '<button class="ig-btn-unwhitelist btn-unwhitelist" data-user="' + safeUsername + '" title="Restore to Not Following">' + Icons.restore + " Restore</button>";
+          rowsHtml += '<button class="ig-btn-inspect-user btn-inspect-user" data-user-id="' + safeUserId + '" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + " Inspect</button>";
+          rowsHtml += '<button class="ig-btn-target-audit btn-target-audit" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '" title="Audit Account Network in Subpanel">' + Icons.target + " Audit</button>";
+          rowsHtml += '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
+          rowsHtml += "</div></div>";
         });
       }
-      html += "</div>";
-      container.innerHTML = html;
-      UI.loadAvatarsProgressively(container);
-      const searchInput = container.querySelector(".ig-whitelist-search-input");
-      const clearBtn = container.querySelector(".ig-whitelist-search-clear");
-      let searchTimeout = null;
-      if (searchInput) {
-        searchInput.addEventListener("input", (e) => {
-          const val = e.target.value;
-          if (clearBtn) clearBtn.style.display = val ? "inline-flex" : "none";
-          clearTimeout(searchTimeout);
-          searchTimeout = setTimeout(() => {
-            UI.whitelistSearchQuery = val;
-            UI.renderWhitelist(whitelistUsers, containerId);
-          }, 120);
-        });
-        searchInput.addEventListener("keydown", (e) => {
-          if (e.key === "Escape" && searchInput.value) {
+      const existingSearchInput = container.querySelector(".ig-whitelist-search-input");
+      const existingListEl = container.querySelector(".ig-view-list");
+      if (existingSearchInput && existingListEl) {
+        const badgeEl = container.querySelector(".ig-section-title .ig-badge");
+        if (badgeEl) badgeEl.textContent = badgeText;
+        const clearBtn = container.querySelector(".ig-whitelist-search-clear");
+        if (clearBtn) clearBtn.style.display = UI.whitelistSearchQuery ? "inline-flex" : "none";
+        if (document.activeElement !== existingSearchInput && existingSearchInput.value !== (UI.whitelistSearchQuery || "")) {
+          existingSearchInput.value = UI.whitelistSearchQuery || "";
+        }
+        existingListEl.innerHTML = rowsHtml;
+        UI.loadAvatarsProgressively(existingListEl);
+      } else {
+        container.innerHTML = [
+          '<div class="ig-view-header-row">',
+          '  <div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + badgeText + "</span></div>",
+          '  <button type="button" class="ig-btn-clear-whitelist btn-clear-whitelist" title="Clear all ignored accounts">' + Icons.trash + " Clear All</button>",
+          "</div>",
+          '<div class="ig-filter-toolbar">',
+          '  <div class="ig-search-box">',
+          '    <span class="ig-search-icon">' + Icons.search + "</span>",
+          '    <input type="text" class="ig-search-input ig-whitelist-search-input" placeholder="Search ignored accounts..." value="' + Utils.escapeHtml(UI.whitelistSearchQuery || "") + '" autocomplete="off" spellcheck="false" />',
+          '    <button type="button" class="ig-search-clear ig-whitelist-search-clear" title="Clear search" style="' + (UI.whitelistSearchQuery ? "display:inline-flex;" : "display:none;") + '">' + Icons.clear + "</button>",
+          "  </div>",
+          "</div>",
+          '<div class="ig-view-list">' + rowsHtml + "</div>"
+        ].join("\n");
+        UI.loadAvatarsProgressively(container);
+        const searchInput = container.querySelector(".ig-whitelist-search-input");
+        const clearBtn = container.querySelector(".ig-whitelist-search-clear");
+        let searchTimeout = null;
+        if (searchInput) {
+          searchInput.addEventListener("input", (e) => {
+            const val = e.target.value;
+            if (clearBtn) clearBtn.style.display = val ? "inline-flex" : "none";
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+              UI.whitelistSearchQuery = val;
+              UI.renderWhitelist(Storage.getWhitelist(), containerId);
+            }, 120);
+          });
+          searchInput.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && searchInput.value) {
+              e.preventDefault();
+              e.stopPropagation();
+              searchInput.value = "";
+              UI.whitelistSearchQuery = "";
+              UI.renderWhitelist(Storage.getWhitelist(), containerId);
+            }
+          });
+        }
+        if (clearBtn && searchInput) {
+          clearBtn.addEventListener("click", (e) => {
             e.preventDefault();
             searchInput.value = "";
             UI.whitelistSearchQuery = "";
-            UI.renderWhitelist(whitelistUsers, containerId);
+            UI.renderWhitelist(Storage.getWhitelist(), containerId);
+            searchInput.focus();
+          });
+        }
+      }
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts();
+      }
+      if (typeof UI.syncMainExportButton === "function") {
+        UI.syncMainExportButton();
+      }
+    },
+enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
+      if (!Array.isArray(rawList) || rawList.length === 0) return [];
+      const snapshot = Storage.load(userId);
+      const knownById = new Map();
+      const knownByLower = new Map();
+      const followersLowerSet = new Set();
+      const followingLowerSet = new Set();
+      if (snapshot && typeof snapshot === "object") {
+        (snapshot.followers || []).forEach((u) => {
+          const name = typeof u === "string" ? u : u?.username;
+          if (name) followersLowerSet.add(String(name).toLowerCase());
+        });
+        (snapshot.following || []).forEach((u) => {
+          const name = typeof u === "string" ? u : u?.username;
+          if (name) followingLowerSet.add(String(name).toLowerCase());
+        });
+        [
+          ...snapshot.mutualsDetailed || [],
+          ...snapshot.followersDetailed || [],
+          ...snapshot.followingDetailed || [],
+          ...snapshot.fansDetailed || [],
+          ...snapshot.notFollowingBackDetailed || []
+        ].forEach((u) => {
+          if (!u || typeof u !== "object") return;
+          if (u.id && String(u.id) !== "0" && !knownById.has(String(u.id))) {
+            knownById.set(String(u.id), u);
+          }
+          if (u.username && !knownByLower.has(u.username.toLowerCase())) {
+            knownByLower.set(u.username.toLowerCase(), u);
           }
         });
       }
-      if (clearBtn && searchInput) {
-        clearBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          searchInput.value = "";
-          UI.whitelistSearchQuery = "";
-          UI.renderWhitelist(whitelistUsers, containerId);
-        });
+      const reversed = rawList.slice().reverse();
+      const result = [];
+      const seenKeys = new Set();
+      for (const item of reversed) {
+        if (!item) continue;
+        const isObj = typeof item === "object";
+        if (variant === "renamed") {
+          const oldUsername = String(isObj ? item.oldUsername || "" : "").replace(/^@+/, "").trim();
+          const newUsername = String(isObj ? item.newUsername || item.username || "" : item).replace(/^@+/, "").trim();
+          if (!oldUsername && !newUsername) continue;
+          const idStr = isObj && item.id && String(item.id) !== "0" ? String(item.id) : null;
+          const known = idStr && knownById.get(idStr) || newUsername && knownByLower.get(newUsername.toLowerCase()) || oldUsername && knownByLower.get(oldUsername.toLowerCase()) || null;
+          const liveUsername = newUsername || known?.username || oldUsername;
+          const dedupKey = `${idStr || liveUsername.toLowerCase()}:${oldUsername.toLowerCase()}->${newUsername.toLowerCase()}`;
+          if (seenKeys.has(dedupKey)) continue;
+          seenKeys.add(dedupKey);
+          const lowerLive = liveUsername.toLowerCase();
+          let relationship = isObj ? item.relationship || null : null;
+          if (!relationship) {
+            const inF = followersLowerSet.has(lowerLive);
+            const inIng = followingLowerSet.has(lowerLive);
+            if (inF && inIng) relationship = "mutual";
+            else if (inF) relationship = "fan";
+            else if (inIng) relationship = "following";
+          }
+          result.push({
+            id: idStr || (known?.id ? String(known.id) : null),
+            username: liveUsername,
+            oldUsername: oldUsername || "-",
+            newUsername: newUsername || liveUsername,
+            relationship,
+            fullName: (isObj ? item.fullName : "") || known?.fullName || "",
+            profilePicUrl: Utils.sanitizeImageUrl((isObj ? item.profilePicUrl : null) || known?.profilePicUrl || null),
+            isVerified: Boolean((isObj ? item.isVerified : void 0) ?? known?.isVerified),
+            isPrivate: Boolean((isObj ? item.isPrivate : void 0) ?? known?.isPrivate),
+            date: isObj && item.date ? String(item.date) : "",
+            url: `https://www.instagram.com/${encodeURIComponent(liveUsername)}/`
+          });
+        } else {
+          const rawName = isObj ? item.username || item.newUsername || "" : item;
+          const cleanName = String(rawName || "").replace(/^@+/, "").trim();
+          if (!cleanName) continue;
+          const idStr = isObj && item.id && String(item.id) !== "0" ? String(item.id) : null;
+          const dedupKey = idStr ? `id:${idStr}` : `u:${cleanName.toLowerCase()}`;
+          if (seenKeys.has(dedupKey)) continue;
+          seenKeys.add(dedupKey);
+          const known = idStr && knownById.get(idStr) || knownByLower.get(cleanName.toLowerCase()) || (isObj && item.previousUsername ? knownByLower.get(String(item.previousUsername).toLowerCase()) : null) || null;
+          result.push({
+            id: idStr || (known?.id ? String(known.id) : null),
+            username: cleanName,
+            fullName: (isObj ? item.fullName : "") || known?.fullName || "",
+            profilePicUrl: Utils.sanitizeImageUrl((isObj ? item.profilePicUrl : null) || known?.profilePicUrl || null),
+            isVerified: Boolean((isObj ? item.isVerified : void 0) ?? known?.isVerified),
+            isPrivate: Boolean((isObj ? item.isPrivate : void 0) ?? known?.isPrivate),
+            previousUsername: isObj && item.previousUsername ? String(item.previousUsername) : null,
+            occurrences: Math.max(1, Number(isObj ? item.occurrences : 1) || 1),
+            date: isObj && item.date ? String(item.date) : "",
+            url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
+          });
+        }
       }
+      return result;
     },
-    renderNominalList: (list, containerId, title) => {
+    renderNominalList: (list, containerId, title, options = {}) => {
       const container = document.getElementById(containerId);
       if (!container) return;
-      const safeTitle = Utils.escapeHtml(title);
-      const safeList = Array.isArray(list) ? list : [];
-      let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + safeList.length + "</span></div>";
-      if (safeList.length === 0) {
-        html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No historical records yet.</div>";
-      } else {
-        html += '<table class="ig-table"><thead><tr><th>Username</th><th>Detected</th><th>Profile</th></tr></thead><tbody>';
-        safeList.slice().reverse().forEach((item) => {
-          const safeUsername = Utils.escapeHtml(item.username || "");
-          const safeDate = Utils.escapeHtml(item.date || "");
-          const profileUrl = Utils.sanitizeUrl(item.username);
-          html += "<tr>";
-          html += "<td><span class='ig-table-user'>" + safeUsername + "</span></td>";
-          html += "<td><span class='ig-table-date'>" + safeDate + "</span></td>";
-          html += '<td><a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer" class="ig-table-link">View ' + Icons.link + "</a></td>";
-          html += "</tr>";
-        });
-        html += "</tbody></table>";
+      const keyByContainer = {
+        "ig-view-unfollowers": CONFIG.CHURN_KEY,
+        "ig-view-deactivated": CONFIG.DEACTIVATED_KEY,
+        "ig-view-blocked": CONFIG.BLOCKED_KEY
+      };
+      const clearNominalKey = options.storageKey || keyByContainer[containerId] || null;
+      const enriched = UI.enrichNominalItems(list, { variant: "nominal", userId: options.userId || null });
+      container.innerHTML = "";
+      UI.paginationState[containerId] = {
+        rawUsers: enriched,
+        users: enriched,
+        title,
+        containerId,
+        isExportable: true,
+        listVariant: "nominal",
+        clearNominalKey,
+        emptyMessage: "No historical records yet.",
+        page: 1,
+        pageSize: 50,
+        searchQuery: "",
+        filterType: "all"
+      };
+      UI.renderResultsPage(containerId);
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts(options.userId || null);
       }
-      container.innerHTML = html;
     },
-    renderRenamedList: (list, containerId, title) => {
+    renderRenamedList: (list, containerId, title, options = {}) => {
       const container = document.getElementById(containerId);
       if (!container) return;
-      const safeList = Array.isArray(list) ? list : [];
-      const safeTitle = Utils.escapeHtml(title);
-      let html = '<div class="ig-section-title">' + safeTitle + ' <span class="ig-badge">' + safeList.length + "</span></div>";
-      if (safeList.length === 0) {
-        html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.mailbox + "</span>No username changes detected yet.</div>";
-      } else {
-        html += '<table class="ig-table"><thead><tr><th>Previous Username</th><th>Current Username</th><th>Detected</th><th>Profile</th></tr></thead><tbody>';
-        safeList.slice().reverse().forEach((item) => {
-          const oldUsername = item.oldUsername || "-";
-          const newUsername = item.newUsername || item.username || "-";
-          const safeOldUser = Utils.escapeHtml(oldUsername);
-          const safeNewUser = Utils.escapeHtml(newUsername);
-          const safeDate = Utils.escapeHtml(item.date || "-");
-          const profileUrl = newUsername !== "-" ? Utils.sanitizeUrl(newUsername) : "#";
-          html += "<tr>";
-          html += "<td><span class='ig-table-user'>" + safeOldUser + "</span></td>";
-          html += "<td><span class='ig-table-user'>" + safeNewUser + "</span></td>";
-          html += "<td><span class='ig-table-date'>" + safeDate + "</span></td>";
-          html += '<td><a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer" class="ig-table-link">View ' + Icons.link + "</a></td>";
-          html += "</tr>";
-        });
-        html += "</tbody></table>";
+      const clearNominalKey = options.storageKey || CONFIG.RENAMED_KEY;
+      const enriched = UI.enrichNominalItems(list, { variant: "renamed", userId: options.userId || null });
+      container.innerHTML = "";
+      UI.paginationState[containerId] = {
+        rawUsers: enriched,
+        users: enriched,
+        title,
+        containerId,
+        isExportable: true,
+        listVariant: "renamed",
+        clearNominalKey,
+        emptyMessage: "No username changes detected yet.",
+        page: 1,
+        pageSize: 50,
+        searchQuery: "",
+        filterType: "all"
+      };
+      UI.renderResultsPage(containerId);
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts(options.userId || null);
       }
-      container.innerHTML = html;
     },
-    renderHistory: (historyData) => {
+    renderHistory: (historyData, userId = null) => {
       const container = document.getElementById("ig-view-history");
       if (!container) return;
       let html = '<div class="ig-section-title">Metrics History</div>';
-      if (!historyData || historyData.length === 0) {
+      if (!Array.isArray(historyData) || historyData.length === 0) {
         html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.metrics + "</span>No historical data available.</div>";
         container.innerHTML = html;
+        if (typeof UI.updateMainTabCounts === "function") UI.updateMainTabCounts(userId);
         return;
       }
-      const reversedHistory = historyData.slice().reverse();
+      const safeHistory = Storage.normalizeHistoryRecords(historyData).list;
+      if (safeHistory.length === 0) {
+        html += '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.metrics + "</span>No historical data available.</div>";
+        container.innerHTML = html;
+        if (typeof UI.updateMainTabCounts === "function") UI.updateMainTabCounts(userId);
+        return;
+      }
+      const oldest = safeHistory[0];
+      const reversedHistory = safeHistory.slice().reverse();
       const latest = reversedHistory[0];
       const prev = reversedHistory.length > 1 ? reversedHistory[1] : null;
       const currentFollowers = latest ? Utils.formatNumber(latest.followers) : "-";
       const currentFollowing = latest ? Utils.formatNumber(latest.following) : "-";
-      let followerDiffText = "First record";
-      let followerDiffClass = "is-neutral";
-      let followerDiffIcon = Icons.neutral;
-      let followingDiffText = "First record";
-      let followingDiffClass = "is-neutral";
-      let followingDiffIcon = Icons.neutral;
-      if (prev) {
-        const fDiff = latest.followers - prev.followers;
-        if (fDiff > 0) {
-          followerDiffText = "+" + fDiff + " vs previous";
-          followerDiffClass = "is-positive";
-          followerDiffIcon = Icons.trendingUp;
-        } else if (fDiff < 0) {
-          followerDiffText = fDiff + " vs previous";
-          followerDiffClass = "is-negative";
-          followerDiffIcon = Icons.trendingDown;
-        } else {
-          followerDiffText = "No change vs previous";
-        }
-        const ingDiff = latest.following - prev.following;
-        if (ingDiff > 0) {
-          followingDiffText = "+" + ingDiff + " vs previous";
-          followingDiffClass = "is-positive";
-          followingDiffIcon = Icons.trendingUp;
-        } else if (ingDiff < 0) {
-          followingDiffText = ingDiff + " vs previous";
-          followingDiffClass = "is-negative";
-          followingDiffIcon = Icons.trendingDown;
-        } else {
-          followingDiffText = "No change vs previous";
-        }
-      }
-      const churnCount = Storage.getNominalList(CONFIG.CHURN_KEY).length;
-      const newCount = Storage.getNewFollowersList().length;
-      const netFlow = newCount - churnCount;
+      const exactFollowersTitle = latest ? `${Utils.formatExactNumber(latest.followers)} followers` : "";
+      const exactFollowingTitle = latest ? `${Utils.formatExactNumber(latest.following)} following` : "";
+      const fMeta = UI.buildKpiDelta(
+        latest.followers,
+        prev ? prev.followers : null,
+        latest.startFollowers,
+        latest.lastDeltaFollowers,
+        latest.scansCount
+      );
+      const ingMeta = UI.buildKpiDelta(
+        latest.following,
+        prev ? prev.following : null,
+        latest.startFollowing,
+        latest.lastDeltaFollowing,
+        latest.scansCount
+      );
+      const baselineFollowers = Number(oldest.startFollowers ?? oldest.followers ?? latest.followers ?? 0);
+      const netFlow = Number(latest.followers ?? 0) - baselineFollowers;
       const netFlowSign = netFlow > 0 ? "+" : "";
       const netFlowClass = netFlow > 0 ? "is-positive" : netFlow < 0 ? "is-negative" : "is-neutral";
+      const newCount = Storage.getNewFollowersList(userId).length;
+      const churnCount = Storage.getNominalList(CONFIG.CHURN_KEY, userId).length;
+      const deactivatedCount = Storage.getNominalList(CONFIG.DEACTIVATED_KEY, userId).length;
+      const blockedCount = Storage.getNominalList(CONFIG.BLOCKED_KEY, userId).length;
+      const totalLostCount = churnCount + deactivatedCount + blockedCount;
+      const lossBreakdownTitle = `Unfollowers: ${churnCount} · Deactivated: ${deactivatedCount} · Blocked: ${blockedCount}`;
       html += [
         '<div class="ig-history-kpi-grid">',
         '  <div class="ig-kpi-card">',
         '    <div class="ig-kpi-label">Followers</div>',
-        '    <div class="ig-kpi-value">' + currentFollowers + "</div>",
-        '    <div class="ig-kpi-sub ' + followerDiffClass + '">' + followerDiffIcon + " <span>" + followerDiffText + "</span></div>",
+        '    <div class="ig-kpi-value" title="' + Utils.escapeHtml(exactFollowersTitle) + '">' + currentFollowers + "</div>",
+        '    <div class="ig-kpi-sub ' + fMeta.cls + '">' + fMeta.icon + " <span>" + Utils.escapeHtml(fMeta.text) + "</span></div>",
         "  </div>",
         '  <div class="ig-kpi-card">',
         '    <div class="ig-kpi-label">Following</div>',
-        '    <div class="ig-kpi-value">' + currentFollowing + "</div>",
-        '    <div class="ig-kpi-sub ' + followingDiffClass + '">' + followingDiffIcon + " <span>" + followingDiffText + "</span></div>",
+        '    <div class="ig-kpi-value" title="' + Utils.escapeHtml(exactFollowingTitle) + '">' + currentFollowing + "</div>",
+        '    <div class="ig-kpi-sub ' + ingMeta.cls + '">' + ingMeta.icon + " <span>" + Utils.escapeHtml(ingMeta.text) + "</span></div>",
         "  </div>",
         '  <div class="ig-kpi-card">',
         '    <div class="ig-kpi-label">Audience Balance</div>',
-        '    <div class="ig-kpi-value ' + netFlowClass + '">' + netFlowSign + netFlow + "</div>",
-        '    <div class="ig-kpi-sub"><span style="color:#22c55e; font-weight:600;">+' + newCount + '</span> new / <span style="color:#ef4444; font-weight:600;">-' + churnCount + "</span> lost</div>",
+        '    <div class="ig-kpi-value ' + netFlowClass + '" title="Net vs opening baseline (' + Utils.formatExactNumber(baselineFollowers) + ')">' + netFlowSign + netFlow.toLocaleString() + "</div>",
+        '    <div class="ig-kpi-sub ig-kpi-sub-split">',
+        '      <button type="button" class="ig-kpi-jump-btn is-positive" data-main-tab="ig-view-newfollowers" title="Open New Followers">+' + newCount + " new</button>",
+        '      <span class="ig-kpi-sep">/</span>',
+        '      <button type="button" class="ig-kpi-jump-btn is-negative" data-main-tab="ig-view-unfollowers" title="' + Utils.escapeHtml(lossBreakdownTitle) + '">-' + totalLostCount + " lost</button>",
+        "    </div>",
         "  </div>",
         "</div>"
       ].join("\n");
-      html += '<table class="ig-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th></tr></thead><tbody>';
+      html += '<div class="ig-trend-chart-mount">' + UI.renderTrendChartCard(safeHistory, { scope: "main" }) + "</div>";
+      const snap = Storage.load(userId);
+      const compFollowers = snap?.followers?.length ?? Number(latest.followers ?? 0);
+      const compFollowing = snap?.following?.length ?? Number(latest.following ?? 0);
+      const compMutuals = snap?.mutualsDetailed?.length ?? (latest.mutuals !== void 0 ? Number(latest.mutuals) : null);
+      const compFans = snap?.fansDetailed?.length ?? (latest.fans !== void 0 ? Number(latest.fans) : null);
+      const compNotBack = snap ? Math.max(0, compFollowing - (compMutuals ?? 0)) : latest.notFollowingBack !== void 0 ? Number(latest.notFollowingBack) : null;
+      if (compMutuals !== null && (compFollowers > 0 || compFollowing > 0)) {
+        html += UI.renderAudienceCompositionCard({
+          followers: compFollowers,
+          following: compFollowing,
+          mutuals: compMutuals,
+          fans: compFans,
+          notFollowingBack: compNotBack,
+          mode: "main"
+        });
+      }
+      html += '<div class="ig-section-title" style="margin-top: 14px;">Daily Log <span class="ig-badge">' + safeHistory.length + "</span></div>";
+      html += '<div class="ig-table-scroll-region" tabindex="0" role="region" aria-label="Historical metrics table">';
+      html += '<table class="ig-table ig-history-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th><th>Mutuals</th></tr></thead><tbody>';
       reversedHistory.forEach((h, index) => {
-        let followerIcon = Icons.neutral;
-        let followingIcon = Icons.neutral;
-        if (index < reversedHistory.length - 1) {
-          const prevDay = reversedHistory[index + 1];
-          if (h.followers > prevDay.followers) followerIcon = Icons.up;
-          else if (h.followers < prevDay.followers) followerIcon = Icons.down;
-          if (h.following > prevDay.following) followingIcon = Icons.up;
-          else if (h.following < prevDay.following) followingIcon = Icons.down;
+        const isBaselineRow = index === reversedHistory.length - 1;
+        const prevDay = !isBaselineRow ? reversedHistory[index + 1] : null;
+        const scans = Number(h.scansCount) || 1;
+        const dayDiffF = prevDay ? Number(h.followers ?? 0) - Number(prevDay.followers ?? 0) : 0;
+        const intraF = Number(h.followers ?? 0) - Number(h.startFollowers ?? h.followers ?? 0);
+        const fDeltaHtml = UI.formatDeltaPillHtml(dayDiffF, {
+          intradayDelta: intraF,
+          scansCount: scans,
+          isBaselineRow
+        });
+        const dayDiffIng = prevDay ? Number(h.following ?? 0) - Number(prevDay.following ?? 0) : 0;
+        const intraIng = Number(h.following ?? 0) - Number(h.startFollowing ?? h.following ?? 0);
+        const ingDeltaHtml = UI.formatDeltaPillHtml(dayDiffIng, {
+          intradayDelta: intraIng,
+          scansCount: scans,
+          isBaselineRow
+        });
+        let mutCellHtml = '<span class="ig-metric-muted">—</span>';
+        if (h.mutuals !== void 0 && h.mutuals !== null && !Number.isNaN(Number(h.mutuals))) {
+          const hasPrevMut = prevDay && prevDay.mutuals !== void 0 && prevDay.mutuals !== null;
+          const dayDiffMut = hasPrevMut ? Number(h.mutuals) - Number(prevDay.mutuals) : 0;
+          const intraMut = Number(h.mutuals) - Number(h.startMutuals ?? h.mutuals);
+          const mutDeltaHtml = UI.formatDeltaPillHtml(dayDiffMut, {
+            intradayDelta: intraMut,
+            scansCount: scans,
+            isBaselineRow: !hasPrevMut
+          });
+          mutCellHtml = '<span class="ig-metric-value">' + Utils.formatExactNumber(h.mutuals) + " " + mutDeltaHtml + "</span>";
         }
         const safeDate = Utils.escapeHtml(h.date || "");
-        const safeFollowers = Utils.escapeHtml(String(h.followers ?? ""));
-        const safeFollowing = Utils.escapeHtml(String(h.following ?? ""));
-        html += "<tr><td><span class='ig-table-date'>" + safeDate + "</span></td><td><span class='ig-metric-value'>" + safeFollowers + " " + followerIcon + "</span></td><td><span class='ig-metric-value'>" + safeFollowing + " " + followingIcon + "</span></td></tr>";
+        const scansBadge = scans > 1 ? `<span class="ig-scans-pill" title="${scans} scans recorded on ${safeDate}">${scans}x</span>` : "";
+        html += '<tr><th scope="row"><span class="ig-table-date">' + safeDate + "</span>" + scansBadge + '</th><td><span class="ig-metric-value">' + Utils.formatExactNumber(h.followers) + " " + fDeltaHtml + '</span></td><td><span class="ig-metric-value">' + Utils.formatExactNumber(h.following) + " " + ingDeltaHtml + "</span></td><td>" + mutCellHtml + "</td></tr>";
       });
-      html += "</tbody></table>";
+      html += "</tbody></table></div>";
       container.innerHTML = html;
+      const chartMount = container.querySelector(".ig-trend-chart-mount");
+      if (chartMount && typeof UI.bindChartInteractions === "function") {
+        UI.bindChartInteractions(chartMount, { historyList: safeHistory, scope: "main" });
+      }
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts(userId);
+      }
     },
-    getFilterCounts: (rawUsers, searchQuery = "") => {
+    getFilterCounts: (rawUsers, searchQuery = "", listVariant = "standard") => {
       const query = (searchQuery || "").trim().toLowerCase().replace(/^@+/, "");
       const baseList = query ? (rawUsers || []).filter((u) => {
         const uName = (u?.username || "").toLowerCase();
         const fName = (u?.fullName || "").toLowerCase();
-        return uName.includes(query) || fName.includes(query);
+        const oldName = (u?.oldUsername || "").toLowerCase();
+        const prevName = (u?.previousUsername || "").toLowerCase();
+        return uName.includes(query) || fName.includes(query) || oldName.includes(query) || prevName.includes(query);
       }) : rawUsers || [];
+      if (listVariant === "nominal") {
+        return {
+          all: baseList.length,
+          repeat: baseList.filter((u) => Number(u.occurrences) > 1).length,
+          renamed: baseList.filter((u) => Boolean(u.previousUsername)).length,
+          private: baseList.filter((u) => Boolean(u.isPrivate)).length,
+          verified: baseList.filter((u) => Boolean(u.isVerified)).length
+        };
+      }
+      if (listVariant === "renamed") {
+        return {
+          all: baseList.length,
+          mutual: baseList.filter((u) => u.relationship === "mutual").length,
+          fan: baseList.filter((u) => u.relationship === "fan").length,
+          following: baseList.filter((u) => u.relationship === "following").length,
+          verified: baseList.filter((u) => Boolean(u.isVerified)).length
+        };
+      }
       return {
         all: baseList.length,
         private: baseList.filter((u) => Boolean(u.isPrivate)).length,
@@ -3913,13 +6937,30 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       if (!state) return;
       const query = (state.searchQuery || "").trim().toLowerCase().replace(/^@+/, "");
       const filter = state.filterType || "all";
+      const variant = state.listVariant || "standard";
       state.users = (state.rawUsers || []).filter((u) => {
         if (query) {
           const uName = (u?.username || "").toLowerCase();
           const fName = (u?.fullName || "").toLowerCase();
-          if (!uName.includes(query) && !fName.includes(query)) {
+          const oldName = (u?.oldUsername || "").toLowerCase();
+          const prevName = (u?.previousUsername || "").toLowerCase();
+          if (!uName.includes(query) && !fName.includes(query) && !oldName.includes(query) && !prevName.includes(query)) {
             return false;
           }
+        }
+        if (variant === "nominal") {
+          if (filter === "repeat") return Number(u.occurrences) > 1;
+          if (filter === "renamed") return Boolean(u.previousUsername);
+          if (filter === "private") return Boolean(u.isPrivate);
+          if (filter === "verified") return Boolean(u.isVerified);
+          return true;
+        }
+        if (variant === "renamed") {
+          if (filter === "mutual") return u.relationship === "mutual";
+          if (filter === "fan") return u.relationship === "fan";
+          if (filter === "following") return u.relationship === "following";
+          if (filter === "verified") return Boolean(u.isVerified);
+          return true;
         }
         if (filter === "private") return Boolean(u.isPrivate);
         if (filter === "public") return u.isPrivate === false;
@@ -3939,7 +6980,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       if (!container) return;
       const chipsBar = container.querySelector(".ig-filter-chips");
       if (!chipsBar) return;
-      const counts = UI.getFilterCounts(state.rawUsers, state.searchQuery);
+      const counts = UI.getFilterCounts(state.rawUsers, state.searchQuery, state.listVariant || "standard");
       const chips = chipsBar.querySelectorAll(".ig-filter-chip");
       chips.forEach((chip) => {
         const filterId = chip.getAttribute("data-filter");
@@ -3970,6 +7011,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         state.users = state.users.filter((u) => u.username !== targetUsername);
       }
       UI.renderResultsPage(containerId);
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts();
+      }
     },
     getActiveViewUsers: () => {
       const activeTab = document.querySelector("#ig-tabs .ig-tab-btn.active");
@@ -3988,38 +7032,99 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         UI.renderResultsPage(containerId);
       }
     },
-    renderPersistedSnapshot: (snapshot) => {
-      if (!snapshot || typeof snapshot !== "object") return;
-      if (Array.isArray(snapshot.notFollowingBackDetailed)) {
-        UI.renderResults(snapshot.notFollowingBackDetailed, "Not Following You Back", "ig-view-notfollowing", true);
-        window.__igLastResults = snapshot.notFollowingBackDetailed;
+    renderPersistedSnapshot: (snapshot, userId = null) => {
+      if (!snapshot || typeof snapshot !== "object") {
+        if (typeof window !== "undefined") window.__igLastResults = [];
+        UI.renderResults([], "Not Following You Back", "ig-view-notfollowing", true);
+        UI.renderResults([], "Fans (They follow you, you don't)", "ig-view-fans", true);
+        UI.renderResults([], "Mutual Connections", "ig-view-mutuals", true);
+        if (typeof UI.updateMainTabCounts === "function") {
+          UI.updateMainTabCounts(userId);
+        }
+        if (typeof UI.syncMainExportButton === "function") {
+          UI.syncMainExportButton();
+        }
+        return;
+      }
+      const migrateMissingKeyFromSnapshot = (baseKey, snapVal, renderFn) => {
+        if (!Storage.hasScopedValue(baseKey, userId) && Array.isArray(snapVal) && snapVal.length > 0) {
+          Storage.setScopedValue(baseKey, snapVal, userId);
+          if (typeof renderFn === "function") renderFn();
+        }
+      };
+      migrateMissingKeyFromSnapshot(CONFIG.WHITELIST_KEY, snapshot.whitelist, () => {
+        UI.renderWhitelist(Storage.getWhitelist(userId));
+      });
+      migrateMissingKeyFromSnapshot(CONFIG.NEW_FOLLOWERS_KEY, snapshot.newFollowersDetailed, () => {
+        UI.renderNewFollowers(Storage.getNewFollowersList(userId));
+      });
+      migrateMissingKeyFromSnapshot(CONFIG.CHURN_KEY, snapshot.unfollowers, () => {
+        UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, userId), "ig-view-unfollowers", "Recent Unfollowers", { userId });
+      });
+      migrateMissingKeyFromSnapshot(CONFIG.DEACTIVATED_KEY, snapshot.deactivated, () => {
+        UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, userId), "ig-view-deactivated", "Deactivated Accounts", { userId });
+      });
+      migrateMissingKeyFromSnapshot(CONFIG.BLOCKED_KEY, snapshot.blocked, () => {
+        UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, userId), "ig-view-blocked", "Blocked Accounts", { userId });
+      });
+      migrateMissingKeyFromSnapshot(CONFIG.RENAMED_KEY, snapshot.renamed, () => {
+        UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, userId), "ig-view-renamed", "Username Changes", { userId });
+      });
+      migrateMissingKeyFromSnapshot(CONFIG.HISTORY_KEY, snapshot.history, () => {
+        UI.renderHistory(Storage.getHistory(userId), userId);
+      });
+      const liveWhitelist = Storage.getWhitelist(userId);
+      const wlLowerSet = new Set(liveWhitelist.map((u) => String(u || "").toLowerCase()));
+      if (Array.isArray(snapshot.following) && Array.isArray(snapshot.followers)) {
+        const followersLowerSet = new Set(snapshot.followers.map((u) => {
+          const name = typeof u === "string" ? u : u?.username;
+          return String(name || "").toLowerCase();
+        }));
+        const knownByLower = new Map();
+        [
+          ...snapshot.followingDetailed || [],
+          ...snapshot.notFollowingBackDetailed || [],
+          ...snapshot.followersDetailed || []
+        ].forEach((u) => {
+          if (u && typeof u === "object" && u.username) {
+            const lower = u.username.toLowerCase();
+            if (!knownByLower.has(lower)) knownByLower.set(lower, u);
+          }
+        });
+        const liveNotFollowingDetailed = [];
+        const seenLower = new Set();
+        snapshot.following.forEach((rawItem) => {
+          const rawName = typeof rawItem === "string" ? rawItem : rawItem?.username;
+          const cleanName = String(rawName || "").replace(/^@+/, "").trim();
+          if (!cleanName) return;
+          const lower = cleanName.toLowerCase();
+          if (seenLower.has(lower) || followersLowerSet.has(lower) || wlLowerSet.has(lower)) return;
+          seenLower.add(lower);
+          const detail = knownByLower.get(lower) || (typeof rawItem === "object" ? rawItem : {});
+          const canonicalName = detail.username || cleanName;
+          liveNotFollowingDetailed.push({
+            ...detail,
+            username: canonicalName,
+            url: `https://www.instagram.com/${encodeURIComponent(canonicalName)}/`
+          });
+        });
+        UI.renderResults(liveNotFollowingDetailed, "Not Following You Back", "ig-view-notfollowing", true);
+        window.__igLastResults = liveNotFollowingDetailed;
+      } else if (Array.isArray(snapshot.notFollowingBackDetailed)) {
+        const filtered = snapshot.notFollowingBackDetailed.filter(
+          (u) => !wlLowerSet.has(String(u?.username || "").toLowerCase())
+        );
+        UI.renderResults(filtered, "Not Following You Back", "ig-view-notfollowing", true);
+        window.__igLastResults = filtered;
       }
       if (Array.isArray(snapshot.fansDetailed)) {
-        UI.renderResults(snapshot.fansDetailed, "Fans (They follow you, you don't)", "ig-view-fans", false);
+        UI.renderResults(snapshot.fansDetailed, "Fans (They follow you, you don't)", "ig-view-fans", true);
       }
       if (Array.isArray(snapshot.mutualsDetailed)) {
-        UI.renderResults(snapshot.mutualsDetailed, "Mutual Connections", "ig-view-mutuals", false);
+        UI.renderResults(snapshot.mutualsDetailed, "Mutual Connections", "ig-view-mutuals", true);
       }
-      if (Array.isArray(snapshot.newFollowersDetailed) && snapshot.newFollowersDetailed.length > 0) {
-        UI.renderNewFollowers(snapshot.newFollowersDetailed);
-      } else {
-        UI.renderNewFollowers(Storage.getNewFollowersList());
-      }
-      UI.renderWhitelist(Array.isArray(snapshot.whitelist) ? snapshot.whitelist : Storage.getWhitelist());
-      if (Array.isArray(snapshot.unfollowers)) {
-        UI.renderNominalList(snapshot.unfollowers, "ig-view-unfollowers", "Recent Unfollowers");
-      }
-      if (Array.isArray(snapshot.deactivated)) {
-        UI.renderNominalList(snapshot.deactivated, "ig-view-deactivated", "Deactivated Accounts");
-      }
-      if (Array.isArray(snapshot.blocked)) {
-        UI.renderNominalList(snapshot.blocked, "ig-view-blocked", "Blocked Accounts");
-      }
-      if (Array.isArray(snapshot.renamed)) {
-        UI.renderRenamedList(snapshot.renamed, "ig-view-renamed", "Username Changes");
-      }
-      if (Array.isArray(snapshot.history)) {
-        UI.renderHistory(snapshot.history);
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts(userId);
       }
     },
     loadAvatarsProgressively: (containerEl, delayMs = 35) => {
@@ -4128,12 +7233,12 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '  <div class="ig-tabs-container" id="ig-target-tabs">',
         '    <div id="ig-target-tab-indicator" class="ig-tab-indicator"></div>',
         '    <button class="ig-tab-btn active" data-target="ig-target-view-overview"><span class="ig-tab-icon">' + Icons.metrics + '</span><span class="ig-tab-label">Overview</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-target-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-target-view-newmutuals"><span class="ig-tab-icon">' + Icons.newMutuals + '</span><span class="ig-tab-label">New Mutuals</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-target-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-target-view-lostfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Lost Followers</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-target-view-followers"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Followers</span></button>',
-        '    <button class="ig-tab-btn" data-target="ig-target-view-following"><span class="ig-tab-icon">' + Icons.user + '</span><span class="ig-tab-label">Following</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-target-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-mutuals">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-target-view-newmutuals"><span class="ig-tab-icon">' + Icons.newMutuals + '</span><span class="ig-tab-label">New Mutuals</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-newmutuals">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-target-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-newfollowers">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-target-view-lostfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Lost Followers</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-lostfollowers">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-target-view-followers"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Followers</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-followers">0</span></button>',
+        '    <button class="ig-tab-btn" data-target="ig-target-view-following"><span class="ig-tab-icon">' + Icons.user + '</span><span class="ig-tab-label">Following</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-following">0</span></button>',
         '    <button class="ig-tab-btn" data-target="ig-target-view-logs"><span class="ig-tab-icon">' + Icons.logs + '</span><span class="ig-tab-label">Logs</span></button>',
         "  </div>",
         "</div>",
@@ -4219,8 +7324,52 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           }
         }, { passive: true });
       }
+      UI.updateTargetTabIndicator = updateIndicator;
       UI.setupTargetDrag(subpanel, subpanel.querySelector("#ig-target-header"));
       UI.loadTargetPosition(subpanel);
+    },
+    refreshTargetTabIndicator: () => {
+      const tabsContainer = document.getElementById("ig-target-tabs");
+      if (!tabsContainer || typeof UI.updateTargetTabIndicator !== "function") return;
+      const activeBtn = tabsContainer.querySelector(".ig-tab-btn.active");
+      if (activeBtn) {
+        UI.updateTargetTabIndicator(activeBtn, false);
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => UI.updateTargetTabIndicator(activeBtn, false));
+        }
+      }
+    },
+    updateTargetTabCounts: (targetData = null) => {
+      const tabsContainer = document.getElementById("ig-target-tabs");
+      if (!tabsContainer) return;
+      const isRestricted = Boolean(targetData?.isRestricted);
+      const countsMap = !targetData || isRestricted ? {
+        "ig-target-view-mutuals": 0,
+        "ig-target-view-newmutuals": 0,
+        "ig-target-view-newfollowers": 0,
+        "ig-target-view-lostfollowers": 0,
+        "ig-target-view-followers": 0,
+        "ig-target-view-following": 0
+      } : {
+        "ig-target-view-mutuals": (targetData.mutuals || []).length,
+        "ig-target-view-newmutuals": (targetData.newMutualsDetailed || targetData.newMutuals || []).length,
+        "ig-target-view-newfollowers": (targetData.newFollowers || []).length,
+        "ig-target-view-lostfollowers": (targetData.lostFollowers || []).length,
+        "ig-target-view-followers": (targetData.followers || []).length,
+        "ig-target-view-following": (targetData.following || []).length
+      };
+      Object.entries(countsMap).forEach(([tabId, rawCount]) => {
+        const badge = tabsContainer.querySelector(`[data-target-count="${tabId}"]`);
+        if (!badge) return;
+        const count = Math.max(0, Number(rawCount) || 0);
+        badge.textContent = count > 0 ? Utils.formatNumber(count) : "0";
+        if (count > 0) {
+          badge.classList.remove("is-empty");
+        } else {
+          badge.classList.add("is-empty");
+        }
+      });
+      UI.refreshTargetTabIndicator();
     },
     setupTargetDrag: (panel, handle) => {
       let isDragging = false, offsetX, offsetY;
@@ -4238,7 +7387,8 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         panel.style.left = raw.x + "px";
         panel.style.top = raw.y + "px";
         panel.style.right = "auto";
-        GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { x: raw.x, y: raw.y });
+        const prev = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, {}) || {};
+        GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { ...prev, x: raw.x, y: raw.y });
       });
       document.addEventListener("mouseup", () => {
         if (isDragging) {
@@ -4247,9 +7397,43 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           document.body.style.userSelect = "";
         }
       });
+      window.addEventListener("resize", () => {
+        if (panel.style.display === "none") return;
+        const clamped = UI.clampPosition(panel, panel.offsetLeft, panel.offsetTop);
+        panel.style.left = clamped.x + "px";
+        panel.style.top = clamped.y + "px";
+        panel.style.right = "auto";
+        const prev = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, {}) || {};
+        GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { ...prev, x: clamped.x, y: clamped.y });
+      });
+      if (typeof ResizeObserver === "function") {
+        let resizeTimer = null;
+        const ro = new ResizeObserver(() => {
+          if (panel.style.display === "none" || panel.classList.contains("is-minimized")) return;
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => {
+            if (panel.style.display === "none" || panel.classList.contains("is-minimized")) return;
+            const w = panel.offsetWidth;
+            const h = panel.offsetHeight;
+            if (w >= 360 && h >= 260) {
+              const prev = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, {}) || {};
+              GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { ...prev, width: w, height: h });
+            }
+          }, 250);
+        });
+        ro.observe(panel);
+      }
     },
     loadTargetPosition: (panel) => {
       const pos = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, null);
+      if (pos && typeof pos.width === "number" && typeof pos.height === "number") {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const safeW = Math.min(pos.width, vw - 40);
+        const safeH = Math.min(pos.height, vh - 40);
+        if (safeW >= 360) panel.style.width = safeW + "px";
+        if (safeH >= 260) panel.style.height = safeH + "px";
+      }
       if (pos && typeof pos.x === "number") {
         const clamped = UI.clampPosition(panel, pos.x, pos.y);
         panel.style.left = clamped.x + "px";
@@ -4267,6 +7451,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       UI.currentTargetUser = targetUserObj;
       const subpanel = document.getElementById("ig-target-subpanel");
       if (!subpanel) return;
+      if (typeof UI.applyCurrentTheme === "function") UI.applyCurrentTheme();
       const cleanUser = String(targetUserObj.username || "").replace(/^@/, "").trim();
       const titleEl = document.getElementById("ig-target-header-title");
       if (titleEl) {
@@ -4274,21 +7459,32 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       }
       const summaryBar = document.getElementById("ig-target-meta-summary");
       if (summaryBar) {
+        const prevHandle = targetUserObj.previousUsername || storedData?.user?.previousUsername || "";
         let summaryHtml = '<span class="ig-target-meta-user">@' + Utils.escapeHtml(cleanUser) + "</span>";
+        if (prevHandle && prevHandle.toLowerCase() !== cleanUser.toLowerCase()) {
+          summaryHtml += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + Utils.escapeHtml(prevHandle) + '">Formerly @' + Utils.escapeHtml(prevHandle) + "</span>";
+        }
         if (targetUserObj.fullName) {
           summaryHtml += '<span class="ig-target-meta-name">' + Utils.escapeHtml(targetUserObj.fullName) + "</span>";
         }
-        const fCount = Array.isArray(storedData?.followers) && storedData.followers.length > 0 ? storedData.followers.length : targetUserObj.followerCount || 0;
-        const ingCount = Array.isArray(storedData?.following) && storedData.following.length > 0 ? storedData.following.length : targetUserObj.followingCount || 0;
+        const fCount = Math.max(
+          Number(targetUserObj.followerCount ?? storedData?.user?.followerCount) || 0,
+          Array.isArray(storedData?.followers) ? storedData.followers.length : 0
+        );
+        const ingCount = Math.max(
+          Number(targetUserObj.followingCount ?? storedData?.user?.followingCount) || 0,
+          Array.isArray(storedData?.following) ? storedData.following.length : 0
+        );
         summaryHtml += '<span class="ig-target-meta-pill">' + Utils.formatNumber(fCount) + " followers</span>";
         summaryHtml += '<span class="ig-target-meta-pill">' + Utils.formatNumber(ingCount) + " following</span>";
         summaryBar.innerHTML = summaryHtml;
       }
       subpanel.style.display = "flex";
       subpanel.classList.remove("is-minimized");
+      UI.loadTargetPosition(subpanel);
       const overviewTab = subpanel.querySelector('[data-target="ig-target-view-overview"]');
       if (overviewTab) overviewTab.click();
-      const dataToRender = storedData || Storage.getTargetData(cleanUser);
+      const dataToRender = storedData || Storage.getTargetData(cleanUser, null, targetUserObj.id);
       if (dataToRender) {
         UI.renderTargetOverview(dataToRender);
         UI.renderTargetLists(dataToRender);
@@ -4309,6 +7505,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         });
         const expBtn = document.getElementById("ig-target-export-csv");
         if (expBtn) expBtn.disabled = true;
+        UI.updateTargetTabCounts(null);
       }
     },
     closeTargetSubpanel: () => {
@@ -4336,9 +7533,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       try {
         const box = document.getElementById("ig-target-view-logs");
         if (box) {
-          const nowStr = typeof Utils.now === "function" ? Utils.now() : ( new Date()).toISOString();
-          const timeParts = nowStr.split("T");
-          const timeStr = (timeParts.length > 1 ? timeParts[1].split(".")[0] : "") || nowStr;
+          const timeStr = (typeof Utils.localTimeStr === "function" ? Utils.localTimeStr() : "") || ( new Date()).toLocaleTimeString();
           const entry = document.createElement("div");
           entry.className = "ig-log-entry";
           const timeSpan = document.createElement("span");
@@ -4409,22 +7604,80 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       const isRestricted = Boolean(targetData.isRestricted);
       const safeInitial = safeUser ? safeUser.charAt(0).toUpperCase() : "?";
       const avatarHtml = '<div class="ig-user-avatar ig-avatar-monogram" data-avatar-url="' + (avatarUrl || "") + '" data-username="' + safeUser + '"><span class="ig-monogram-letter">' + safeInitial + "</span></div>";
-      const followersCount = Array.isArray(targetData.followers) && targetData.followers.length > 0 ? targetData.followers.length : u.followerCount || 0;
-      const followingCount = Array.isArray(targetData.following) && targetData.following.length > 0 ? targetData.following.length : u.followingCount || 0;
+      const followersCount = Math.max(
+        Number(u.followerCount) || 0,
+        Array.isArray(targetData.followers) ? targetData.followers.length : 0
+      );
+      const followingCount = Math.max(
+        Number(u.followingCount) || 0,
+        Array.isArray(targetData.following) ? targetData.following.length : 0
+      );
       const mutualsCount = Array.isArray(targetData.mutuals) && targetData.mutuals.length > 0 ? targetData.mutuals.length : typeof u.mutualsCount === "number" ? u.mutualsCount : 0;
-      const newCount = targetData.newFollowers ? targetData.newFollowers.length : 0;
-      const lostCount = targetData.lostFollowers ? targetData.lostFollowers.length : 0;
-      const newMutualsCount = targetData.newMutuals ? targetData.newMutuals.length : 0;
-      const netFlow = newCount - lostCount;
+      const newCount = Array.isArray(targetData.newFollowers) ? targetData.newFollowers.length : 0;
+      const lostCount = Array.isArray(targetData.lostFollowers) ? targetData.lostFollowers.length : 0;
+      const newIngCount = Array.isArray(targetData.newFollowing) ? targetData.newFollowing.length : 0;
+      const lostIngCount = Array.isArray(targetData.lostFollowing) ? targetData.lostFollowing.length : 0;
+      const newMutualsCount = Array.isArray(targetData.newMutuals) ? targetData.newMutuals.length : 0;
+      const safeHistory = Storage.normalizeHistoryRecords(Array.isArray(targetData.history) ? targetData.history : []).list;
+      const reversedHistory = safeHistory.slice().reverse();
+      const latestHist = reversedHistory[0] || null;
+      const prevHist = reversedHistory.length > 1 ? reversedHistory[1] : null;
+      const oldestHist = safeHistory[0] || null;
+      const baselineFollowers = oldestHist ? Number(oldestHist.startFollowers ?? oldestHist.followers ?? followersCount) : followersCount;
+      const netFlow = safeHistory.length > 0 ? Number(followersCount) - baselineFollowers : newCount - lostCount;
       const netSign = netFlow > 0 ? "+" : "";
       const netClass = netFlow > 0 ? "is-positive" : netFlow < 0 ? "is-negative" : "is-neutral";
+      const fHistMeta = latestHist ? UI.buildKpiDelta(
+        followersCount,
+        prevHist ? prevHist.followers : null,
+        latestHist.startFollowers,
+        latestHist.lastDeltaFollowers,
+        latestHist.scansCount
+      ) : { text: "First record", cls: "is-neutral", icon: Icons.neutral };
+      const ingHistMeta = latestHist ? UI.buildKpiDelta(
+        followingCount,
+        prevHist ? prevHist.following : null,
+        latestHist.startFollowing,
+        latestHist.lastDeltaFollowing,
+        latestHist.scansCount
+      ) : { text: "First record", cls: "is-neutral", icon: Icons.neutral };
+      let followersSubHtml = "";
+      if (!isRestricted && (newCount > 0 || lostCount > 0)) {
+        followersSubHtml = '<div class="ig-kpi-sub ig-kpi-sub-split"><button type="button" class="ig-kpi-jump-btn is-positive" data-target-tab="ig-target-view-newfollowers" title="View New Followers">+' + newCount + ' new</button><span class="ig-kpi-sep">/</span><button type="button" class="ig-kpi-jump-btn is-negative" data-target-tab="ig-target-view-lostfollowers" title="View Lost Followers">-' + lostCount + " lost</button></div>";
+      } else {
+        followersSubHtml = '<div class="ig-kpi-sub ' + fHistMeta.cls + '">' + fHistMeta.icon + " <span>" + Utils.escapeHtml(fHistMeta.text) + "</span></div>";
+      }
+      let followingSubHtml = "";
+      if (!isRestricted && (newIngCount > 0 || lostIngCount > 0)) {
+        followingSubHtml = '<div class="ig-kpi-sub ig-kpi-sub-split"><span class="is-positive" style="font-weight:600;">+' + newIngCount + '</span><span class="ig-kpi-sep">/</span><span class="is-negative" style="font-weight:600;">-' + lostIngCount + "</span><span>following</span></div>";
+      } else {
+        followingSubHtml = '<div class="ig-kpi-sub ' + ingHistMeta.cls + '">' + ingHistMeta.icon + " <span>" + Utils.escapeHtml(ingHistMeta.text) + "</span></div>";
+      }
+      let mutualsSubHtml = "";
+      if (!isRestricted && newMutualsCount > 0) {
+        mutualsSubHtml = '<div class="ig-kpi-sub"><button type="button" class="ig-kpi-jump-btn is-positive" data-target-tab="ig-target-view-newmutuals" title="View New Mutuals">' + Icons.sparkles + " <span>+" + newMutualsCount + " new</span></button></div>";
+      } else if (isRestricted) {
+        mutualsSubHtml = '<div class="ig-kpi-sub is-neutral">' + Icons.lock + " <span>Restricted</span></div>";
+      } else {
+        const recipPct = followingCount > 0 ? Math.round(mutualsCount / followingCount * 100) : 0;
+        mutualsSubHtml = '<div class="ig-kpi-sub is-neutral">' + Icons.mutuals + " <span>" + recipPct + "% reciprocity</span></div>";
+      }
+      let balanceSubHtml = "";
+      if (isRestricted) {
+        const sinceText = oldestHist?.date ? `Since ${oldestHist.date}` : "Header tracking";
+        balanceSubHtml = '<div class="ig-kpi-sub is-neutral"><span>' + Utils.escapeHtml(sinceText) + "</span></div>";
+      } else {
+        balanceSubHtml = '<div class="ig-kpi-sub ig-kpi-sub-split"><button type="button" class="ig-kpi-jump-btn is-positive" data-target-tab="ig-target-view-newfollowers" title="New followers tracked">+' + newCount + '</button><span class="ig-kpi-sep">/</span><button type="button" class="ig-kpi-jump-btn is-negative" data-target-tab="ig-target-view-lostfollowers" title="Lost followers tracked">-' + lostCount + "</button></div>";
+      }
       let html = "";
+      const prevUserStr = u.previousUsername && String(u.previousUsername).toLowerCase() !== String(u.username || targetData.username || "").toLowerCase() ? Utils.escapeHtml(u.previousUsername) : "";
       html += '<div class="ig-target-overview-header">';
       html += '  <div class="ig-target-overview-avatar-wrap">' + avatarHtml + "</div>";
       html += '  <div class="ig-target-overview-meta">';
       html += '    <div class="ig-target-overview-title-row">';
       html += '      <span class="ig-target-overview-username">@' + safeUser + "</span>";
       if (isVerified) html += '<span title="Verified">' + Icons.verified + "</span>";
+      if (prevUserStr) html += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + prevUserStr + '">Formerly @' + prevUserStr + "</span>";
       if (isPrivate) html += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + " Private</span>";
       else html += '<span class="ig-badge-pill ig-badge-public">Public</span>';
       if (u.followedByViewer) html += '<span class="ig-badge-pill ig-badge-mutual">You follow</span>';
@@ -4445,44 +7698,86 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       html += '<div class="ig-history-kpi-grid" style="margin-top: 14px;">';
       html += '  <div class="ig-kpi-card">';
       html += '    <div class="ig-kpi-label">Followers</div>';
-      html += '    <div class="ig-kpi-value">' + Utils.formatNumber(followersCount) + "</div>";
-      html += '    <div class="ig-kpi-sub ' + (newCount > 0 ? "is-positive" : "") + '">' + Icons.userPlus + " <span>+" + newCount + " new</span></div>";
+      html += '    <div class="ig-kpi-value" title="' + Utils.formatExactNumber(followersCount) + ' followers">' + Utils.formatNumber(followersCount) + "</div>";
+      html += "    " + followersSubHtml;
       html += "  </div>";
       html += '  <div class="ig-kpi-card">';
       html += '    <div class="ig-kpi-label">Following</div>';
-      html += '    <div class="ig-kpi-value">' + Utils.formatNumber(followingCount) + "</div>";
-      html += '    <div class="ig-kpi-sub ' + (lostCount > 0 ? "is-negative" : "") + '">' + Icons.unfollowers + " <span>-" + lostCount + " lost</span></div>";
+      html += '    <div class="ig-kpi-value" title="' + Utils.formatExactNumber(followingCount) + ' following">' + Utils.formatNumber(followingCount) + "</div>";
+      html += "    " + followingSubHtml;
       html += "  </div>";
       html += '  <div class="ig-kpi-card">';
       html += '    <div class="ig-kpi-label">Mutual Connections</div>';
-      html += '    <div class="ig-kpi-value">' + (isRestricted ? "-" : Utils.formatNumber(mutualsCount)) + "</div>";
-      if (newMutualsCount > 0) {
-        html += `    <div class="ig-kpi-sub is-positive" style="cursor: pointer;" onclick="document.querySelector('[data-target=\\'ig-target-view-newmutuals\\']').click()" title="View New Mutuals">` + Icons.sparkles + " <span>+" + newMutualsCount + " new</span></div>";
-      } else {
-        html += '    <div class="ig-kpi-sub is-neutral">' + Icons.mutuals + " <span>" + (isRestricted ? "Restricted" : "Internal Mutuals") + "</span></div>";
-      }
+      html += '    <div class="ig-kpi-value" title="' + (isRestricted ? "Restricted" : Utils.formatExactNumber(mutualsCount) + " mutuals") + '">' + (isRestricted ? "—" : Utils.formatNumber(mutualsCount)) + "</div>";
+      html += "    " + mutualsSubHtml;
       html += "  </div>";
       html += '  <div class="ig-kpi-card">';
       html += '    <div class="ig-kpi-label">Audience Balance</div>';
-      html += '    <div class="ig-kpi-value ' + netClass + '">' + (isRestricted ? "0" : netSign + netFlow) + "</div>";
-      html += '    <div class="ig-kpi-sub"><span style="color:#22c55e;">+' + newCount + '</span> / <span style="color:#ef4444;">-' + lostCount + "</span></div>";
+      html += '    <div class="ig-kpi-value ' + netClass + '" title="Net vs opening baseline (' + Utils.formatExactNumber(baselineFollowers) + ')">' + netSign + netFlow.toLocaleString() + "</div>";
+      html += "    " + balanceSubHtml;
       html += "  </div>";
       html += "</div>";
-      if (Array.isArray(targetData.history) && targetData.history.length > 0) {
-        html += '<div class="ig-section-title" style="margin-top: 18px;">Audit History <span class="ig-badge">' + targetData.history.length + "</span></div>";
-        html += '<table class="ig-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th><th>Mutuals</th></tr></thead><tbody>';
-        targetData.history.slice().reverse().forEach((h) => {
+      if (safeHistory.length > 0) {
+        html += '<div class="ig-trend-chart-mount">' + UI.renderTrendChartCard(safeHistory, { scope: "target", isRestricted }) + "</div>";
+      }
+      if (!isRestricted && (followersCount > 0 || followingCount > 0)) {
+        html += UI.renderAudienceCompositionCard({
+          followers: followersCount,
+          following: followingCount,
+          mutuals: mutualsCount,
+          fans: Math.max(0, followersCount - mutualsCount),
+          notFollowingBack: Math.max(0, followingCount - mutualsCount),
+          mode: "target"
+        });
+      }
+      if (safeHistory.length > 0) {
+        html += '<div class="ig-section-title" style="margin-top: 16px;">Audit History <span class="ig-badge">' + safeHistory.length + "</span></div>";
+        html += '<div class="ig-table-scroll-region" tabindex="0" role="region" aria-label="Target audit history table">';
+        html += '<table class="ig-table ig-history-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th><th>Mutuals</th></tr></thead><tbody>';
+        reversedHistory.forEach((h, index) => {
+          const isBaselineRow = index === reversedHistory.length - 1;
+          const prevDay = !isBaselineRow ? reversedHistory[index + 1] : null;
+          const scans = Number(h.scansCount) || 1;
+          const dayDiffF = prevDay ? Number(h.followers ?? 0) - Number(prevDay.followers ?? 0) : 0;
+          const intraF = Number(h.followers ?? 0) - Number(h.startFollowers ?? h.followers ?? 0);
+          const fDeltaHtml = UI.formatDeltaPillHtml(dayDiffF, { intradayDelta: intraF, scansCount: scans, isBaselineRow });
+          const dayDiffIng = prevDay ? Number(h.following ?? 0) - Number(prevDay.following ?? 0) : 0;
+          const intraIng = Number(h.following ?? 0) - Number(h.startFollowing ?? h.following ?? 0);
+          const ingDeltaHtml = UI.formatDeltaPillHtml(dayDiffIng, { intradayDelta: intraIng, scansCount: scans, isBaselineRow });
+          let mutCellHtml = '<span class="ig-metric-muted">—</span>';
+          if (!isRestricted && h.mutuals !== void 0 && h.mutuals !== null && !Number.isNaN(Number(h.mutuals))) {
+            const hasPrevMut = prevDay && prevDay.mutuals !== void 0 && prevDay.mutuals !== null;
+            const dayDiffMut = hasPrevMut ? Number(h.mutuals) - Number(prevDay.mutuals) : 0;
+            const intraMut = Number(h.mutuals) - Number(h.startMutuals ?? h.mutuals);
+            const mutDeltaHtml = UI.formatDeltaPillHtml(dayDiffMut, {
+              intradayDelta: intraMut,
+              scansCount: scans,
+              isBaselineRow: !hasPrevMut
+            });
+            mutCellHtml = '<span class="ig-metric-value">' + Utils.formatExactNumber(h.mutuals) + " " + mutDeltaHtml + "</span>";
+          }
+          const safeDate = Utils.escapeHtml(h.date || "");
+          const scansBadge = scans > 1 ? `<span class="ig-scans-pill" title="${scans} audits recorded on ${safeDate}">${scans}x</span>` : "";
           html += "<tr>";
-          html += '<td><span class="ig-table-date">' + Utils.escapeHtml(h.date || "") + "</span></td>";
-          html += '<td><span class="ig-metric-value">' + Utils.formatNumber(h.followers) + "</span></td>";
-          html += '<td><span class="ig-metric-value">' + Utils.formatNumber(h.following) + "</span></td>";
-          html += '<td><span class="ig-metric-value">' + (h.mutuals !== void 0 ? Utils.formatNumber(h.mutuals) : "-") + "</span></td>";
+          html += '<th scope="row"><span class="ig-table-date">' + safeDate + "</span>" + scansBadge + "</th>";
+          html += '<td><span class="ig-metric-value">' + Utils.formatExactNumber(h.followers) + " " + fDeltaHtml + "</span></td>";
+          html += '<td><span class="ig-metric-value">' + Utils.formatExactNumber(h.following) + " " + ingDeltaHtml + "</span></td>";
+          html += "<td>" + mutCellHtml + "</td>";
           html += "</tr>";
         });
-        html += "</tbody></table>";
+        html += "</tbody></table></div>";
       }
       container.innerHTML = html;
       UI.loadAvatarsProgressively(container);
+      const chartMount = container.querySelector(".ig-trend-chart-mount");
+      if (chartMount && typeof UI.bindChartInteractions === "function") {
+        UI.bindChartInteractions(chartMount, {
+          historyList: safeHistory,
+          scope: "target",
+          isRestricted
+        });
+      }
+      UI.updateTargetTabCounts(targetData);
     },
     renderTargetLists: (targetData) => {
       if (!targetData) return;
@@ -4494,6 +7789,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       UI.renderTargetSingleList("ig-target-view-lostfollowers", targetData.lostFollowers || [], "Followers Lost", "No lost followers detected since last scan.", { isLostBadge: true });
       UI.renderTargetSingleList("ig-target-view-followers", targetData.followers || [], "Target Followers", "No followers data available.");
       UI.renderTargetSingleList("ig-target-view-following", targetData.following || [], "Target Following", "No following data available.");
+      UI.updateTargetTabCounts(targetData);
     },
     TARGET_CHIPS_DEF: [
       { id: "all", label: "All", icon: null },
@@ -4734,32 +8030,36 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       } else {
         pageUsers.forEach((u) => {
           const safeUsername = Utils.escapeHtml(u.username || "");
+          const safeUserId = Utils.escapeHtml(u.id || "");
           const safeUrl = Utils.sanitizeUrl(u.username, u.url);
           const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : "";
           const safeAvatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
           const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : "?";
-          const avatarClass = "ig-user-avatar ig-avatar-monogram";
+          const hasStory = Boolean(u.latestReelMedia && u.latestReelMedia > 0);
+          const avatarClass = "ig-user-avatar ig-avatar-monogram" + (hasStory ? u.isBestie ? " has-bestie-ring" : " has-story-ring" : "");
           const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || "") + '" data-username="' + safeUsername + '"><span class="ig-monogram-letter">' + safeInitial + "</span></div>";
-          const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${Utils.escapeHtml(u.id || "")}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
+          const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${safeUserId}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
           let badges = "";
           if (u.isPrivate) badges += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + "</span>";
           if (u.isVerified) badges += '<span title="Verified">' + Icons.verified + "</span>";
           if (options.isNewBadge) badges += '<span class="ig-badge-pill ig-badge-new-mutual">' + Icons.sparkles + " New</span>";
           if (options.isLostBadge) badges += '<span class="ig-badge-pill ig-badge-churn">' + Icons.unfollowers + " Lost</span>";
-          if (options.newMutualsSet && options.newMutualsSet.has(u.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual" style="background: #10b981 !important; color: white !important; font-weight: bold; border: none !important;">' + Icons.sparkles + " New Mutual</span>";
+          if (options.newMutualsSet && options.newMutualsSet.has(u.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual-solid">' + Icons.sparkles + " New Mutual</span>";
           if (u.isViewerMutual) badges += '<span class="ig-badge-pill ig-badge-new-mutual" title="Shared mutual with you!">' + Icons.sparkles + " Shared Mutual</span>";
-          rowsHtml += '<div class="ig-user-row" data-user-id="' + Utils.escapeHtml(u.id || "") + '">';
+          rowsHtml += '<div class="ig-user-row" data-user-id="' + safeUserId + '">';
           rowsHtml += '  <div class="ig-user-info">' + avatarTriggerHtml;
-          rowsHtml += '    <div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
-          rowsHtml += '      <div style="display:flex; align-items:center; min-width:0; flex-wrap:wrap;">';
+          rowsHtml += '    <div class="ig-user-text-col">';
+          rowsHtml += '      <div class="ig-user-title-line">';
           rowsHtml += '        <span class="ig-username">' + safeUsername + "</span>";
           rowsHtml += '        <span class="ig-user-badges">' + badges + "</span>";
           rowsHtml += "      </div>";
-          if (safeFullName) rowsHtml += '<span style="font-size:11px; color:#8e8e8e; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px;">' + safeFullName + "</span>";
+          if (safeFullName) rowsHtml += '<span class="ig-user-fullname">' + safeFullName + "</span>";
           rowsHtml += "    </div>";
           rowsHtml += "  </div>";
           rowsHtml += '  <div class="ig-user-actions">';
-          rowsHtml += '    <button class="ig-btn-inspect-user btn-inspect-user" data-user-id="' + Utils.escapeHtml(u.id || "") + '" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + " Inspect</button>";
+          rowsHtml += '    <button class="ig-btn-spy-story btn-spy-story" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '" title="Check Story & Highlight Visibility">' + Icons.spy + " Story</button>";
+          rowsHtml += '    <button class="ig-btn-inspect-user btn-inspect-user" data-user-id="' + safeUserId + '" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + " Inspect</button>";
+          rowsHtml += '    <button class="ig-btn-target-audit btn-target-audit" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '" title="Audit @' + safeUsername + '">' + Icons.target + " Audit</button>";
           rowsHtml += '    <a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + "</a>";
           rowsHtml += "  </div>";
           rowsHtml += "</div>";
@@ -4814,38 +8114,49 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       } else {
         targetEntries.slice().reverse().forEach((t) => {
           const u = t.user || {};
-          const safeUser = Utils.escapeHtml(t.username || u.username || "");
+          const safeUser = Utils.escapeHtml(u.username || t.username || "");
+          const safeUserId = Utils.escapeHtml(u.id || "");
+          const safePrevUser = u.previousUsername && String(u.previousUsername).toLowerCase() !== String(u.username || t.username || "").toLowerCase() ? Utils.escapeHtml(u.previousUsername) : "";
           const safeName = Utils.escapeHtml(u.fullName || "");
           const avatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
           const isVerified = Boolean(u.isVerified);
           const isPrivate = Boolean(u.isPrivate);
-          const fCount = Array.isArray(t.followers) && t.followers.length > 0 ? t.followers.length : u.followerCount || 0;
-          const ingCount = Array.isArray(t.following) && t.following.length > 0 ? t.following.length : u.followingCount || 0;
+          const fCount = Math.max(Number(u.followerCount) || 0, Array.isArray(t.followers) ? t.followers.length : 0);
+          const ingCount = Math.max(Number(u.followingCount) || 0, Array.isArray(t.following) ? t.following.length : 0);
           const mutCount = Array.isArray(t.mutuals) && t.mutuals.length > 0 ? t.mutuals.length : typeof u.mutualsCount === "number" ? u.mutualsCount : 0;
           const newCount = t.newFollowers ? t.newFollowers.length : 0;
           const lostCount = t.lostFollowers ? t.lostFollowers.length : 0;
-          const netFlow = newCount - lostCount;
+          const tHist = Array.isArray(t.history) ? t.history : [];
+          let netFlow = newCount - lostCount;
+          if (tHist.length > 0 && (t.isRestricted || netFlow === 0)) {
+            const firstH = tHist[0];
+            const baseF = Number(firstH?.startFollowers ?? firstH?.followers ?? fCount);
+            netFlow = Number(fCount) - baseF;
+          }
           let diffBadge = "";
           if (netFlow > 0) {
-            diffBadge = '<span class="ig-target-card-diff is-positive">+' + netFlow + "</span>";
+            diffBadge = '<span class="ig-target-card-diff is-positive">+' + netFlow.toLocaleString() + "</span>";
           } else if (netFlow < 0) {
-            diffBadge = '<span class="ig-target-card-diff is-negative">' + netFlow + "</span>";
+            diffBadge = '<span class="ig-target-card-diff is-negative">' + netFlow.toLocaleString() + "</span>";
           }
+          const sparklineHtml = typeof UI.renderSparklineSvg === "function" && tHist.length > 0 ? '<div class="ig-target-card-sparkline" title="Followers trend">' + UI.renderSparklineSvg(tHist, { metric: "followers", width: 64, height: 20 }) + "</div>" : "";
           const safeInitial = safeUser ? safeUser.charAt(0).toUpperCase() : "?";
           const avatarHtml = '<div class="ig-target-card-avatar ig-avatar-monogram" data-avatar-url="' + (avatarUrl || "") + '" data-username="' + safeUser + '"><span class="ig-monogram-letter">' + safeInitial + "</span></div>";
           const timeStr = t.lastAuditAt ? Utils.formatDate(t.lastAuditAt) : "Recent";
-          html += '<div class="ig-target-card" data-username="' + safeUser + '">';
+          html += '<div class="ig-target-card" data-username="' + safeUser + '" data-user-id="' + safeUserId + '">';
           html += '  <div class="ig-target-card-top">';
           html += "    " + avatarHtml;
           html += '    <div class="ig-target-card-info">';
           html += '      <div class="ig-target-card-name-row">';
           html += '        <span class="ig-target-card-user">@' + safeUser + "</span>";
           if (isVerified) html += '<span title="Verified">' + Icons.verified + "</span>";
+          if (safePrevUser) html += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + safePrevUser + '">Formerly @' + safePrevUser + "</span>";
           if (isPrivate) html += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + "</span>";
           html += "      </div>";
           if (safeName) html += '      <div class="ig-target-card-fullname">' + safeName + "</div>";
           html += "    </div>";
-          html += '    <button class="ig-btn-target-delete btn-target-card-delete" data-username="' + safeUser + '" title="Remove from tracking">' + Icons.trash + "</button>";
+          html += "    " + sparklineHtml;
+          html += '    <button class="ig-btn-target-delete btn-target-card-delete" data-username="' + safeUser + '" data-user-id="' + safeUserId + '" title="Remove from tracking">' + Icons.trash + "</button>";
           html += "  </div>";
           html += '  <div class="ig-target-card-metrics">';
           html += '    <div class="ig-target-metric"><span class="ig-target-metric-label">Followers</span><span class="ig-target-metric-val">' + Utils.formatNumber(fCount) + " " + diffBadge + "</span></div>";
@@ -4855,8 +8166,8 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           html += '  <div class="ig-target-card-footer">';
           html += '    <span class="ig-target-card-time">' + timeStr + "</span>";
           html += '    <div class="ig-target-card-actions">';
-          html += '      <button class="ig-btn ig-btn-sm ig-btn-secondary btn-target-card-open" data-username="' + safeUser + '">' + Icons.target + " View Details</button>";
-          html += '      <button class="ig-btn ig-btn-sm ig-btn-primary btn-target-card-refresh" data-username="' + safeUser + '">' + Icons.refresh + " Re-Audit</button>";
+          html += '      <button class="ig-btn ig-btn-sm ig-btn-secondary btn-target-card-open" data-username="' + safeUser + '" data-user-id="' + safeUserId + '">' + Icons.target + " View Details</button>";
+          html += '      <button class="ig-btn ig-btn-sm ig-btn-primary btn-target-card-refresh" data-username="' + safeUser + '" data-user-id="' + safeUserId + '">' + Icons.refresh + " Re-Audit</button>";
           html += "    </div>";
           html += "  </div>";
           html += "</div>";
@@ -4865,6 +8176,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       html += "</div>";
       container.innerHTML = html;
       UI.loadAvatarsProgressively(container);
+      if (typeof UI.updateMainTabCounts === "function") {
+        UI.updateMainTabCounts(userId);
+      }
       const searchBtn = container.querySelector("#ig-btn-target-search");
       const searchInput = container.querySelector("#ig-target-search-input");
       if (searchBtn) {
@@ -4883,7 +8197,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
       }
     }
   });
-  const mainCss = '#ig-analyzer-panel,#ig-target-subpanel,#ig-safety-modal,.ig-backup-overlay{--iga-bg-primary: rgba(15, 23, 42, .92);--iga-bg-secondary: rgba(30, 41, 59, .7);--iga-surface: rgba(30, 41, 59, .55);--iga-surface-hover: rgba(51, 65, 85, .6);--iga-surface-active: rgba(51, 65, 85, .85);--iga-border: rgba(255, 255, 255, .08);--iga-border-hover: rgba(255, 255, 255, .16);--iga-border-focus: rgba(59, 130, 246, .5);--iga-text-bright: #f8fafc;--iga-text-main: #cbd5e1;--iga-text-muted: #94a3b8;--iga-text-dim: #64748b;--iga-accent: #3b82f6;--iga-accent-hover: #2563eb;--iga-accent-active: #1d4ed8;--iga-accent-subtle: rgba(59, 130, 246, .14);--iga-accent-glow: 0 0 16px rgba(59, 130, 246, .35);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .14);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #ef4444;--iga-danger-hover: #dc2626;--iga-danger-subtle: rgba(239, 68, 68, .14);--iga-warning: #f59e0b;--iga-warning-subtle: rgba(245, 158, 11, .14);--iga-shadow-sm: 0 1px 3px rgba(0, 0, 0, .35);--iga-shadow-md: 0 6px 16px -2px rgba(0, 0, 0, .4);--iga-shadow-lg: 0 24px 64px -12px rgba(0, 0, 0, .65), 0 0 0 1px rgba(255, 255, 255, .08);--iga-radius-sm: 6px;--iga-radius-md: 10px;--iga-radius-lg: 14px;--iga-radius-xl: 18px;--iga-radius-full: 9999px;--iga-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;--iga-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Monaco, Consolas, monospace;--iga-ease-spring: cubic-bezier(.16, 1, .3, 1);--iga-ease-default: cubic-bezier(.4, 0, .2, 1);--ig-panel-bg: var(--iga-bg-primary);--ig-panel-border: var(--iga-border);--ig-text-main: var(--iga-text-main);--ig-text-muted: var(--iga-text-muted);--ig-text-bright: var(--iga-text-bright);--ig-bg-input: var(--iga-surface);--ig-bg-hover: var(--iga-surface-hover);--ig-bg-active: var(--iga-surface-active);--ig-scrollbar-thumb: rgba(255, 255, 255, .15);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .25);--ig-shadow: var(--iga-shadow-lg);--ig-shadow-sm: var(--iga-shadow-sm);--ig-accent: var(--iga-accent);--ig-accent-hover: var(--iga-accent-hover);--ig-accent-soft: var(--iga-accent-subtle);--ig-success: var(--iga-success);--ig-success-hover: var(--iga-success-hover);--ig-danger: var(--iga-danger);--ig-danger-hover: var(--iga-danger-hover);--ig-warning: var(--iga-warning);--ig-btn-bg: var(--iga-surface);--ig-btn-border: var(--iga-border);--ig-btn-text: var(--iga-text-bright);--ig-btn-disabled-bg: rgba(255, 255, 255, .03);--ig-btn-disabled-border: rgba(255, 255, 255, .05);--ig-btn-disabled-text: rgba(255, 255, 255, .25);--ig-radius-sm: var(--iga-radius-sm);--ig-radius-md: var(--iga-radius-md);--ig-radius-lg: var(--iga-radius-lg);--ig-radius-full: var(--iga-radius-full)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,#ig-safety-modal.ig-light-theme,.ig-backup-overlay.ig-light-theme{--iga-bg-primary: rgba(255, 255, 255, .96);--iga-bg-secondary: #f8fafc;--iga-surface: #f1f5f9;--iga-surface-hover: #e2e8f0;--iga-surface-active: #cbd5e1;--iga-border: #e2e8f0;--iga-border-hover: #cbd5e1;--iga-border-focus: rgba(37, 99, 235, .4);--iga-text-bright: #0f172a;--iga-text-main: #334155;--iga-text-muted: #64748b;--iga-text-dim: #94a3b8;--iga-accent: #2563eb;--iga-accent-hover: #1d4ed8;--iga-accent-active: #1e40af;--iga-accent-subtle: rgba(37, 99, 235, .08);--iga-accent-glow: 0 0 16px rgba(37, 99, 235, .2);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .1);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #dc2626;--iga-danger-hover: #b91c1c;--iga-danger-subtle: rgba(220, 38, 38, .08);--iga-warning: #d97706;--iga-warning-subtle: rgba(217, 119, 6, .08);--iga-shadow-sm: 0 1px 3px rgba(15, 23, 42, .08);--iga-shadow-md: 0 6px 16px -2px rgba(15, 23, 42, .1);--iga-shadow-lg: 0 24px 64px -12px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .06);--ig-scrollbar-thumb: rgba(15, 23, 42, .15);--ig-scrollbar-thumb-hover: rgba(15, 23, 42, .25);--ig-btn-disabled-bg: rgba(15, 23, 42, .03);--ig-btn-disabled-border: rgba(15, 23, 42, .06);--ig-btn-disabled-text: rgba(15, 23, 42, .3)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:717px;min-width:440px;max-width:calc(100vw - 40px);height:560px;min-height:260px;max-height:calc(100vh - 40px);background:var(--iga-bg-primary);border:1px solid var(--iga-border);color:var(--iga-text-main);box-shadow:var(--iga-shadow-lg);-webkit-backdrop-filter:blur(28px) saturate(190%);backdrop-filter:blur(28px) saturate(190%);font-family:var(--iga-font-sans);font-size:13px;line-height:1.5;padding:16px;z-index:999999;border-radius:var(--iga-radius-xl);display:flex;flex-direction:column;resize:both;overflow:hidden;transform-origin:center center;transition:background .3s var(--iga-ease-default),border-color .3s var(--iga-ease-default),box-shadow .28s cubic-bezier(.34,1.56,.64,1),transform .28s cubic-bezier(.34,1.56,.64,1),height .25s var(--iga-ease-spring);box-sizing:border-box}#ig-analyzer-panel.is-dragging{transform:scale(.985);box-shadow:0 35px 80px -15px #000c,0 0 0 1px #ffffff1f;-webkit-backdrop-filter:blur(36px) saturate(210%);backdrop-filter:blur(36px) saturate(210%);transition:transform .18s cubic-bezier(.16,1,.3,1),box-shadow .18s cubic-bezier(.16,1,.3,1);cursor:grabbing!important}#ig-analyzer-panel.ig-light-theme.is-dragging{box-shadow:0 35px 80px -15px #0f172a40,0 0 0 1px #0f172a14}#ig-analyzer-panel *{box-sizing:border-box}#ig-analyzer-panel.is-minimized{height:64px!important;min-height:64px!important;resize:none!important;padding-bottom:0;overflow:hidden}#ig-analyzer-panel.is-minimized>*:not(#ig-header){display:none!important}#ig-analyzer-panel.is-minimized #ig-header{margin-bottom:0;padding-bottom:0;border-bottom:none}#ig-analyzer-panel #ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--iga-border);cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-analyzer-panel #ig-header:active{cursor:grabbing}#ig-analyzer-panel .ig-header-left{display:flex;align-items:center;gap:10px}#ig-analyzer-panel .ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--iga-accent-subtle);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);color:var(--iga-accent);box-shadow:var(--iga-shadow-sm);transition:transform .2s var(--iga-ease-spring)}#ig-analyzer-panel .ig-logo:hover{transform:scale(1.06)}#ig-analyzer-panel .ig-title{font-size:14px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px;line-height:1}#ig-analyzer-panel .ig-header-right{display:flex;align-items:center;gap:8px}#ig-analyzer-panel #ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;background:var(--iga-surface);padding:4px 10px;border-radius:var(--iga-radius-full);color:var(--iga-text-muted);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default)}#ig-analyzer-panel .ig-status-dot{width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);display:inline-block;flex-shrink:0;position:relative}#ig-analyzer-panel #ig-status.is-active .ig-status-dot,#ig-analyzer-panel #ig-status:not(:empty) .ig-status-dot{background:var(--iga-success);box-shadow:0 0 8px var(--iga-success);animation:iga-pulse 2s cubic-bezier(.4,0,.6,1) infinite}@keyframes iga-pulse{0%,to{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(1.15)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-actions{display:flex;align-items:center;gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:var(--iga-radius-sm);background:transparent;border:1px solid transparent;color:var(--iga-text-muted);cursor:pointer;transition:all .15s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:active{transform:scale(.94)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn-close:hover{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-actions-bar{display:flex;gap:8px;margin-bottom:12px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-bright);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default);flex:1;white-space:nowrap;line-height:1;position:relative;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-sm{padding:6px 12px;font-size:11px;flex:initial}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon svg{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--iga-shadow-md);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:active:not(:disabled){transform:translateY(0);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:disabled{opacity:.45;cursor:not-allowed;background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;transform:none!important;box-shadow:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary){background:linear-gradient(90deg,#1d4ed8,#3b82f6 28%,#60a5fa,#3b82f6 72%,#1d4ed8);background-size:200% 100%;background-position:0% 50%;border-color:#ffffff2e;color:#fff;box-shadow:0 4px 12px #2563eb4d;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background-position .3s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary):hover:not(:disabled){animation:iga-gradient-move 2s linear infinite;box-shadow:0 6px 20px #2563eb73;transform:translateY(-1px)}@keyframes iga-gradient-move{0%{background-position:200% 50%}to{background-position:0% 50%}}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled){background:var(--iga-success-gradient)!important;border-color:#ffffff26!important;color:#fff!important;box-shadow:0 4px 12px #10b98140}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled):hover{background:linear-gradient(135deg,#059669,#047857)!important;box-shadow:0 6px 18px #10b98166}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger{background:transparent;border-color:#ef444459;color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--iga-danger-subtle);border-color:var(--iga-danger);color:var(--iga-danger-hover);box-shadow:0 4px 12px #ef444433}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-container,#ig-target-progress-container,.ig-progress-container){width:100%;background:var(--iga-surface);border-radius:var(--iga-radius-full);height:5px;margin-bottom:12px;overflow:hidden;display:none;border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar){width:0%;background:linear-gradient(90deg,var(--iga-accent),#a855f7);height:100%;border-radius:var(--iga-radius-full);transition:width .35s var(--iga-ease-default);position:relative}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar):after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);animation:iga-shimmer 1.5s infinite}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar).is-indeterminate{width:35%!important;animation:iga-indeterminate 1.5s cubic-bezier(.4,0,.2,1) infinite}@keyframes iga-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}@keyframes iga-indeterminate{0%{transform:translate(-100%)}50%{transform:translate(180%)}to{transform:translate(350%)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-wrapper{position:relative;margin-bottom:8px;flex-shrink:0;display:flex;align-items:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container{position:relative;display:flex;flex-wrap:nowrap;gap:4px;padding:4px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;scrollbar-width:none;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-indicator{position:absolute;top:0;left:0;height:0;width:0;opacity:0;border-radius:var(--iga-radius-md);background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm);pointer-events:none;z-index:1;transition:transform .3s cubic-bezier(.16,1,.3,1),width .3s cubic-bezier(.16,1,.3,1),height .3s cubic-bezier(.16,1,.3,1),opacity .2s ease;transform:translateZ(0)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-indicator{background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn{position:relative!important;z-index:2!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;padding:6px 12px!important;flex:0 0 auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--iga-text-muted)!important;font-size:11px!important;font-weight:600!important;border-radius:var(--iga-radius-md)!important;cursor:pointer!important;transition:color .2s var(--iga-ease-default),background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default)!important;white-space:nowrap!important;line-height:1!important;-webkit-user-select:none!important;user-select:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important;background:var(--iga-surface-hover)!important;border-color:var(--iga-border)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--iga-accent)!important;font-weight:600!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-btn.active{color:var(--iga-accent)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:14px;height:14px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-label{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn{color:var(--iga-text-muted)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view){display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view).active{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:14px;font-size:12px;color:var(--iga-text-main);box-shadow:inset 0 1px 3px #0000001a}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar{width:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-track{background:transparent}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-log,#ig-target-view-logs){font-family:var(--iga-font-mono);font-size:11px;line-height:1.6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry{display:flex;align-items:baseline;gap:8px;padding:4px 6px;color:var(--iga-text-main);border-bottom:1px solid rgba(255,255,255,.03);border-radius:var(--iga-radius-sm);transition:background .15s ease;word-break:break-word}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-log-entry{border-bottom:1px solid rgba(0,0,0,.03)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:last-child{border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-time{color:var(--iga-accent);font-weight:600;font-size:10px;background:var(--iga-accent-subtle);padding:1px 6px;border-radius:var(--iga-radius-sm);flex-shrink:0;font-variant-numeric:tabular-nums;letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--iga-text-bright);letter-spacing:-.2px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--iga-accent-subtle);color:var(--iga-accent);padding:0 8px;border-radius:var(--iga-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:1px solid rgba(59,130,246,.2)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-toolbar{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-box{position:relative;display:flex;align-items:center;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-icon{position:absolute;left:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--iga-text-dim);pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input{width:100%;height:32px;padding:0 30px 0 32px;font-size:11px;font-family:var(--iga-font-sans);color:var(--iga-text-bright);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);outline:none;box-sizing:border-box;transition:border-color .18s var(--iga-ease-default),box-shadow .18s var(--iga-ease-default),background .18s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input:focus{border-color:var(--iga-border-focus);background:var(--iga-surface-hover);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input::placeholder{color:var(--iga-text-dim);font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear{position:absolute;right:6px;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--iga-text-dim);cursor:pointer;border-radius:50%;padding:0;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear svg,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:3px 2px;scrollbar-width:none;-ms-overflow-style:none;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:600;font-family:var(--iga-font-sans);color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);cursor:pointer;transition:all .15s var(--iga-ease-default);-webkit-user-select:none;user-select:none;white-space:nowrap;line-height:1.2;box-sizing:border-box}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active{background:#3b82f62e;color:var(--iga-accent);border-color:var(--iga-accent);font-weight:700;box-shadow:0 1px 4px #3b82f640}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-count{font-size:9px;padding:0 4px;border-radius:6px;background:#ffffff14;color:var(--iga-text-dim);margin-left:2px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-chip-count{background:#0000000f}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-icon{display:inline-flex;align-items:center;justify-content:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-list{display:flex;flex-direction:column;flex:1;min-height:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--iga-text-muted);font-size:12px;padding:40px 16px;text-align:center;margin:auto 0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon{display:flex;align-items:center;justify-content:center;width:44px;height:44px;color:var(--iga-text-dim);background:var(--iga-surface-hover);border-radius:var(--iga-radius-full);padding:10px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin-bottom:6px;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-surface);min-height:48px;flex-shrink:0;box-sizing:border-box;transition:background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default),transform .28s cubic-bezier(.4,0,.2,1),opacity .25s ease,max-height .28s ease,min-height .28s ease,margin .28s ease,padding .28s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row.ig-row-slide-out{transform:translate(100%);opacity:0;max-height:0;min-height:0;padding-top:0;padding-bottom:0;margin-bottom:0;border-color:transparent;pointer-events:none;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:12px;font-weight:700;flex-shrink:0;border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram{position:relative;overflow:hidden;user-select:none;-webkit-user-select:none;background:linear-gradient(135deg,#2a2a2a,#1a1a1a);color:#e4e4e7}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram .ig-monogram-letter{display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:.5px;color:#f4f4f5;transition:opacity .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-img-loaded{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;opacity:0;transition:opacity .22s cubic-bezier(.4,0,.2,1)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram.is-loaded .ig-avatar-img-loaded{opacity:1}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-username{color:var(--iga-text-bright);font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-badges{display:inline-flex;align-items:center;gap:4px;margin-left:6px;flex-wrap:wrap;vertical-align:middle}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;border-radius:var(--iga-radius-sm);font-size:10px;font-weight:600;line-height:1.3;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-private{background:#94a3b81f;color:var(--iga-text-muted);border:1px solid rgba(148,163,184,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-bestie{background:#22c55e26;color:#22c55e;border:1px solid rgba(34,197,94,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pending{background:#f59e0b26;color:#f59e0b;border:1px solid rgba(245,158,11,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-bestie-ring{outline:2px solid #22c55e!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600;font-size:11px;padding:4px 8px;border-radius:var(--iga-radius-sm);background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.2);transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link:hover{background:var(--iga-accent);color:#fff;text-decoration:none}#ig-analyzer-panel .btn-whitelist,#ig-analyzer-panel .ig-btn-whitelist{background:var(--iga-surface)!important;border:1px solid var(--iga-border)!important;color:var(--iga-text-muted)!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .15s ease!important}#ig-analyzer-panel .btn-whitelist:hover,#ig-analyzer-panel .ig-btn-whitelist:hover{background:var(--iga-surface-active)!important;border-color:var(--iga-border-hover)!important;color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#a855f71f!important;border:1px solid rgba(168,85,247,.3)!important;color:#c084fc!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .2s var(--iga-ease-default)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story:hover:not(:disabled){background:#a855f740!important;border-color:#c084fc!important;color:#fff!important;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table thead th{color:var(--iga-text-muted);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.6px;padding:8px 10px;border-bottom:1px solid var(--iga-border);position:sticky;top:0;background:var(--iga-surface);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table td{padding:8px 10px;border-bottom:1px solid var(--iga-border);color:var(--iga-text-main)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr{transition:background .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-user{font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-date{color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link:hover{text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-pagination{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 0;margin-top:8px;border-top:1px solid var(--iga-border);font-size:11px;color:var(--iga-text-muted);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn{display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:var(--iga-radius-sm);font-size:11px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);transition:all .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:hover:not(:disabled){background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-accent)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:disabled{opacity:.35;cursor:not-allowed}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-info{font-weight:600;letter-spacing:.02em}.ig-modal-overlay{position:fixed;inset:0;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:iga-fade-in .2s var(--iga-ease-default);padding:20px;box-sizing:border-box}.ig-modal-overlay *{box-sizing:border-box}@keyframes iga-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:var(--iga-bg-primary);border:1px solid var(--iga-border);padding:28px 24px;border-radius:var(--iga-radius-xl);width:440px;max-width:92vw;max-height:85vh;text-align:center;color:var(--iga-text-bright);box-shadow:var(--iga-shadow-lg);display:flex;flex-direction:column;align-items:center;animation:iga-modal-slide .25s var(--iga-ease-spring)}@keyframes iga-modal-slide{0%{opacity:0;transform:scale(.95) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:52px;height:52px;color:var(--iga-warning);margin-bottom:16px;padding:12px;background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.25);border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:17px;font-weight:700;margin-bottom:8px;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-modal-text{font-size:13px;line-height:1.6;color:var(--iga-text-muted);margin-bottom:24px;width:100%;max-height:58vh;overflow-y:auto;padding-right:2px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:10px 16px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-btn-cancel-modal{background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted)}.ig-btn-cancel-modal:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-btn-confirm-modal{background:var(--iga-accent-gradient);border:1px solid rgba(255,255,255,.15);color:#fff;box-shadow:0 4px 12px #2563eb59}.ig-btn-confirm-modal:hover{box-shadow:0 6px 18px #2563eb80;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger{position:relative;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;transition:transform .18s var(--iga-ease-default);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:hover{transform:scale(1.08)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:active{transform:scale(.96)}.ig-hd-modal-overlay{display:none;position:fixed;inset:0;background:#000000d1;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:100000;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:ig-hd-fade-in .2s ease forwards}@keyframes ig-hd-fade-in{0%{opacity:0}to{opacity:1}}.ig-hd-modal-card{background:var(--iga-bg-primary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-xl);padding:24px 20px 20px;width:100%;max-width:360px;display:flex;flex-direction:column;align-items:center;position:relative;box-shadow:0 24px 64px -12px #000000bf;color:var(--iga-text-bright);animation:iga-modal-slide .25s var(--iga-ease-spring);box-sizing:border-box}.ig-hd-modal-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-dim);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease;padding:0}.ig-hd-modal-close:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright)}.ig-hd-avatar-frame{position:relative;width:190px;height:190px;border-radius:50%;margin:8px 0 14px;display:flex;align-items:center;justify-content:center;background:var(--iga-surface);box-shadow:0 8px 32px #00000073;flex-shrink:0;border:2px solid var(--iga-border);box-sizing:border-box}.ig-hd-avatar-frame.has-bestie-ring{outline:4px solid #22c55e!important;outline-offset:3px;box-shadow:0 0 28px #22c55e73,0 8px 32px #00000073}.ig-hd-avatar-frame.has-story-ring{outline:4px solid #e1306c!important;outline-offset:3px;box-shadow:0 0 28px #e1306c73,0 8px 32px #00000073}.ig-hd-avatar-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;background:var(--iga-surface);transition:filter .25s ease,opacity .25s ease}.ig-hd-avatar-fallback{width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:700;background:var(--iga-accent-subtle);color:var(--iga-accent)}.ig-hd-res-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;letter-spacing:.3px;background:#94a3b826;color:var(--iga-text-muted);border:1px solid var(--iga-border);margin-bottom:12px}.ig-hd-res-pill.is-hd{background:#2563eb29;color:#3b82f6;border-color:#3b82f666;box-shadow:0 0 12px #3b82f633}.ig-hd-spinner{width:10px;height:10px;border:2px solid rgba(148,163,184,.3);border-top-color:var(--iga-accent);border-radius:50%;animation:ig-hd-spin .7s linear infinite;display:inline-block}@keyframes ig-hd-spin{to{transform:rotate(360deg)}}.ig-hd-user-details{display:flex;flex-direction:column;align-items:center;text-align:center;width:100%;margin-bottom:18px}.ig-hd-username-row{display:flex;align-items:center;justify-content:center;gap:5px;flex-wrap:wrap;margin-bottom:2px}.ig-hd-username{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}.ig-hd-fullname{font-size:12px;color:var(--iga-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px}.ig-hd-badges{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}.ig-hd-actions{display:flex;flex-direction:column;gap:8px;width:100%}.ig-hd-actions-row{display:flex;gap:8px;width:100%}.ig-btn-download-hd{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px 16px;border-radius:var(--iga-radius-md);background:var(--iga-accent-gradient);color:#fff;font-size:12px;font-weight:700;border:none;cursor:pointer;transition:all .18s var(--iga-ease-default);box-shadow:0 2px 10px #3b82f659}.ig-btn-download-hd:hover{transform:translateY(-1px);box-shadow:0 4px 16px #3b82f673}.ig-btn-open-tab,.ig-btn-view-profile{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:1;padding:8px 12px;border-radius:var(--iga-radius-md);background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);font-size:11px;font-weight:600;text-decoration:none!important;cursor:pointer;transition:all .15s ease}.ig-btn-open-tab:hover,.ig-btn-view-profile:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:1000000;box-sizing:border-box}.ig-backup-overlay *{box-sizing:border-box}.ig-backup-overlay.is-open{display:flex;animation:iga-fade-in .2s var(--iga-ease-default)}.ig-backup-dialog{width:min(480px,100%);border-radius:var(--iga-radius-xl);background:var(--iga-bg-primary);border:1px solid var(--iga-border);box-shadow:var(--iga-shadow-lg);padding:20px;display:flex;flex-direction:column;gap:14px;color:var(--iga-text-main);animation:iga-modal-slide .25s var(--iga-ease-spring)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-backup-close-btn{border:none;background:transparent;color:var(--iga-text-muted);border-radius:var(--iga-radius-sm);padding:4px;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease}.ig-backup-close-btn:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--iga-text-muted)}.ig-backup-dialog-actions{display:flex;gap:10px}.ig-backup-dialog .ig-backup-btn{flex:1;padding:10px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-backup-btn-export{background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.35);color:var(--iga-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:var(--iga-accent);color:#fff;border-color:var(--iga-accent);box-shadow:0 4px 12px #3b82f659}.ig-backup-btn-import{background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.35);color:var(--iga-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:var(--iga-warning);color:#fff;border-color:var(--iga-warning);box-shadow:0 4px 12px #f59e0b59}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--iga-text-muted);min-height:16px;padding:6px 10px;background:var(--iga-surface);border-radius:var(--iga-radius-sm);border:1px solid var(--iga-border)}.ig-backup-status[data-state=success]{color:var(--iga-success);border-color:#10b9814d;background:var(--iga-success-subtle)}.ig-backup-status[data-state=error]{color:var(--iga-danger);border-color:#ef44444d;background:var(--iga-danger-subtle)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}#ig-analyzer-panel #ig-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid var(--iga-border);flex-shrink:0}#ig-analyzer-panel .ig-bmc-btn{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:var(--iga-radius-full);background:#fd0;color:#000!important;font-family:var(--iga-font-sans);font-size:11px;font-weight:700;text-decoration:none!important;letter-spacing:-.2px;border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px #ffdd0040;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background .2s var(--iga-ease-default);line-height:1;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-bmc-btn:hover{background:#ffea47;transform:translateY(-1px);box-shadow:0 4px 14px #fd06;text-decoration:none!important;color:#000!important}#ig-analyzer-panel .ig-bmc-btn:active{transform:translateY(0);box-shadow:0 2px 6px #fd03}#ig-analyzer-panel .ig-bmc-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#000}#ig-analyzer-panel .ig-bmc-icon svg{display:block}#ig-analyzer-panel .ig-bmc-text{font-weight:700;color:#000}#ig-analyzer-panel .ig-footer-meta{font-size:11px;color:var(--iga-text-dim);font-weight:500;display:inline-flex;align-items:center;gap:4px;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-footer-dot{opacity:.5}.ig-quick-card{max-width:390px!important;max-height:88vh;overflow-y:auto;padding:22px 18px 18px!important}.ig-quick-card::-webkit-scrollbar{width:5px}.ig-quick-card::-webkit-scrollbar-thumb{background:#ffffff1f;border-radius:4px}.ig-qc-header{display:flex;flex-direction:column;align-items:center;width:100%}.ig-qc-rel-bar{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:12px;width:100%}.ig-qc-rel-pill{font-size:11px;font-weight:600;padding:3px 10px;border-radius:var(--iga-radius-full);display:inline-flex;align-items:center;gap:4px;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}.ig-qc-rel-pill.is-positive{background:#10b98124;color:#10b981;border-color:#10b9814d}.ig-qc-rel-pill.is-neutral{background:#3b82f624;color:#3b82f6;border-color:#3b82f64d}.ig-qc-rel-pill.is-negative{background:#ef44441f;color:#f87171;border-color:#ef444440}.ig-qc-rel-pill.is-pending{background:#f59e0b24;color:#f59e0b;border-color:#f59e0b4d}.ig-qc-stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;margin-bottom:12px}.ig-qc-stat-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 6px;text-align:center;display:flex;flex-direction:column;align-items:center}.ig-qc-stat-value{font-size:15px;font-weight:700;color:var(--iga-text-bright);line-height:1.2}.ig-qc-stat-label{font-size:10px;color:var(--iga-text-muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px}.ig-qc-bio-card{background:#0f172a8c;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-bio-text{font-size:12px;line-height:1.45;color:var(--iga-text-main);white-space:pre-wrap;word-break:break-word;max-height:75px;overflow-y:auto}.ig-qc-bio-link{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--iga-accent);margin-top:6px;text-decoration:none;word-break:break-all}.ig-qc-bio-link:hover{text-decoration:underline;color:var(--iga-accent-hover)}.ig-qc-mutuals-card{background:#ffffff08;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-mutuals-header{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--iga-text-main);margin-bottom:6px}.ig-qc-facepile-container{display:flex;align-items:center}.ig-facepile-avatar{width:22px;height:22px;border-radius:50%;object-fit:cover;border:2px solid var(--iga-bg-primary);margin-left:-6px;box-shadow:0 1px 3px #0000004d}.ig-facepile-avatar:first-child{margin-left:0}.ig-badge-business{background:#9333ea26!important;color:#a855f7!important;border:1px solid rgba(147,51,234,.3)!important}.ig-badge-creator{background:#ec489926!important;color:#ec4899!important;border:1px solid rgba(236,72,153,.3)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user{padding:4px 8px;font-size:11px;font-weight:500;color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user:hover,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;box-shadow:var(--iga-shadow-sm);transition:transform .15s ease,border-color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card:hover{border-color:var(--iga-border-hover);transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-label{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--iga-text-muted);margin-bottom:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value{font-size:18px;font-weight:700;color:var(--iga-text-bright);line-height:1.2;margin-bottom:4px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-negative{color:#ef4444}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub{font-size:10px;color:var(--iga-text-muted);display:inline-flex;align-items:center;gap:3px;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-negative{color:#ef4444}#ig-analyzer-panel .btn-unwhitelist,#ig-analyzer-panel .ig-btn-unwhitelist{padding:4px 8px;font-size:11px;font-weight:600;color:#3b82f6;background:#3b82f614;border:1px solid rgba(59,130,246,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-unwhitelist:hover,#ig-analyzer-panel .ig-btn-unwhitelist:hover{color:#fff;background:#3b82f6;border-color:#3b82f6;box-shadow:0 2px 6px #3b82f659}#ig-analyzer-panel .btn-clear-whitelist,#ig-analyzer-panel .ig-btn-clear-whitelist{padding:3px 8px;font-size:10.5px;font-weight:600;color:#ef4444;background:#ef444414;border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-clear-whitelist:hover,#ig-analyzer-panel .ig-btn-clear-whitelist:hover{color:#fff;background:#ef4444;border-color:#ef4444;box-shadow:0 2px 6px #ef44444d}.ig-badge-mutual{background:#22c55e1f!important;color:#22c55e!important;border:1px solid rgba(34,197,94,.25)!important}.ig-badge-fan{background:#f59e0b1f!important;color:#f59e0b!important;border:1px solid rgba(245,158,11,.25)!important}.ig-badge-date{background:#94a3b81f!important;color:#94a3b8!important;border:1px solid rgba(148,163,184,.2)!important}.ig-btn-target-audit,.btn-target-audit{display:inline-flex;align-items:center;gap:4px;padding:3.5px 8px;font-size:11px;font-weight:600;border-radius:var(--iga-radius-sm, 6px);background:#6366f11f;color:#818cf8;border:1px solid rgba(99,102,241,.25);cursor:pointer;transition:all .15s ease}.ig-btn-target-audit:hover,.btn-target-audit:hover{background:#6366f1;color:#fff;border-color:#6366f1;box-shadow:0 2px 8px #6366f159}.ig-badge-new-mutual{background:#10b98126!important;color:#10b981!important;border:1px solid rgba(16,185,129,.3)!important;box-shadow:0 0 8px #10b98126}.ig-target-search-card{background:#ffffff08;border:1px solid var(--iga-border, rgba(255, 255, 255, .08));border-radius:var(--iga-radius-lg, 12px);padding:16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px}.ig-target-search-title{font-size:13.5px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:6px}.ig-target-search-desc{font-size:11.5px;line-height:1.45;color:var(--iga-text-muted, #94a3b8)}.ig-target-search-input-group{display:flex;align-items:center;gap:8px;background:#0f172a99;border:1px solid var(--iga-border, rgba(255, 255, 255, .1));border-radius:var(--iga-radius-md, 8px);padding:3px 6px 3px 12px;transition:border-color .15s ease}.ig-target-search-input-group:focus-within{border-color:#6366f1;box-shadow:0 0 0 2px #6366f133}.ig-input-prefix{font-size:13px;font-weight:600;color:var(--iga-text-muted, #94a3b8)}.ig-target-input{flex:1;background:transparent;border:none;outline:none;color:var(--iga-text-bright, #f8fafc);font-size:12.5px;padding:6px 0}.ig-target-input::placeholder{color:#94a3b899}.ig-target-feedback{font-size:11.5px;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);margin-top:4px}.ig-target-feedback.is-error{background:#ef44441f;color:#ef4444;border:1px solid rgba(239,68,68,.25)}.ig-target-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:12px}.ig-target-card{background:#ffffff06;border:1px solid var(--iga-border, rgba(255, 255, 255, .07));border-radius:var(--iga-radius-md, 10px);padding:12px 14px;display:flex;flex-direction:column;gap:10px;transition:all .18s ease;cursor:pointer}.ig-target-card:hover{border-color:#6366f14d;background:#ffffff0a;transform:translateY(-1px)}.ig-target-card-top{display:flex;align-items:center;gap:10px}.ig-target-card-avatar{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#ffffff14;display:flex;align-items:center;justify-content:center;font-weight:700;color:#cbd5e1;flex-shrink:0}.ig-target-card-info{flex:1;min-width:0}.ig-target-card-name-row{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ig-target-card-user{font-weight:700;font-size:13px;color:var(--iga-text-bright, #f8fafc)}.ig-target-card-fullname{font-size:11px;color:var(--iga-text-muted, #94a3b8);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-btn-target-delete{background:transparent;border:none;color:var(--iga-text-muted, #94a3b8);cursor:pointer;padding:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all .15s ease}.ig-btn-target-delete:hover{color:#ef4444;background:#ef44441a}.ig-target-card-metrics{display:flex;align-items:center;justify-content:space-between;background:#0003;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);border:1px solid rgba(255,255,255,.04)}.ig-target-metric{display:flex;flex-direction:column;align-items:center;gap:2px}.ig-target-metric-label{font-size:10px;color:var(--iga-text-muted, #94a3b8);text-transform:uppercase;letter-spacing:.4px}.ig-target-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:4px}.ig-target-card-diff{font-size:10.5px;font-weight:700;padding:1px 4px;border-radius:4px}.ig-target-card-diff.is-positive{background:#22c55e26;color:#22c55e}.ig-target-card-diff.is-negative{background:#ef444426;color:#ef4444}.ig-target-card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:2px}.ig-target-card-time{font-size:10.5px;color:var(--iga-text-muted, #94a3b8)}.ig-target-card-actions{display:flex;align-items:center;gap:6px}#ig-target-subpanel{position:fixed;z-index:10000000;width:580px;min-width:440px;max-width:95vw;height:700px;min-height:420px;max-height:95vh;display:flex;flex-direction:column;resize:both;overflow:hidden;background:#0f172af0;border:1px solid rgba(255,255,255,.12);border-radius:var(--iga-radius-lg, 12px);box-shadow:0 20px 50px #000000a6,0 0 0 1px #6366f126;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);color:var(--iga-text-bright, #f8fafc);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;transition:height .2s cubic-bezier(.16,1,.3,1),box-shadow .2s ease}#ig-target-subpanel.is-minimized{height:48px!important;min-height:48px!important;resize:none!important;overflow:hidden!important}#ig-target-subpanel.is-minimized .ig-target-actions-bar,#ig-target-subpanel.is-minimized .ig-progress-container,#ig-target-subpanel.is-minimized .ig-target-tabs-wrapper,#ig-target-subpanel.is-minimized .ig-target-view,#ig-target-subpanel.is-minimized .ig-target-resize-grip{display:none!important}#ig-target-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#ffffff08;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .08));cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-target-subpanel.is-dragging #ig-target-header{cursor:grabbing}.ig-target-header-left{display:flex;align-items:center;gap:8px;min-width:0}.ig-target-header-icon{display:inline-flex;align-items:center;color:#818cf8}.ig-target-header-title{font-weight:700;font-size:13.5px;color:var(--iga-text-bright, #f8fafc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-target-header-right{display:flex;align-items:center;gap:10px;flex-shrink:0}#ig-target-status{font-size:11px;color:var(--iga-text-muted, #94a3b8);display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:12px;background:#ffffff0a}#ig-target-status.is-active{color:#60a5fa}#ig-target-status.is-active .ig-status-dot{background:#60a5fa;box-shadow:0 0 6px #60a5fa}.ig-target-header-actions{display:flex;align-items:center;gap:4px}.ig-target-actions-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:#0003;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0;gap:8px}.ig-target-meta-summary{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.ig-target-meta-user{font-weight:700;font-size:12.5px;color:var(--iga-text-bright, #f8fafc)}.ig-target-meta-name{font-size:11px;color:var(--iga-text-muted, #94a3b8)}.ig-target-meta-pill{font-size:10.5px;padding:1.5px 6px;border-radius:4px;background:#ffffff0f;color:var(--iga-text-muted, #94a3b8)}.ig-target-actions-buttons{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-target-tabs-wrapper{background:transparent;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0}.ig-target-view{flex:1;overflow-y:auto;padding:14px;display:none}.ig-target-view.active{display:block}.ig-target-ready-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 20px;gap:12px}.ig-target-ready-icon{color:#818cf8;transform:scale(1.6);margin-bottom:8px}.ig-target-ready-title{font-size:16px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-ready-desc{font-size:12px;line-height:1.5;color:var(--iga-text-muted, #94a3b8);max-width:380px}.ig-target-overview-header{display:flex;align-items:center;gap:14px;padding:14px;background:#ffffff08;border-radius:var(--iga-radius-lg, 12px);border:1px solid var(--iga-border, rgba(255, 255, 255, .08))}.ig-target-overview-avatar-wrap .ig-user-avatar{width:52px;height:52px;font-size:18px}.ig-target-overview-meta{flex:1;min-width:0}.ig-target-overview-title-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ig-target-overview-username{font-size:15px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-overview-fullname{font-size:12px;color:var(--iga-text-muted, #94a3b8);margin-top:2px}.ig-target-overview-timestamps{font-size:10.5px;color:var(--iga-text-muted, #94a3b8);margin-top:4px}.ig-target-restricted-alert{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--iga-radius-md, 8px);background:#f59e0b1a;border:1px solid rgba(245,158,11,.3);color:#fbbf24;margin-top:12px;line-height:1.45;font-size:12px}.ig-target-alert-icon{color:#fbbf24;flex-shrink:0;margin-top:1px}.ig-target-resize-grip{position:absolute;bottom:2px;right:2px;width:14px;height:14px;cursor:se-resize;pointer-events:none}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme #ig-target-subpanel){background:#fffffff5;border-color:#0000001f;box-shadow:0 20px 50px #0003;color:#0f172a}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) #ig-target-header{background:#00000005;border-bottom-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-actions-bar{background:#00000008;border-bottom-color:#0000000f}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-overview-header,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-card,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card{background:#f8fafc;border-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-input-group{background:#fff;border-color:#00000026}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card-metrics{background:#f1f5f9;border-color:#0000000d}';
+  const mainCss = '#ig-analyzer-panel,#ig-target-subpanel,#ig-safety-modal,#ig-hd-modal,.ig-backup-overlay{--iga-bg-primary: rgba(15, 23, 42, .92);--iga-bg-secondary: rgba(30, 41, 59, .7);--iga-surface: rgba(30, 41, 59, .55);--iga-surface-hover: rgba(51, 65, 85, .6);--iga-surface-active: rgba(51, 65, 85, .85);--iga-border: rgba(255, 255, 255, .08);--iga-border-hover: rgba(255, 255, 255, .16);--iga-border-focus: rgba(59, 130, 246, .5);--iga-text-bright: #f8fafc;--iga-text-main: #cbd5e1;--iga-text-muted: #94a3b8;--iga-text-dim: #64748b;--iga-accent: #3b82f6;--iga-accent-hover: #2563eb;--iga-accent-active: #1d4ed8;--iga-accent-subtle: rgba(59, 130, 246, .14);--iga-accent-glow: 0 0 16px rgba(59, 130, 246, .35);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .14);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #ef4444;--iga-danger-hover: #dc2626;--iga-danger-subtle: rgba(239, 68, 68, .14);--iga-warning: #f59e0b;--iga-warning-subtle: rgba(245, 158, 11, .14);--iga-shadow-sm: 0 1px 3px rgba(0, 0, 0, .35);--iga-shadow-md: 0 6px 16px -2px rgba(0, 0, 0, .4);--iga-shadow-lg: 0 24px 64px -12px rgba(0, 0, 0, .65), 0 0 0 1px rgba(255, 255, 255, .08);--iga-radius-sm: 6px;--iga-radius-md: 10px;--iga-radius-lg: 14px;--iga-radius-xl: 18px;--iga-radius-full: 9999px;--iga-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;--iga-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Monaco, Consolas, monospace;--iga-ease-spring: cubic-bezier(.16, 1, .3, 1);--iga-ease-default: cubic-bezier(.4, 0, .2, 1);--ig-panel-bg: var(--iga-bg-primary);--ig-panel-border: var(--iga-border);--ig-text-main: var(--iga-text-main);--ig-text-muted: var(--iga-text-muted);--ig-text-bright: var(--iga-text-bright);--ig-bg-input: var(--iga-surface);--ig-bg-hover: var(--iga-surface-hover);--ig-bg-active: var(--iga-surface-active);--ig-scrollbar-thumb: rgba(255, 255, 255, .15);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .25);--ig-shadow: var(--iga-shadow-lg);--ig-shadow-sm: var(--iga-shadow-sm);--ig-accent: var(--iga-accent);--ig-accent-hover: var(--iga-accent-hover);--ig-accent-soft: var(--iga-accent-subtle);--ig-success: var(--iga-success);--ig-success-hover: var(--iga-success-hover);--ig-danger: var(--iga-danger);--ig-danger-hover: var(--iga-danger-hover);--ig-warning: var(--iga-warning);--ig-btn-bg: var(--iga-surface);--ig-btn-border: var(--iga-border);--ig-btn-text: var(--iga-text-bright);--ig-btn-disabled-bg: rgba(255, 255, 255, .03);--ig-btn-disabled-border: rgba(255, 255, 255, .05);--ig-btn-disabled-text: rgba(255, 255, 255, .25);--ig-radius-sm: var(--iga-radius-sm);--ig-radius-md: var(--iga-radius-md);--ig-radius-lg: var(--iga-radius-lg);--ig-radius-full: var(--iga-radius-full)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,#ig-safety-modal.ig-light-theme,#ig-hd-modal.ig-light-theme,.ig-backup-overlay.ig-light-theme{--iga-bg-primary: rgba(255, 255, 255, .96);--iga-bg-secondary: #f8fafc;--iga-surface: #f1f5f9;--iga-surface-hover: #e2e8f0;--iga-surface-active: #cbd5e1;--iga-border: #e2e8f0;--iga-border-hover: #cbd5e1;--iga-border-focus: rgba(37, 99, 235, .4);--iga-text-bright: #0f172a;--iga-text-main: #334155;--iga-text-muted: #64748b;--iga-text-dim: #94a3b8;--iga-accent: #2563eb;--iga-accent-hover: #1d4ed8;--iga-accent-active: #1e40af;--iga-accent-subtle: rgba(37, 99, 235, .08);--iga-accent-glow: 0 0 16px rgba(37, 99, 235, .2);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .1);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #dc2626;--iga-danger-hover: #b91c1c;--iga-danger-subtle: rgba(220, 38, 38, .08);--iga-warning: #d97706;--iga-warning-subtle: rgba(217, 119, 6, .08);--iga-shadow-sm: 0 1px 3px rgba(15, 23, 42, .08);--iga-shadow-md: 0 6px 16px -2px rgba(15, 23, 42, .1);--iga-shadow-lg: 0 24px 64px -12px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .06);--ig-scrollbar-thumb: rgba(15, 23, 42, .15);--ig-scrollbar-thumb-hover: rgba(15, 23, 42, .25);--ig-btn-disabled-bg: rgba(15, 23, 42, .03);--ig-btn-disabled-border: rgba(15, 23, 42, .06);--ig-btn-disabled-text: rgba(15, 23, 42, .3)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:717px;min-width:440px;max-width:calc(100vw - 40px);height:560px;min-height:260px;max-height:calc(100vh - 40px);background:var(--iga-bg-primary);border:1px solid var(--iga-border);color:var(--iga-text-main);box-shadow:var(--iga-shadow-lg);-webkit-backdrop-filter:blur(28px) saturate(190%);backdrop-filter:blur(28px) saturate(190%);font-family:var(--iga-font-sans);font-size:13px;line-height:1.5;padding:16px;z-index:999999;border-radius:var(--iga-radius-xl);display:flex;flex-direction:column;resize:both;overflow:hidden;transform-origin:center center;transition:background .3s var(--iga-ease-default),border-color .3s var(--iga-ease-default),box-shadow .28s cubic-bezier(.34,1.56,.64,1),transform .28s cubic-bezier(.34,1.56,.64,1),height .25s var(--iga-ease-spring);box-sizing:border-box}#ig-analyzer-panel.is-dragging{transform:scale(.985);box-shadow:0 35px 80px -15px #000c,0 0 0 1px #ffffff1f;-webkit-backdrop-filter:blur(36px) saturate(210%);backdrop-filter:blur(36px) saturate(210%);transition:transform .18s cubic-bezier(.16,1,.3,1),box-shadow .18s cubic-bezier(.16,1,.3,1);cursor:grabbing!important}#ig-analyzer-panel.ig-light-theme.is-dragging{box-shadow:0 35px 80px -15px #0f172a40,0 0 0 1px #0f172a14}#ig-analyzer-panel *{box-sizing:border-box}#ig-analyzer-panel.is-minimized{height:64px!important;min-height:64px!important;resize:none!important;padding-bottom:0;overflow:hidden}#ig-analyzer-panel.is-minimized>*:not(#ig-header){display:none!important}#ig-analyzer-panel.is-minimized #ig-header{margin-bottom:0;padding-bottom:0;border-bottom:none}#ig-analyzer-panel #ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--iga-border);cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-analyzer-panel #ig-header:active{cursor:grabbing}#ig-analyzer-panel .ig-header-left{display:flex;align-items:center;gap:10px}#ig-analyzer-panel .ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--iga-accent-subtle);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);color:var(--iga-accent);box-shadow:var(--iga-shadow-sm);transition:transform .2s var(--iga-ease-spring)}#ig-analyzer-panel .ig-logo:hover{transform:scale(1.06)}#ig-analyzer-panel .ig-title{font-size:14px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px;line-height:1}#ig-analyzer-panel .ig-header-right{display:flex;align-items:center;gap:8px}#ig-analyzer-panel #ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;background:var(--iga-surface);padding:4px 10px;border-radius:var(--iga-radius-full);color:var(--iga-text-muted);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default)}#ig-analyzer-panel .ig-status-dot{width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);display:inline-block;flex-shrink:0;position:relative}#ig-analyzer-panel #ig-status.is-active .ig-status-dot,#ig-analyzer-panel #ig-status:not(:empty) .ig-status-dot{background:var(--iga-success);box-shadow:0 0 8px var(--iga-success);animation:iga-pulse 2s cubic-bezier(.4,0,.6,1) infinite}@keyframes iga-pulse{0%,to{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(1.15)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-actions{display:flex;align-items:center;gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:var(--iga-radius-sm);background:transparent;border:1px solid transparent;color:var(--iga-text-muted);cursor:pointer;transition:all .15s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:active{transform:scale(.94)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn-close:hover{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-actions-bar{display:flex;gap:8px;margin-bottom:12px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-bright);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default);flex:1;white-space:nowrap;line-height:1;position:relative;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-sm{padding:6px 12px;font-size:11px;flex:initial}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon svg{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--iga-shadow-md);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:active:not(:disabled){transform:translateY(0);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:disabled{opacity:.45;cursor:not-allowed;background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;transform:none!important;box-shadow:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary){background:linear-gradient(90deg,#1d4ed8,#3b82f6 28%,#60a5fa,#3b82f6 72%,#1d4ed8);background-size:200% 100%;background-position:0% 50%;border-color:#ffffff2e;color:#fff;box-shadow:0 4px 12px #2563eb4d;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background-position .3s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary):hover:not(:disabled){animation:iga-gradient-move 2s linear infinite;box-shadow:0 6px 20px #2563eb73;transform:translateY(-1px)}@keyframes iga-gradient-move{0%{background-position:200% 50%}to{background-position:0% 50%}}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled){background:var(--iga-success-gradient)!important;border-color:#ffffff26!important;color:#fff!important;box-shadow:0 4px 12px #10b98140}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled):hover{background:linear-gradient(135deg,#059669,#047857)!important;box-shadow:0 6px 18px #10b98166}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger{background:transparent;border-color:#ef444459;color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--iga-danger-subtle);border-color:var(--iga-danger);color:var(--iga-danger-hover);box-shadow:0 4px 12px #ef444433}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-container,#ig-target-progress-container,.ig-progress-container){width:100%;background:var(--iga-surface);border-radius:var(--iga-radius-full);height:5px;margin-bottom:12px;overflow:hidden;display:none;border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar){width:0%;background:linear-gradient(90deg,var(--iga-accent),#a855f7);height:100%;border-radius:var(--iga-radius-full);transition:width .35s var(--iga-ease-default);position:relative}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar):after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);animation:iga-shimmer 1.5s infinite}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar).is-indeterminate{width:35%!important;animation:iga-indeterminate 1.5s cubic-bezier(.4,0,.2,1) infinite}@keyframes iga-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}@keyframes iga-indeterminate{0%{transform:translate(-100%)}50%{transform:translate(180%)}to{transform:translate(350%)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-wrapper{position:relative;margin-bottom:8px;flex-shrink:0;display:flex;align-items:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container{position:relative;display:flex;flex-wrap:nowrap;gap:4px;padding:4px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;scrollbar-width:none;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-indicator{position:absolute;top:0;left:0;height:0;width:0;opacity:0;border-radius:var(--iga-radius-md);background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm);pointer-events:none;z-index:1;transition:transform .3s cubic-bezier(.16,1,.3,1),width .3s cubic-bezier(.16,1,.3,1),height .3s cubic-bezier(.16,1,.3,1),opacity .2s ease;transform:translateZ(0)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-indicator{background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn{position:relative!important;z-index:2!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;padding:6px 12px!important;flex:0 0 auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--iga-text-muted)!important;font-size:11px!important;font-weight:600!important;border-radius:var(--iga-radius-md)!important;cursor:pointer!important;transition:color .2s var(--iga-ease-default),background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default)!important;white-space:nowrap!important;line-height:1!important;-webkit-user-select:none!important;user-select:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important;background:var(--iga-surface-hover)!important;border-color:var(--iga-border)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--iga-accent)!important;font-weight:600!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-btn.active{color:var(--iga-accent)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:14px;height:14px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-label{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn{color:var(--iga-text-muted)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view){display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view).active{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;container-type:inline-size;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:14px;font-size:12px;color:var(--iga-text-main);box-shadow:inset 0 1px 3px #0000001a}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar{width:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-track{background:transparent}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-log,#ig-target-view-logs){font-family:var(--iga-font-mono);font-size:11px;line-height:1.6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry{display:flex;align-items:baseline;gap:8px;padding:4px 6px;color:var(--iga-text-main);border-bottom:1px solid rgba(255,255,255,.03);border-radius:var(--iga-radius-sm);transition:background .15s ease;word-break:break-word}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-log-entry{border-bottom:1px solid rgba(0,0,0,.03)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:last-child{border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-time{color:var(--iga-accent);font-weight:600;font-size:10px;background:var(--iga-accent-subtle);padding:1px 6px;border-radius:var(--iga-radius-sm);flex-shrink:0;font-variant-numeric:tabular-nums;letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--iga-text-bright);letter-spacing:-.2px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--iga-accent-subtle);color:var(--iga-accent);padding:0 8px;border-radius:var(--iga-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:1px solid rgba(59,130,246,.2)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-toolbar{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-box{position:relative;display:flex;align-items:center;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-icon{position:absolute;left:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--iga-text-dim);pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input{width:100%;height:32px;padding:0 30px 0 32px;font-size:11px;font-family:var(--iga-font-sans);color:var(--iga-text-bright);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);outline:none;box-sizing:border-box;transition:border-color .18s var(--iga-ease-default),box-shadow .18s var(--iga-ease-default),background .18s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input:focus{border-color:var(--iga-border-focus);background:var(--iga-surface-hover);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input::placeholder{color:var(--iga-text-dim);font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear{position:absolute;right:6px;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--iga-text-dim);cursor:pointer;border-radius:50%;padding:0;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear svg,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:3px 2px;scrollbar-width:none;-ms-overflow-style:none;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:600;font-family:var(--iga-font-sans);color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);cursor:pointer;transition:all .15s var(--iga-ease-default);-webkit-user-select:none;user-select:none;white-space:nowrap;line-height:1.2;box-sizing:border-box}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active{background:#3b82f62e;color:var(--iga-accent);border-color:var(--iga-accent);font-weight:700;box-shadow:0 1px 4px #3b82f640}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-count{font-size:9px;padding:0 4px;border-radius:6px;background:#ffffff14;color:var(--iga-text-dim);margin-left:2px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-chip-count{background:#0000000f}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-icon{display:inline-flex;align-items:center;justify-content:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-list{display:flex;flex-direction:column;flex:1;min-height:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--iga-text-muted);font-size:12px;padding:40px 16px;text-align:center;margin:auto 0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon{display:flex;align-items:center;justify-content:center;width:44px;height:44px;color:var(--iga-text-dim);background:var(--iga-surface-hover);border-radius:var(--iga-radius-full);padding:10px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin-bottom:6px;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-surface);min-height:48px;flex-shrink:0;box-sizing:border-box;content-visibility:auto;contain-intrinsic-size:auto 300px auto 52px;transition:background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default),transform .28s cubic-bezier(.4,0,.2,1),opacity .25s ease,max-height .28s ease,min-height .28s ease,margin .28s ease,padding .28s ease}@supports not (content-visibility: auto){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{contain:layout style paint}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row.ig-row-slide-out{content-visibility:visible;contain-intrinsic-size:none;transform:translate(100%);opacity:0;max-height:0;min-height:0;padding-top:0;padding-bottom:0;margin-bottom:0;border-color:transparent;pointer-events:none;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:12px;font-weight:700;flex-shrink:0;border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram{position:relative;overflow:hidden;user-select:none;-webkit-user-select:none;background:linear-gradient(135deg,#2a2a2a,#1a1a1a);color:#e4e4e7}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram .ig-monogram-letter{display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:.5px;color:#f4f4f5;transition:opacity .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-img-loaded{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;opacity:0;transition:opacity .22s cubic-bezier(.4,0,.2,1)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram.is-loaded .ig-avatar-img-loaded{opacity:1}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-username{color:var(--iga-text-bright);font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-badges{display:inline-flex;align-items:center;gap:4px;margin-left:6px;flex-wrap:wrap;vertical-align:middle}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;border-radius:var(--iga-radius-sm);font-size:10px;font-weight:600;line-height:1.3;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-private{background:#94a3b81f;color:var(--iga-text-muted);border:1px solid rgba(148,163,184,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-bestie{background:#22c55e26;color:#22c55e;border:1px solid rgba(34,197,94,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pending{background:#f59e0b26;color:#f59e0b;border:1px solid rgba(245,158,11,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-bestie-ring{outline:2px solid #22c55e!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-story-ring{outline:2px solid #e1306c!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600;font-size:11px;padding:4px 8px;border-radius:var(--iga-radius-sm);background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.2);transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link:hover{background:var(--iga-accent);color:#fff;text-decoration:none}#ig-analyzer-panel .btn-whitelist,#ig-analyzer-panel .ig-btn-whitelist{background:var(--iga-surface)!important;border:1px solid var(--iga-border)!important;color:var(--iga-text-muted)!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .15s ease!important}#ig-analyzer-panel .btn-whitelist:hover,#ig-analyzer-panel .ig-btn-whitelist:hover{background:var(--iga-surface-active)!important;border-color:var(--iga-border-hover)!important;color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#a855f71f!important;border:1px solid rgba(168,85,247,.3)!important;color:#c084fc!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .2s var(--iga-ease-default)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story:hover:not(:disabled){background:#a855f740!important;border-color:#c084fc!important;color:#fff!important;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table thead th{color:var(--iga-text-muted);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.6px;padding:8px 10px;border-bottom:1px solid var(--iga-border);position:sticky;top:0;background:var(--iga-surface);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table td{padding:8px 10px;border-bottom:1px solid var(--iga-border);color:var(--iga-text-main)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr{transition:background .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-user{font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-date{color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link:hover{text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-pagination{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 0;margin-top:8px;border-top:1px solid var(--iga-border);font-size:11px;color:var(--iga-text-muted);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn{display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:var(--iga-radius-sm);font-size:11px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);transition:all .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:hover:not(:disabled){background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-accent)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:disabled{opacity:.35;cursor:not-allowed}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-info{font-weight:600;letter-spacing:.02em}.ig-modal-overlay{position:fixed;inset:0;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:iga-fade-in .2s var(--iga-ease-default);padding:20px;box-sizing:border-box}.ig-modal-overlay *{box-sizing:border-box}@keyframes iga-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:var(--iga-bg-primary);border:1px solid var(--iga-border);padding:28px 24px;border-radius:var(--iga-radius-xl);width:440px;max-width:92vw;max-height:85vh;text-align:center;color:var(--iga-text-bright);box-shadow:var(--iga-shadow-lg);display:flex;flex-direction:column;align-items:center;animation:iga-modal-slide .25s var(--iga-ease-spring)}@keyframes iga-modal-slide{0%{opacity:0;transform:scale(.95) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:52px;height:52px;color:var(--iga-warning);margin-bottom:16px;padding:12px;background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.25);border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:17px;font-weight:700;margin-bottom:8px;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-modal-text{font-size:13px;line-height:1.6;color:var(--iga-text-muted);margin-bottom:24px;width:100%;max-height:58vh;overflow-y:auto;padding-right:2px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:10px 16px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-btn-cancel-modal{background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted)}.ig-btn-cancel-modal:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-btn-confirm-modal{background:var(--iga-accent-gradient);border:1px solid rgba(255,255,255,.15);color:#fff;box-shadow:0 4px 12px #2563eb59}.ig-btn-confirm-modal:hover{box-shadow:0 6px 18px #2563eb80;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger{position:relative;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;transition:transform .18s var(--iga-ease-default);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:hover{transform:scale(1.08)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:active{transform:scale(.96)}.ig-hd-modal-overlay{display:none;position:fixed;inset:0;background:#000000d1;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:20000000;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:ig-hd-fade-in .2s ease forwards}@keyframes ig-hd-fade-in{0%{opacity:0}to{opacity:1}}.ig-hd-modal-card{background:var(--iga-bg-primary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-xl);padding:24px 20px 20px;width:100%;max-width:360px;display:flex;flex-direction:column;align-items:center;position:relative;box-shadow:0 24px 64px -12px #000000bf;color:var(--iga-text-bright);animation:iga-modal-slide .25s var(--iga-ease-spring);box-sizing:border-box}.ig-hd-modal-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-dim);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease;padding:0}.ig-hd-modal-close:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright)}.ig-hd-avatar-frame{position:relative;width:190px;height:190px;border-radius:50%;margin:8px 0 14px;display:flex;align-items:center;justify-content:center;background:var(--iga-surface);box-shadow:0 8px 32px #00000073;flex-shrink:0;border:2px solid var(--iga-border);box-sizing:border-box}.ig-hd-avatar-frame.has-bestie-ring{outline:4px solid #22c55e!important;outline-offset:3px;box-shadow:0 0 28px #22c55e73,0 8px 32px #00000073}.ig-hd-avatar-frame.has-story-ring{outline:4px solid #e1306c!important;outline-offset:3px;box-shadow:0 0 28px #e1306c73,0 8px 32px #00000073}.ig-hd-avatar-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;background:var(--iga-surface);transition:filter .25s ease,opacity .25s ease}.ig-hd-avatar-fallback{width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:700;background:var(--iga-accent-subtle);color:var(--iga-accent)}.ig-hd-res-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;letter-spacing:.3px;background:#94a3b826;color:var(--iga-text-muted);border:1px solid var(--iga-border);margin-bottom:12px}.ig-hd-res-pill.is-hd{background:#2563eb29;color:#3b82f6;border-color:#3b82f666;box-shadow:0 0 12px #3b82f633}.ig-hd-spinner{width:10px;height:10px;border:2px solid rgba(148,163,184,.3);border-top-color:var(--iga-accent);border-radius:50%;animation:ig-hd-spin .7s linear infinite;display:inline-block}@keyframes ig-hd-spin{to{transform:rotate(360deg)}}.ig-hd-user-details{display:flex;flex-direction:column;align-items:center;text-align:center;width:100%;margin-bottom:18px}.ig-hd-username-row{display:flex;align-items:center;justify-content:center;gap:5px;flex-wrap:wrap;margin-bottom:2px}.ig-hd-username{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}.ig-hd-fullname{font-size:12px;color:var(--iga-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px}.ig-hd-badges{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}.ig-hd-actions{display:flex;flex-direction:column;gap:8px;width:100%}.ig-hd-actions-row{display:flex;gap:8px;width:100%}.ig-btn-download-hd{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px 16px;border-radius:var(--iga-radius-md);background:var(--iga-accent-gradient);color:#fff;font-size:12px;font-weight:700;border:none;cursor:pointer;transition:all .18s var(--iga-ease-default);box-shadow:0 2px 10px #3b82f659}.ig-btn-download-hd:hover{transform:translateY(-1px);box-shadow:0 4px 16px #3b82f673}.ig-btn-open-tab,.ig-btn-view-profile{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:1;padding:8px 12px;border-radius:var(--iga-radius-md);background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);font-size:11px;font-weight:600;text-decoration:none!important;cursor:pointer;transition:all .15s ease}.ig-btn-open-tab:hover,.ig-btn-view-profile:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:15000000;box-sizing:border-box}.ig-backup-overlay *{box-sizing:border-box}.ig-backup-overlay.is-open{display:flex;animation:iga-fade-in .2s var(--iga-ease-default)}.ig-backup-dialog{width:min(480px,100%);border-radius:var(--iga-radius-xl);background:var(--iga-bg-primary);border:1px solid var(--iga-border);box-shadow:var(--iga-shadow-lg);padding:20px;display:flex;flex-direction:column;gap:14px;color:var(--iga-text-main);animation:iga-modal-slide .25s var(--iga-ease-spring)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-backup-close-btn{border:none;background:transparent;color:var(--iga-text-muted);border-radius:var(--iga-radius-sm);padding:4px;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease}.ig-backup-close-btn:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--iga-text-muted)}.ig-backup-dialog-actions{display:flex;gap:10px}.ig-backup-dialog .ig-backup-btn{flex:1;padding:10px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-backup-btn-export{background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.35);color:var(--iga-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:var(--iga-accent);color:#fff;border-color:var(--iga-accent);box-shadow:0 4px 12px #3b82f659}.ig-backup-btn-import{background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.35);color:var(--iga-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:var(--iga-warning);color:#fff;border-color:var(--iga-warning);box-shadow:0 4px 12px #f59e0b59}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--iga-text-muted);min-height:16px;padding:6px 10px;background:var(--iga-surface);border-radius:var(--iga-radius-sm);border:1px solid var(--iga-border)}.ig-backup-status[data-state=success]{color:var(--iga-success);border-color:#10b9814d;background:var(--iga-success-subtle)}.ig-backup-status[data-state=error]{color:var(--iga-danger);border-color:#ef44444d;background:var(--iga-danger-subtle)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}#ig-analyzer-panel #ig-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid var(--iga-border);flex-shrink:0}#ig-analyzer-panel .ig-bmc-btn{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:var(--iga-radius-full);background:#fd0;color:#000!important;font-family:var(--iga-font-sans);font-size:11px;font-weight:700;text-decoration:none!important;letter-spacing:-.2px;border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px #ffdd0040;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background .2s var(--iga-ease-default);line-height:1;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-bmc-btn:hover{background:#ffea47;transform:translateY(-1px);box-shadow:0 4px 14px #fd06;text-decoration:none!important;color:#000!important}#ig-analyzer-panel .ig-bmc-btn:active{transform:translateY(0);box-shadow:0 2px 6px #fd03}#ig-analyzer-panel .ig-bmc-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#000}#ig-analyzer-panel .ig-bmc-icon svg{display:block}#ig-analyzer-panel .ig-bmc-text{font-weight:700;color:#000}#ig-analyzer-panel .ig-footer-meta{font-size:11px;color:var(--iga-text-dim);font-weight:500;display:inline-flex;align-items:center;gap:4px;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-footer-dot{opacity:.5}.ig-quick-card{max-width:390px!important;max-height:88vh;overflow-y:auto;padding:22px 18px 18px!important;scrollbar-width:thin;scrollbar-color:var(--ig-scrollbar-thumb) transparent}@supports not (scrollbar-color: auto){.ig-quick-card::-webkit-scrollbar{width:5px}.ig-quick-card::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:4px}}.ig-qc-header{display:flex;flex-direction:column;align-items:center;width:100%}.ig-qc-rel-bar{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:12px;width:100%}.ig-qc-rel-pill{font-size:11px;font-weight:600;padding:3px 10px;border-radius:var(--iga-radius-full);display:inline-flex;align-items:center;gap:4px;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}.ig-qc-rel-pill.is-positive{background:#10b98124;color:#10b981;border-color:#10b9814d}.ig-qc-rel-pill.is-neutral{background:#3b82f624;color:#3b82f6;border-color:#3b82f64d}.ig-qc-rel-pill.is-negative{background:#ef44441f;color:#f87171;border-color:#ef444440}.ig-qc-rel-pill.is-pending{background:#f59e0b24;color:#f59e0b;border-color:#f59e0b4d}.ig-qc-stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;margin-bottom:12px}.ig-qc-stat-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 6px;text-align:center;display:flex;flex-direction:column;align-items:center}.ig-qc-stat-value{font-size:15px;font-weight:700;color:var(--iga-text-bright);line-height:1.2}.ig-qc-stat-label{font-size:10px;color:var(--iga-text-muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px}.ig-qc-bio-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-bio-text{font-size:12px;line-height:1.45;color:var(--iga-text-main);white-space:pre-wrap;word-break:break-word;max-height:75px;overflow-y:auto}.ig-qc-bio-link{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--iga-accent);margin-top:6px;text-decoration:none;word-break:break-all}.ig-qc-bio-link:hover{text-decoration:underline;color:var(--iga-accent-hover)}.ig-qc-mutuals-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-mutuals-header{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--iga-text-main);margin-bottom:6px}.ig-qc-facepile-container{display:flex;align-items:center}.ig-facepile-avatar{width:22px;height:22px;border-radius:50%;object-fit:cover;border:2px solid var(--iga-bg-primary);margin-left:-6px;box-shadow:0 1px 3px #0000004d}.ig-facepile-avatar.ig-facepile-fallback{display:inline-flex;align-items:center;justify-content:center;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:10px;font-weight:700;-webkit-user-select:none;user-select:none}.ig-facepile-avatar:first-child{margin-left:0}.ig-badge-business{background:#9333ea26!important;color:#a855f7!important;border:1px solid rgba(147,51,234,.3)!important}.ig-badge-creator{background:#ec489926!important;color:#ec4899!important;border:1px solid rgba(236,72,153,.3)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user{padding:4px 8px;font-size:11px;font-weight:500;color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user:hover,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;box-shadow:var(--iga-shadow-sm);transition:transform .15s ease,border-color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card:hover{border-color:var(--iga-border-hover);transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-label{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--iga-text-muted);margin-bottom:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value{font-size:18px;font-weight:700;color:var(--iga-text-bright);line-height:1.2;margin-bottom:4px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-negative{color:#ef4444}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub{font-size:10px;color:var(--iga-text-muted);display:inline-flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:3px;line-height:1.25;text-align:center;white-space:normal}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-negative{color:#ef4444}#ig-analyzer-panel .btn-unwhitelist,#ig-analyzer-panel .ig-btn-unwhitelist{padding:4px 8px;font-size:11px;font-weight:600;color:#3b82f6;background:#3b82f614;border:1px solid rgba(59,130,246,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-unwhitelist:hover,#ig-analyzer-panel .ig-btn-unwhitelist:hover{color:#fff;background:#3b82f6;border-color:#3b82f6;box-shadow:0 2px 6px #3b82f659}#ig-analyzer-panel .btn-clear-whitelist,#ig-analyzer-panel .ig-btn-clear-whitelist{padding:3px 8px;font-size:10.5px;font-weight:600;color:#ef4444;background:#ef444414;border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-clear-whitelist:hover,#ig-analyzer-panel .ig-btn-clear-whitelist:hover{color:#fff;background:#ef4444;border-color:#ef4444;box-shadow:0 2px 6px #ef44444d}.ig-badge-mutual{background:#22c55e1f!important;color:#22c55e!important;border:1px solid rgba(34,197,94,.25)!important}.ig-badge-fan{background:#f59e0b1f!important;color:#f59e0b!important;border:1px solid rgba(245,158,11,.25)!important}.ig-badge-date{background:#94a3b81f!important;color:#94a3b8!important;border:1px solid rgba(148,163,184,.2)!important}.ig-btn-target-audit,.btn-target-audit{display:inline-flex;align-items:center;gap:4px;padding:3.5px 8px;font-size:11px;font-weight:600;border-radius:var(--iga-radius-sm, 6px);background:#6366f11f;color:#818cf8;border:1px solid rgba(99,102,241,.25);cursor:pointer;transition:all .15s ease}.ig-btn-target-audit:hover,.btn-target-audit:hover{background:#6366f1;color:#fff;border-color:#6366f1;box-shadow:0 2px 8px #6366f159}.ig-badge-new-mutual{background:#10b98126!important;color:#10b981!important;border:1px solid rgba(16,185,129,.3)!important;box-shadow:0 0 8px #10b98126}.ig-target-search-card{background:#ffffff08;border:1px solid var(--iga-border, rgba(255, 255, 255, .08));border-radius:var(--iga-radius-lg, 12px);padding:16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px}.ig-target-search-title{font-size:13.5px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:6px}.ig-target-search-desc{font-size:11.5px;line-height:1.45;color:var(--iga-text-muted, #94a3b8)}.ig-target-search-input-group{display:flex;align-items:center;gap:8px;background:#0f172a99;border:1px solid var(--iga-border, rgba(255, 255, 255, .1));border-radius:var(--iga-radius-md, 8px);padding:3px 6px 3px 12px;transition:border-color .15s ease}.ig-target-search-input-group:focus-within{border-color:#6366f1;box-shadow:0 0 0 2px #6366f133}.ig-input-prefix{font-size:13px;font-weight:600;color:var(--iga-text-muted, #94a3b8)}.ig-target-input{flex:1;background:transparent;border:none;outline:none;color:var(--iga-text-bright, #f8fafc);font-size:12.5px;padding:6px 0}.ig-target-input::placeholder{color:#94a3b899}.ig-target-feedback{font-size:11.5px;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);margin-top:4px}.ig-target-feedback.is-error{background:#ef44441f;color:#ef4444;border:1px solid rgba(239,68,68,.25)}.ig-target-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:12px}.ig-target-card{background:#ffffff06;border:1px solid var(--iga-border, rgba(255, 255, 255, .07));border-radius:var(--iga-radius-md, 10px);padding:12px 14px;display:flex;flex-direction:column;gap:10px;transition:all .18s ease;cursor:pointer}.ig-target-card:hover{border-color:#6366f14d;background:#ffffff0a;transform:translateY(-1px)}.ig-target-card-top{display:flex;align-items:center;gap:10px}.ig-target-card-avatar{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#ffffff14;display:flex;align-items:center;justify-content:center;font-weight:700;color:#cbd5e1;flex-shrink:0}.ig-target-card-info{flex:1;min-width:0}.ig-target-card-name-row{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ig-target-card-user{font-weight:700;font-size:13px;color:var(--iga-text-bright, #f8fafc)}.ig-target-card-fullname{font-size:11px;color:var(--iga-text-muted, #94a3b8);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-btn-target-delete{background:transparent;border:none;color:var(--iga-text-muted, #94a3b8);cursor:pointer;padding:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all .15s ease}.ig-btn-target-delete:hover{color:#ef4444;background:#ef44441a}.ig-target-card-metrics{display:flex;align-items:center;justify-content:space-between;background:#0003;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);border:1px solid rgba(255,255,255,.04)}.ig-target-metric{display:flex;flex-direction:column;align-items:center;gap:2px}.ig-target-metric-label{font-size:10px;color:var(--iga-text-muted, #94a3b8);text-transform:uppercase;letter-spacing:.4px}.ig-target-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:4px}.ig-target-card-diff{font-size:10.5px;font-weight:700;padding:1px 4px;border-radius:4px}.ig-target-card-diff.is-positive{background:#22c55e26;color:#22c55e}.ig-target-card-diff.is-negative{background:#ef444426;color:#ef4444}.ig-target-card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:2px}.ig-target-card-time{font-size:10.5px;color:var(--iga-text-muted, #94a3b8)}.ig-target-card-actions{display:flex;align-items:center;gap:6px}#ig-target-subpanel{position:fixed;z-index:10000000;width:580px;min-width:440px;max-width:95vw;height:700px;min-height:420px;max-height:95vh;display:flex;flex-direction:column;resize:both;overflow:hidden;background:#0f172af0;border:1px solid rgba(255,255,255,.12);border-radius:var(--iga-radius-lg, 12px);box-shadow:0 20px 50px #000000a6,0 0 0 1px #6366f126;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);color:var(--iga-text-bright, #f8fafc);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;transition:height .2s cubic-bezier(.16,1,.3,1),box-shadow .2s ease}#ig-target-subpanel.is-minimized{height:48px!important;min-height:48px!important;resize:none!important;overflow:hidden!important}#ig-target-subpanel.is-minimized .ig-target-actions-bar,#ig-target-subpanel.is-minimized .ig-progress-container,#ig-target-subpanel.is-minimized .ig-target-tabs-wrapper,#ig-target-subpanel.is-minimized .ig-target-view,#ig-target-subpanel.is-minimized .ig-target-resize-grip{display:none!important}#ig-target-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#ffffff08;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .08));cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-target-subpanel.is-dragging #ig-target-header{cursor:grabbing}.ig-target-header-left{display:flex;align-items:center;gap:8px;min-width:0}.ig-target-header-icon{display:inline-flex;align-items:center;color:#818cf8}.ig-target-header-title{font-weight:700;font-size:13.5px;color:var(--iga-text-bright, #f8fafc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-target-header-right{display:flex;align-items:center;gap:10px;flex-shrink:0}#ig-target-status{font-size:11px;color:var(--iga-text-muted, #94a3b8);display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:12px;background:#ffffff0a}#ig-target-status.is-active{color:#60a5fa}#ig-target-status.is-active .ig-status-dot{background:#60a5fa;box-shadow:0 0 6px #60a5fa}.ig-target-header-actions{display:flex;align-items:center;gap:4px}.ig-target-actions-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:#0003;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0;gap:8px}.ig-target-meta-summary{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.ig-target-meta-user{font-weight:700;font-size:12.5px;color:var(--iga-text-bright, #f8fafc)}.ig-target-meta-name{font-size:11px;color:var(--iga-text-muted, #94a3b8)}.ig-target-meta-pill{font-size:10.5px;padding:1.5px 6px;border-radius:4px;background:#ffffff0f;color:var(--iga-text-muted, #94a3b8)}.ig-target-actions-buttons{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-target-tabs-wrapper{background:transparent;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0}.ig-target-view{flex:1;overflow-y:auto;overflow-x:hidden;container-type:inline-size;padding:14px;display:none}.ig-target-view.active{display:block}.ig-target-ready-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 20px;gap:12px}.ig-target-ready-icon{color:#818cf8;transform:scale(1.6);margin-bottom:8px}.ig-target-ready-title{font-size:16px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-ready-desc{font-size:12px;line-height:1.5;color:var(--iga-text-muted, #94a3b8);max-width:380px}.ig-target-overview-header{display:flex;align-items:center;gap:14px;padding:14px;background:#ffffff08;border-radius:var(--iga-radius-lg, 12px);border:1px solid var(--iga-border, rgba(255, 255, 255, .08))}.ig-target-overview-avatar-wrap .ig-user-avatar{width:52px;height:52px;font-size:18px}.ig-target-overview-meta{flex:1;min-width:0}.ig-target-overview-title-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ig-target-overview-username{font-size:15px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-overview-fullname{font-size:12px;color:var(--iga-text-muted, #94a3b8);margin-top:2px}.ig-target-overview-timestamps{font-size:10.5px;color:var(--iga-text-muted, #94a3b8);margin-top:4px}.ig-target-restricted-alert{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--iga-radius-md, 8px);background:#f59e0b1a;border:1px solid rgba(245,158,11,.3);color:#fbbf24;margin-top:12px;line-height:1.45;font-size:12px}.ig-target-alert-icon{color:#fbbf24;flex-shrink:0;margin-top:1px}.ig-target-resize-grip{position:absolute;bottom:2px;right:2px;width:14px;height:14px;cursor:se-resize;pointer-events:none}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme #ig-target-subpanel){background:#fffffff5;border-color:#0000001f;box-shadow:0 20px 50px #0003;color:#0f172a}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) #ig-target-header{background:#00000005;border-bottom-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-actions-bar{background:#00000008;border-bottom-color:#0000000f}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-overview-header,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-card,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card{background:#f8fafc;border-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-input-group{background:#fff;border-color:#00000026}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card-metrics{background:#f1f5f9;border-color:#0000000d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-count{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:15px;padding:0 5px;border-radius:var(--iga-radius-full);font-size:9.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;background:#94a3b829;color:var(--iga-text-muted);pointer-events:none;transition:background .2s var(--iga-ease-default),color .2s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-count{background:#0f172a14}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active .ig-tab-count{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.25)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-count.is-empty{display:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-neutral,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-neutral{color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub-split{gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sep{color:var(--iga-text-dim);font-weight:500;-webkit-user-select:none;user-select:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn{appearance:none;-webkit-appearance:none;background:transparent;border:1px solid transparent;padding:1px 5px;border-radius:5px;font-family:var(--iga-font-sans);font-size:10px;font-weight:700;line-height:1.25;color:var(--iga-text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:3px;font-variant-numeric:tabular-nums;transition:background .15s ease,border-color .15s ease,transform .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-positive{color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-negative{color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover);text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-positive:hover{background:var(--iga-success-subtle);border-color:#10b9814d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-negative:hover{background:var(--iga-danger-subtle);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn:focus-visible{outline:2px solid var(--iga-border-focus);outline-offset:1px}@media(max-width:560px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@supports (container-type: inline-size){@media(max-width:560px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}}@container (max-width: 480px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid>.ig-kpi-card:nth-child(3):last-child{grid-column:1 / -1}}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-chart-mount{margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-chart-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:12px 14px;box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-title-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill.is-positive{background:var(--iga-success-subtle);color:var(--iga-success);border-color:#10b9814d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-group{display:inline-flex;align-items:center;gap:2px;padding:2px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn{appearance:none;-webkit-appearance:none;background:transparent;border:none;padding:3px 7px;border-radius:4px;font-family:var(--iga-font-sans);font-size:10px;font-weight:600;line-height:1.2;color:var(--iga-text-muted);cursor:pointer;transition:background .15s ease,color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn:hover:not(.is-active){color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn.is-active{background:var(--iga-accent);color:#fff;box-shadow:0 1px 3px #2563eb4d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:22px;padding:4px 8px;margin-bottom:6px;border-radius:var(--iga-radius-sm);background:var(--iga-surface);border:1px solid var(--iga-border);font-size:11px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-date{font-family:var(--iga-font-mono);font-size:10.5px;font-weight:600;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-val{font-weight:700;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-unit{font-weight:500;font-size:10px;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta{display:inline-flex;align-items:center;padding:1px 6px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;background:#94a3b824;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta.is-positive{background:var(--iga-success-subtle);color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-intra{font-size:10px;color:var(--iga-text-dim);margin-left:auto}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-stage{position:relative;width:100%;height:158px;user-select:none;-webkit-user-select:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-svg{width:100%;height:100%;display:block;overflow:visible}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-grid-line{stroke:var(--iga-border);stroke-width:1;vector-effect:non-scaling-stroke}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-grid-line.is-mid{stroke-dasharray:3 3}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-axis-text{fill:var(--iga-text-dim);font-size:9.5px;font-family:var(--iga-font-mono);font-variant-numeric:tabular-nums;pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-area,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-dot{pointer-events:none;stroke:var(--iga-bg-primary);stroke-width:1.5}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-active-dot{pointer-events:none;stroke:var(--iga-text-bright);stroke-width:2;transition:opacity .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-crosshair{stroke:var(--iga-text-dim);stroke-width:1;stroke-dasharray:3 3;pointer-events:none;transition:opacity .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-hit{fill:transparent;cursor:crosshair;outline:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-hit:focus-visible{fill:#3b82f614}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tooltip{position:absolute;top:6px;transform:translate(-14%);pointer-events:none;z-index:6;background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);border-radius:var(--iga-radius-sm);padding:5px 8px;box-shadow:var(--iga-shadow-md);font-size:10.5px;line-height:1.3;white-space:nowrap;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tooltip.is-right{transform:translate(-86%)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-date{font-size:9.5px;font-family:var(--iga-font-mono);color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-val{font-size:12px;font-weight:700;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta{font-size:10px;font-weight:600;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta.is-positive{color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta.is-negative{color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-composition-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:12px 14px;margin-bottom:12px;box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-ratio-pill{font-size:10.5px;padding:2px 8px;border-radius:var(--iga-radius-full);background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-ratio-pill strong{color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-bar{display:flex;width:100%;height:9px;border-radius:var(--iga-radius-full);overflow:hidden;background:var(--iga-surface);gap:2px;margin:9px 0 8px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg{height:100%;min-width:4px;transition:width .35s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-mutuals,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-mutuals{background:#10b981}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-fans,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-fans{background:#3b82f6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-notback,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-notback{background:#f59e0b}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:10.5px;color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend-item{display:inline-flex;align-items:center;gap:5px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend-item strong{color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-box{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);padding:6px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-target-card-sparkline{display:inline-flex;align-items:center;justify-content:center;padding:2px 6px;border-radius:var(--iga-radius-sm);background:var(--iga-surface);border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-sparkline-svg{display:block;overflow:visible}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region{overflow:auto;max-inline-size:100%;max-block-size:min(340px,55vh);container-type:inline-size;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-bg-secondary);outline:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region:focus-visible{border-color:var(--iga-border-focus);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar{width:6px;height:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table{margin-top:0;border-collapse:separate;border-spacing:0;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead{position:sticky;inset-block-start:0;z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead th{position:sticky;inset-block-start:0;z-index:2;background:var(--iga-bg-secondary)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody th{position:sticky;inset-inline-start:0;z-index:1;background:var(--iga-bg-secondary);padding:8px 10px;border-bottom:1px solid var(--iga-border);font-weight:600;text-align:left;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:hover th{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:last-child th,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:last-child td{border-bottom:none}@container (width < 380px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tr,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table th,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tr{border-bottom:1px solid var(--iga-border);padding-block-end:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody th{position:sticky;inset-block-start:0;z-index:2;background:var(--iga-surface);border-bottom:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table{--label-2: "Followers";--label-3: "Following";--label-4: "Mutuals"}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(2):before{content:var(--label-2) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(3):before{content:var(--label-3) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(4):before{content:var(--label-4) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill{display:inline-flex;align-items:center;padding:1px 6px;margin-left:4px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;background:#94a3b824;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill.is-positive{background:var(--iga-success-subtle);color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-scans-pill{display:inline-flex;align-items:center;padding:0 5px;margin-left:6px;border-radius:var(--iga-radius-sm);font-size:9.5px;font-weight:700;font-variant-numeric:tabular-nums;background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-muted{color:var(--iga-text-dim);font-weight:500}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-header-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-clear-nominal{padding:3px 9px;font-size:10.5px;font-weight:600;color:var(--iga-danger);background:var(--iga-danger-subtle);border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-clear-nominal:hover{color:#fff;background:var(--iga-danger);border-color:var(--iga-danger);box-shadow:0 2px 6px #ef444447}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-text-col{display:flex;flex-direction:column;min-width:0;line-height:1.25;gap:2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-title-line{display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-fullname{font-size:11px;color:var(--iga-text-muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-flow{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-old{color:var(--iga-text-muted);font-family:var(--iga-font-mono);font-size:11px;text-decoration:line-through;text-decoration-color:#ef444473}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-arrow{display:inline-flex;align-items:center;color:var(--iga-accent);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-new{color:var(--iga-text-bright);font-weight:700;font-size:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-repeat{background:var(--iga-warning-subtle);color:var(--iga-warning);border:1px solid rgba(245,158,11,.3)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-prev-user{background:#6366f124;color:#818cf8;border:1px solid rgba(99,102,241,.3)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-badge-prev-user{background:#4f46e51a;color:#4f46e5;border-color:#4f46e540}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-following,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-public{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.25)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-churn{background:var(--iga-danger-subtle);color:var(--iga-danger);border:1px solid rgba(239,68,68,.28)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-new-mutual-solid{background:var(--iga-success)!important;color:#fff!important;font-weight:700!important;border:none!important}#ig-analyzer-panel,#ig-target-subpanel,.ig-backup-overlay .ig-backup-dialog{color-scheme:dark;background:var(--iga-bg-primary);color:var(--iga-text-main)}#ig-safety-modal .ig-modal-content,#ig-hd-modal .ig-hd-modal-card{color-scheme:dark;background:var(--iga-bg-primary);color:var(--iga-text-bright)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,.ig-backup-overlay.ig-light-theme .ig-backup-dialog{color-scheme:light;background:var(--iga-bg-primary);color:var(--iga-text-main)}#ig-safety-modal.ig-light-theme .ig-modal-content,#ig-hd-modal.ig-light-theme .ig-hd-modal-card{color-scheme:light;background:var(--iga-bg-primary);color:var(--iga-text-bright)}#ig-hd-modal.ig-light-theme .ig-hd-modal-card{box-shadow:var(--iga-shadow-lg)}#ig-hd-modal.ig-light-theme .ig-hd-avatar-frame{box-shadow:0 8px 24px #0f172a24}#ig-analyzer-panel.ig-light-theme .ig-target-card-avatar{background:#e2e8f0;color:#334155}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-btn-spy-story{background:#9333ea1a!important;border-color:#9333ea47!important;color:#7e22ce!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-btn-spy-story:hover:not(:disabled){background:#7e22ce!important;border-color:#7e22ce!important;color:#fff!important}.ig-spy-btn-busy{opacity:.65;cursor:wait!important}#ig-safety-modal .ig-spy-hero{margin-bottom:12px;padding:12px 14px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);background:var(--iga-surface);text-align:center}#ig-safety-modal .ig-spy-hero.is-safe,#ig-safety-modal .ig-spy-hero:has(.is-safe){background:var(--iga-success-subtle);border-color:#10b98159;--ig-spy-tone: var(--iga-success)}#ig-safety-modal .ig-spy-hero.is-warn,#ig-safety-modal .ig-spy-hero:has(.is-warn){background:var(--iga-warning-subtle);border-color:#f59e0b59;--ig-spy-tone: var(--iga-warning)}#ig-safety-modal .ig-spy-hero.is-danger,#ig-safety-modal .ig-spy-hero:has(.is-danger){background:var(--iga-danger-subtle);border-color:#ef444459;--ig-spy-tone: var(--iga-danger)}#ig-safety-modal .ig-spy-badge{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:var(--ig-spy-tone, var(--iga-accent));margin-bottom:4px}#ig-safety-modal .ig-spy-badge.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-badge.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-badge.is-danger{color:var(--iga-danger)}#ig-safety-modal .ig-spy-prob{font-size:28px;font-weight:800;color:var(--iga-text-bright);line-height:1.1;font-variant-numeric:tabular-nums}#ig-safety-modal .ig-spy-prob.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-prob.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-prob.is-danger{color:var(--iga-danger)}#ig-safety-modal .ig-spy-prob-label{font-size:11px;font-weight:600;color:var(--iga-text-muted);margin-top:2px}#ig-safety-modal .ig-spy-reason-card{text-align:left;font-size:12px;line-height:1.55;color:var(--iga-text-main);background:var(--iga-bg-secondary);padding:11px 13px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);margin-bottom:10px}#ig-safety-modal .ig-spy-meta-card{text-align:left;font-size:11px;color:var(--iga-text-muted);background:var(--iga-surface);padding:9px 12px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);display:flex;flex-direction:column;gap:5px}#ig-safety-modal .ig-spy-meta-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:4px;border-bottom:1px solid var(--iga-border)}#ig-safety-modal .ig-spy-meta-row.is-last,#ig-safety-modal .ig-spy-meta-row:last-child{padding-bottom:0;border-bottom:none}#ig-safety-modal .ig-spy-meta-label{color:var(--iga-text-muted)}#ig-safety-modal .ig-spy-meta-val{font-weight:600;color:var(--iga-text-bright);display:inline-flex;align-items:center;gap:5px}#ig-safety-modal .ig-spy-meta-val.is-strong{font-weight:700;color:var(--iga-text-bright)}#ig-safety-modal .ig-spy-val-muted{color:var(--iga-text-muted);font-weight:500}#ig-safety-modal .ig-spy-val-safe,#ig-safety-modal .ig-spy-val-success{color:var(--iga-success);font-weight:600}#ig-safety-modal .ig-spy-val-warn{color:var(--iga-warning);font-weight:600}#ig-safety-modal .ig-spy-val-danger{color:var(--iga-danger);font-weight:600}#ig-safety-modal .ig-spy-val-story,#ig-safety-modal .ig-spy-val-accent{color:#e1306c;font-weight:700}#ig-safety-modal .ig-spy-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);flex-shrink:0}#ig-safety-modal .ig-spy-dot.is-current{background:var(--iga-accent);box-shadow:0 0 6px #3b82f673}#ig-safety-modal .ig-spy-dot.is-story{background:#e1306c;box-shadow:0 0 6px #e1306c80}#ig-safety-modal .ig-spy-dot.is-empty{background:transparent;border:1.5px solid var(--iga-text-dim)}#ig-safety-modal .ig-spy-timeline{margin-top:10px;text-align:left;background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:9px 11px}#ig-safety-modal .ig-spy-timeline-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--iga-text-muted);margin-bottom:6px}#ig-safety-modal .ig-spy-timeline-list{max-height:110px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:4px}#ig-safety-modal .ig-spy-timeline-row{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:10.5px;padding:4px 7px;border-radius:4px;background:var(--iga-surface)}#ig-safety-modal .ig-spy-timeline-row.is-current{border:1px solid var(--iga-border-focus)}#ig-safety-modal .ig-spy-timeline-when{color:var(--iga-text-muted);font-family:var(--iga-font-mono);font-size:10px;display:inline-flex;align-items:center;gap:5px;flex-shrink:0}#ig-safety-modal .ig-spy-timeline-summary{font-weight:600;color:var(--iga-text-main);text-align:right}#ig-safety-modal .ig-spy-timeline-summary.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-timeline-summary.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-timeline-summary.is-danger{color:var(--iga-danger)}';
   importCSS(mainCss);
   const App = {
 isRunning: false,
@@ -4950,6 +8264,7 @@ targetRunning: false,
         UI.log("Fetching 'Following'...");
         const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following", { signal }, expectedFollowing);
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        await Utils.sleep(1800 + Math.random() * 1e3, signal);
         UI.log("Fetching 'Followers'...");
         const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal }, expectedFollowers);
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -4957,25 +8272,81 @@ targetRunning: false,
         const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw);
         const following = followingDetailed.map((u) => u.username);
         const followers = followersDetailed.map((u) => u.username);
+        const currFollowingLowerSet = new Set(following.map((u) => u.toLowerCase()));
+        const currFollowersLowerSet = new Set(followers.map((u) => u.toLowerCase()));
+        const allUsersByLower = new Map();
+        [...followingDetailed, ...followersDetailed].forEach((u) => {
+          if (!u?.username) return;
+          const key = u.username.toLowerCase();
+          const existing = allUsersByLower.get(key);
+          if (!existing) {
+            allUsersByLower.set(key, u);
+          } else {
+            allUsersByLower.set(key, {
+              ...existing,
+              ...u,
+              id: u.id || existing.id || null,
+              fullName: u.fullName || existing.fullName || "",
+              profilePicUrl: u.profilePicUrl || existing.profilePicUrl || null
+            });
+          }
+        });
         UI.hideProgress();
         UI.setStatus("Calculating Metrics...");
-        Storage.addHistoryEntry(followers.length, following.length);
-        UI.renderHistory(Storage.getHistory());
-        const notFollowingBackUsernames = Utils.diff(following, followers);
-        const fansUsernames = Utils.diff(followers, following);
-        const mutualsUsernames = Utils.intersection(followers, following);
-        const whitelist = Storage.getWhitelist();
-        const filteredNotFollowing = notFollowingBackUsernames.filter((u) => !whitelist.includes(u));
-        const allUsersMap = new Map();
-        [...followingDetailed, ...followersDetailed].forEach((u) => {
-          if (u?.username) allUsersMap.set(u.username, u);
+        const prev = Storage.load();
+        let prevFollowersDetailed = [];
+        let prevFollowingDetailed = [];
+        let followerRenames = [];
+        let followingRenames = [];
+        let allRenames = [];
+        if (prev) {
+          prevFollowersDetailed = Utils.toDetailedUserArray(
+            Array.isArray(prev.followersDetailed) ? prev.followersDetailed : prev.followers || []
+          );
+          prevFollowingDetailed = Utils.toDetailedUserArray(
+            Array.isArray(prev.followingDetailed) ? prev.followingDetailed : prev.following || []
+          );
+          followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, followersDetailed);
+          followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, followingDetailed);
+          const renameMapById = new Map();
+          followerRenames.forEach((r) => {
+            const isMutualNow = currFollowingLowerSet.has(r.newUsername.toLowerCase());
+            renameMapById.set(String(r.id), {
+              ...r,
+              relationship: isMutualNow ? "mutual" : "fan"
+            });
+          });
+          followingRenames.forEach((r) => {
+            const idStr = String(r.id);
+            if (renameMapById.has(idStr)) {
+              renameMapById.get(idStr).relationship = "mutual";
+            } else {
+              const isMutualNow = currFollowersLowerSet.has(r.newUsername.toLowerCase());
+              renameMapById.set(idStr, {
+                ...r,
+                relationship: isMutualNow ? "mutual" : "following"
+              });
+            }
+          });
+          allRenames = Array.from(renameMapById.values());
+        }
+        const { whitelist, reactivatedFollowersLowerSet } = Storage.reconcileAudienceState({
+          followersDetailed,
+          followingDetailed,
+          allRenames
         });
+        const whitelistLowerSet = new Set(whitelist.map((u) => String(u || "").toLowerCase()));
+        const notFollowingBackUsernames = following.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
+        const filteredNotFollowing = notFollowingBackUsernames.filter((u) => !whitelistLowerSet.has(u.toLowerCase()));
+        const fansUsernames = followers.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
+        const mutualsUsernames = followers.filter((u) => currFollowingLowerSet.has(u.toLowerCase()));
         const mapToDetailed = (arr) => arr.map((u) => {
-          const userObj = allUsersMap.get(u) || {};
+          const userObj = allUsersByLower.get(String(u || "").toLowerCase()) || {};
+          const canonicalName = userObj.username || u;
           return {
             ...userObj,
-            username: u,
-            url: "https://www.instagram.com/" + u + "/"
+            username: canonicalName,
+            url: `https://www.instagram.com/${encodeURIComponent(canonicalName)}/`
           };
         });
         const notFollowingBackDetailed = mapToDetailed(filteredNotFollowing);
@@ -4984,63 +8355,87 @@ targetRunning: false,
         UI.log("Not Following Back (filtered): " + notFollowingBackDetailed.length);
         UI.log("Fans: " + fansDetailed.length);
         UI.log("Mutuals: " + mutualsDetailed.length);
-        const prev = Storage.load();
+        const todayLocalStr = Utils.localDateStr();
+        const scanSummary = {
+          gained: 0,
+          lost: 0,
+          deactivated: 0,
+          blocked: 0,
+          renamed: allRenames.length
+        };
         if (prev) {
-          const prevFollowersDetailed = Utils.toDetailedUserArray(
-            Array.isArray(prev.followersDetailed) ? prev.followersDetailed : prev.followers || []
-          );
-          const prevFollowingDetailed = Utils.toDetailedUserArray(
-            Array.isArray(prev.followingDetailed) ? prev.followingDetailed : prev.following || []
-          );
           const prevFollowers = prevFollowersDetailed.map((u) => u.username);
           const prevFollowing = prevFollowingDetailed.map((u) => u.username);
-          const allPrevUsersDetailed = [...prevFollowersDetailed, ...prevFollowingDetailed];
-          const allCurrUsersDetailed = [...followersDetailed, ...followingDetailed];
-          const globalRenamed = Utils.detectRenamedMutuals(allPrevUsersDetailed, allCurrUsersDetailed);
-          const globalRenamedOldSet = new Set(globalRenamed.map((r) => r.oldUsername));
-          const globalRenamedNewSet = new Set(globalRenamed.map((r) => r.newUsername));
-          if (globalRenamed.length > 0) {
-            let wl = Storage.getWhitelist();
-            let wlChanged = false;
-            globalRenamed.forEach((r) => {
-              const idx = wl.indexOf(r.oldUsername);
-              if (idx !== -1) {
-                wl[idx] = r.newUsername;
-                wlChanged = true;
-              }
-            });
-            if (wlChanged) {
-              Storage.setScopedValue(CONFIG.WHITELIST_KEY, wl);
-            }
+          const prevFollowersLowerSet = new Set(prevFollowers.map((u) => u.toLowerCase()));
+          const prevFollowingLowerSet = new Set(prevFollowing.map((u) => u.toLowerCase()));
+          const prevUsersByLower = new Map();
+          [...prevFollowingDetailed, ...prevFollowersDetailed].forEach((u) => {
+            if (u?.username) prevUsersByLower.set(u.username.toLowerCase(), u);
+          });
+          if (allRenames.length > 0) {
+            Storage.addRenamedEntries(allRenames);
+            UI.log("Detected " + allRenames.length + " confirmed username change(s).");
           }
-          const rawNewFollowers = Utils.diff(followers, prevFollowers);
-          const newFollowers = rawNewFollowers.filter((u) => !globalRenamedNewSet.has(u));
+          if (reactivatedFollowersLowerSet.size > 0) {
+            UI.log("Restored " + reactivatedFollowersLowerSet.size + " reactivated account(s) from Deactivated.");
+          }
+          const followerRenamedNewLowerSet = new Set(followerRenames.map((r) => r.newUsername.toLowerCase()));
+          const rawNewFollowers = followers.filter((u) => !prevFollowersLowerSet.has(u.toLowerCase()));
+          const newFollowers = rawNewFollowers.filter((u) => {
+            const lower = u.toLowerCase();
+            return !followerRenamedNewLowerSet.has(lower) && !reactivatedFollowersLowerSet.has(lower);
+          });
           UI.log("New followers since last run: " + newFollowers.length);
           const newFollowersDetailed = mapToDetailed(newFollowers).map((u) => ({
             ...u,
-            followsBack: following.includes(u.username),
-            date: Utils.now().split("T")[0]
+            followsBack: currFollowingLowerSet.has(u.username.toLowerCase()),
+            date: todayLocalStr
           }));
           if (newFollowersDetailed.length > 0) {
             Storage.addNewFollowersEntries(newFollowersDetailed);
           }
-          const rawLostFollowers = Utils.diff(prevFollowers, followers);
-          const lostFollowers = rawLostFollowers.filter((u) => !globalRenamedOldSet.has(u));
-          const rawLostFollowing = Utils.diff(prevFollowing, following);
-          const lostFollowing = rawLostFollowing.filter((u) => !globalRenamedOldSet.has(u));
-          const missingUsers = Utils.intersection(lostFollowers, lostFollowing);
-          const prevMutualsDetailed = Utils.intersectionById(prevFollowersDetailed, prevFollowingDetailed);
-          const currMutualsDetailed = Utils.intersectionById(followersDetailed, followingDetailed);
-          const renamedEntries = Utils.detectRenamedMutuals(prevMutualsDetailed, currMutualsDetailed);
-          if (renamedEntries.length > 0) {
-            Storage.addRenamedEntries(renamedEntries);
-            UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes");
-            UI.log("Detected " + renamedEntries.length + " confirmed username change(s) in mutuals.");
-          }
+          scanSummary.gained = newFollowersDetailed.length;
+          const followerRenamedOldLowerSet = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+          const followingRenamedOldLowerSet = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+          const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
+          const rawLostFollowers = prevFollowers.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
+          const lostFollowers = rawLostFollowers.filter((u) => !followerRenamedOldLowerSet.has(u.toLowerCase()));
+          const rawLostFollowing = prevFollowing.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
+          const lostFollowing = rawLostFollowing.filter((u) => !followingRenamedOldLowerSet.has(u.toLowerCase()));
+          const lostFollowingLowerSet = new Set(lostFollowing.map((u) => u.toLowerCase()));
+          const missingUsers = lostFollowers.filter((u) => lostFollowingLowerSet.has(u.toLowerCase()));
+          const missingLowerSet = new Set(missingUsers.map((u) => u.toLowerCase()));
+          const buildLostEntry = (rawHandle) => {
+            const lower = String(rawHandle || "").toLowerCase();
+            const ren = followingRenamedByOldLower.get(lower);
+            if (ren) {
+              const liveProfile = allUsersByLower.get(ren.newUsername.toLowerCase());
+              return {
+                id: ren.id || liveProfile?.id || null,
+                username: ren.newUsername,
+                previousUsername: ren.oldUsername,
+                fullName: liveProfile?.fullName || ren.fullName || "",
+                profilePicUrl: liveProfile?.profilePicUrl || ren.profilePicUrl || null,
+                isVerified: Boolean(liveProfile?.isVerified ?? ren.isVerified),
+                isPrivate: Boolean(liveProfile?.isPrivate ?? ren.isPrivate),
+                date: todayLocalStr
+              };
+            }
+            const liveOrPrev = allUsersByLower.get(lower) || prevUsersByLower.get(lower) || {};
+            return {
+              id: liveOrPrev.id || null,
+              username: liveOrPrev.username || rawHandle,
+              fullName: liveOrPrev.fullName || "",
+              profilePicUrl: liveOrPrev.profilePicUrl || null,
+              isVerified: Boolean(liveOrPrev.isVerified),
+              isPrivate: Boolean(liveOrPrev.isPrivate),
+              date: todayLocalStr
+            };
+          };
           const newDeactivated = [];
           const newBlocked = [];
           const newUnfollowers = [];
-          const ordinaryUnfollowers = lostFollowers.filter((u) => !missingUsers.includes(u));
+          const ordinaryUnfollowers = lostFollowers.filter((u) => !missingLowerSet.has(u.toLowerCase()));
           if (ordinaryUnfollowers.length > 0) {
             newUnfollowers.push(...ordinaryUnfollowers);
           }
@@ -5064,10 +8459,10 @@ targetRunning: false,
               } else if (status === "Active") {
                 newUnfollowers.push(username);
                 let currentBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
-                if (currentBlocked.some((b) => b.username === username)) {
-                  currentBlocked = currentBlocked.filter((b) => b.username !== username);
+                const uLower = username.toLowerCase();
+                if (currentBlocked.some((b) => String(b.username || "").toLowerCase() === uLower)) {
+                  currentBlocked = currentBlocked.filter((b) => String(b.username || "").toLowerCase() !== uLower);
                   Storage.setScopedValue(CONFIG.BLOCKED_KEY, currentBlocked);
-                  UI.renderNominalList(currentBlocked, "ig-view-blocked", "Blocked Accounts");
                 }
               } else {
                 Utils.logError(
@@ -5084,26 +8479,28 @@ targetRunning: false,
           }
           if (newUnfollowers.length > 0) {
             UI.log("Identified " + newUnfollowers.length + " new unfollower(s).");
-            Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers);
+            Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers.map(buildLostEntry));
           }
           if (newDeactivated.length > 0) {
             UI.log("Identified " + newDeactivated.length + " deactivated account(s).");
-            Storage.addNominalEntries(CONFIG.DEACTIVATED_KEY, newDeactivated);
+            Storage.addNominalEntries(CONFIG.DEACTIVATED_KEY, newDeactivated.map(buildLostEntry));
           }
           if (newBlocked.length > 0) {
             UI.log("Identified " + newBlocked.length + " account(s) that blocked you.");
-            Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked);
+            Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked.map(buildLostEntry));
           }
-          const activeHandles = new Set([...following, ...followers]);
-          let storedBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
-          const cleanedBlocked = storedBlocked.filter((b) => !activeHandles.has(b.username));
-          if (cleanedBlocked.length !== storedBlocked.length) {
-            Storage.setScopedValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
-            UI.renderNominalList(cleanedBlocked, "ig-view-blocked", "Blocked Accounts");
-          }
+          scanSummary.lost = newUnfollowers.length;
+          scanSummary.deactivated = newDeactivated.length;
+          scanSummary.blocked = newBlocked.length;
         } else {
           UI.log("First run: Initial state established.");
         }
+        Storage.addHistoryEntry(followers.length, following.length, null, {
+          mutuals: mutualsDetailed.length,
+          fans: fansDetailed.length,
+          notFollowingBack: notFollowingBackDetailed.length,
+          scanSummary
+        });
         Storage.syncFreshUserData([...followingDetailed, ...followersDetailed]);
         Storage.save({
           version: 4,
@@ -5123,6 +8520,7 @@ targetRunning: false,
           renamed: Storage.getNominalList(CONFIG.RENAMED_KEY),
           history: Storage.getHistory()
         });
+        UI.renderHistory(Storage.getHistory());
         UI.renderResults(notFollowingBackDetailed, "Not Following You Back", "ig-view-notfollowing", true);
         UI.renderResults(fansDetailed, "Fans (They follow you, you don't)", "ig-view-fans", false);
         UI.renderResults(mutualsDetailed, "Mutual Connections", "ig-view-mutuals", false);
@@ -5161,7 +8559,7 @@ targetRunning: false,
       if (btnElement) {
         if (btnElement.disabled) return;
         btnElement.disabled = true;
-        btnElement.innerHTML = `<span style="opacity:0.8; display:inline-flex; align-items:center; gap:4px;">${Icons.spy} Scanning...</span>`;
+        btnElement.innerHTML = `<span class="ig-spy-btn-busy">${Icons.spy} Scanning...</span>`;
       }
       try {
         UI.log(`[Story Spy] Checking story & highlight visibility for @${cleanUser}...`);
@@ -5172,6 +8570,7 @@ targetRunning: false,
         }
         const history = Storage.getStoryObservations(cleanUser);
         const previous = history.length > 0 ? history[history.length - 1] : null;
+        const trayAvailable = status.authHighlightsAvailable !== false;
         let probability = 0;
         let reason = "";
         let anomalyBadge = "Normal";
@@ -5179,18 +8578,35 @@ targetRunning: false,
           probability = 95;
           anomalyBadge = "Gated Access";
           reason = "Meta's API returned a restricted/gated state (<code>latest_reel_media: null</code>) for your account session. You are restricted or hidden from viewing this user's stories.";
-        } else if (!status.isPrivate && (status.anonHighlightsCount > 0 || status.anonHasStory) && (status.authHighlightsCount === 0 && !status.authHasStory)) {
+        } else if (trayAvailable && !status.isPrivate && (status.anonHighlightsCount > 0 || status.anonHasStory) && (status.authHighlightsCount === 0 && !status.authHasStory)) {
           probability = 100;
           anomalyBadge = "Confirmed Hiding";
           reason = `Confirmed: Highlights (${status.anonHighlightsCount}) or active stories are publicly visible to anonymous guest visitors, but completely hidden from your logged-in account (0 highlights). This user is actively hiding stories from you.`;
-        } else if (status.authHighlightsCount > 0 || status.authHasStory) {
+        } else if (trayAvailable && status.authHighlightsCount > 0 || status.authHasStory) {
           probability = 0;
           anomalyBadge = "Normal Visibility";
           const visibleItems = [];
-          if (status.authHighlightsCount > 0) visibleItems.push(`<b>${status.authHighlightsCount} highlight(s)</b>`);
+          if (trayAvailable && status.authHighlightsCount > 0) visibleItems.push(`<b>${status.authHighlightsCount} highlight(s)</b>`);
           if (status.isBestieStory) visibleItems.push("a <b>Close Friends Story</b> (green ring)");
           else if (status.authHasStory) visibleItems.push("an <b>Active Story</b>");
-          reason = `Normal visibility: Your account can see ${visibleItems.join(" and ")}. No story or highlight hiding detected.`;
+          const trayNote = !trayAvailable ? " (Highlights tray temporarily rate-limited.)" : "";
+          reason = `Normal visibility: Your account can see ${visibleItems.join(" and ")}. No story hiding detected.${trayNote}`;
+        } else if (!trayAvailable) {
+          const prevStory = Boolean(previous && (previous.hasStory || previous.latestReelMedia && previous.latestReelMedia > 0));
+          const prevReelMedia = previous?.latestReelMedia ? Number(previous.latestReelMedia) : 0;
+          const nowSeconds = Math.floor(Date.now() / 1e3);
+          const storyAgeSeconds = prevReelMedia > 0 ? nowSeconds - prevReelMedia : null;
+          const isStoryUnexpired = storyAgeSeconds !== null && storyAgeSeconds >= 0 && storyAgeSeconds < 86400;
+          if (prevStory && isStoryUnexpired) {
+            probability = 80;
+            anomalyBadge = "Story Vanished Early";
+            const hoursAgo = Math.max(1, Math.round(storyAgeSeconds / 3600));
+            reason = `<b>Anomaly Detected:</b> An active story posted ~${hoursAgo}h ago is no longer visible to your account (stories last 24h). Highlights tray could not be checked due to a temporary Instagram rate limit, so your previous highlight baseline was preserved.`;
+          } else {
+            probability = 0;
+            anomalyBadge = "Tray Unavailable";
+            reason = "Instagram's Highlights Tray endpoint was temporarily rate-limited or unavailable during this check, and no active 24h story is currently posted. Your previous highlight baseline was preserved without triggering a false vanish alert.";
+          }
         } else if (previous) {
           const prevHighlights = previous.highlightsCount || previous.highlights || 0;
           const prevStory = Boolean(previous.hasStory || previous.latestReelMedia && previous.latestReelMedia > 0);
@@ -5223,62 +8639,61 @@ targetRunning: false,
           anomalyBadge = "Baseline Recorded";
           reason = `First scan baseline recorded: 0 highlights and no active stories currently visible. If this user posts stories or has highlights you should see, future scans will alert you immediately if discrepancies occur.`;
         }
+        const persistedHighlightsCount = trayAvailable ? status.authHighlightsCount : previous ? previous.highlightsCount ?? previous.highlights ?? 0 : 0;
+        const persistedTitles = trayAvailable ? (status.authHighlights || []).map((h) => h.title) : previous?.highlightTitles || [];
         Storage.addStoryObservation(cleanUser, {
-          highlightsCount: status.authHighlightsCount,
+          highlightsCount: persistedHighlightsCount,
+          trayUnavailable: !trayAvailable,
           latestReelMedia: status.latestReelMedia,
           latestBestiesReelMedia: status.latestBestiesReelMedia,
           hasStory: status.authHasStory,
           isBestieStory: status.isBestieStory,
           isPrivate: status.isPrivate,
-          highlightTitles: (status.authHighlights || []).map((h) => h.title)
+          highlightTitles: persistedTitles
         });
         const updatedHistory = Storage.getStoryObservations(cleanUser);
-        let statusColor = "#10b981";
-        let badgeBg = "rgba(16, 185, 129, 0.14)";
-        let badgeBorder = "rgba(16, 185, 129, 0.3)";
+        let stateMod = "is-safe";
         if (probability >= 75) {
-          statusColor = "#ef4444";
-          badgeBg = "rgba(239, 68, 68, 0.14)";
-          badgeBorder = "rgba(239, 68, 68, 0.3)";
-        } else if (probability > 0) {
-          statusColor = "#f59e0b";
-          badgeBg = "rgba(245, 158, 11, 0.14)";
-          badgeBorder = "rgba(245, 158, 11, 0.3)";
+          stateMod = "is-danger";
+        } else if (probability > 0 || !trayAvailable) {
+          stateMod = "is-warn";
         }
-        let storyStatusText = "None active";
+        let storyStatusHtml = '<span class="ig-spy-val-muted">None active</span>';
         if (status.isGated) {
-          storyStatusText = '<span style="color:#ef4444; font-weight:600;">Gated / Restricted</span>';
+          storyStatusHtml = '<span class="ig-spy-val-danger">Gated / Restricted</span>';
         } else if (status.isBestieStory) {
-          storyStatusText = '<span style="color:#10b981; font-weight:600;">Close Friends Story (Active)</span>';
+          storyStatusHtml = '<span class="ig-spy-val-success">Close Friends Story (Active)</span>';
         } else if (status.authHasStory) {
           const nowSec = Math.floor(Date.now() / 1e3);
           const ageSec = nowSec - (status.latestReelMedia || nowSec);
           const ageHours = Math.max(0, Math.floor(ageSec / 3600));
           const ageMins = Math.max(0, Math.floor(ageSec % 3600 / 60));
           const timeStr = ageHours > 0 ? `${ageHours}h ${ageMins}m ago` : `${ageMins}m ago`;
-          storyStatusText = `<span style="color:#3b82f6; font-weight:600;">Active Story (Posted ~${timeStr})</span>`;
+          storyStatusHtml = `<span class="ig-spy-val-accent">Active Story (Posted ~${timeStr})</span>`;
         }
         let historyHtml = "";
         if (updatedHistory.length > 1) {
           const recentScans = updatedHistory.slice(-4).reverse();
           historyHtml = `
-                    <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); text-align: left;">
-                        <div style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
+                    <div class="ig-spy-timeline">
+                        <div class="ig-spy-timeline-title">
                             Scan History Timeline (${updatedHistory.length} recorded)
                         </div>
-                        <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <div class="ig-spy-timeline-list">
                             ${recentScans.map((obs, idx) => {
           const isCurrent = idx === 0;
-          const dateStr = (obs.timestamp || "").split("T")[1]?.slice(0, 5) || "Scan";
+          const localHm = Utils.localTimeStr(obs.timestamp || obs.epochMs).slice(0, 5) || "Scan";
           const hCount = obs.highlightsCount ?? obs.highlights ?? 0;
+          const hLabel = obs.trayUnavailable ? `${hCount} highlights (cached)` : `${hCount} highlights`;
           const hasS = obs.hasStory || obs.latestReelMedia && obs.latestReelMedia > 0;
           return `
-                                    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; padding: 5px 8px; border-radius: 6px; background: ${isCurrent ? "rgba(255,255,255,0.05)" : "transparent"}; border: 1px solid ${isCurrent ? "rgba(255,255,255,0.1)" : "transparent"};">
-                                        <span style="color: ${isCurrent ? "#f8fafc" : "#94a3b8"}; font-weight: ${isCurrent ? "600" : "400"};">
-                                            ${isCurrent ? "● Current" : `○ ${dateStr}`}
+                                    <div class="ig-spy-timeline-row${isCurrent ? " is-current" : ""}">
+                                        <span class="ig-spy-timeline-when">
+                                            <span class="ig-spy-dot${isCurrent ? " is-current" : ""}"></span>
+                                            ${isCurrent ? "Current" : Utils.escapeHtml(localHm)}
                                         </span>
-                                        <span style="color: #cbd5e1;">
-                                            ${hCount} highlights · ${hasS ? "Story Active" : "No Story"}
+                                        <span class="ig-spy-timeline-summary">
+                                            ${Utils.escapeHtml(hLabel)} · ${hasS ? "Story Active" : "No Story"}
                                         </span>
                                     </div>
                                 `;
@@ -5288,41 +8703,42 @@ targetRunning: false,
                 `;
         }
         const targetType = status.isPrivate ? "Private Account" : "Public Account";
-        const highlightsDetail = status.authHighlightsCount > 0 ? `<b style="color:#10b981;">${status.authHighlightsCount} visible</b>` : '<span style="color:#94a3b8;">0 detected</span>';
+        const highlightsDetail = !trayAvailable ? '<span class="ig-spy-val-warn">Unavailable (Rate Limit)</span>' : status.authHighlightsCount > 0 ? `<b class="ig-spy-val-success">${status.authHighlightsCount} visible</b>` : '<span class="ig-spy-val-muted">0 detected</span>';
+        const guestDetail = status.anonHighlightsAvailable === false ? '<span class="ig-spy-val-muted">Unavailable</span>' : `<span class="ig-spy-meta-val">${status.anonHighlightsCount} highlights</span>`;
         const resultHtml = `
-                <div style="text-align: center; margin-bottom: 16px;">
-                    <div style="display: inline-block; padding: 4px 14px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; background: ${badgeBg}; color: ${statusColor}; border: 1px solid ${badgeBorder}; margin-bottom: 10px;">
-                        ${anomalyBadge}
+                <div class="ig-spy-hero">
+                    <div class="ig-spy-badge ${stateMod}">
+                        ${Utils.escapeHtml(anomalyBadge)}
                     </div>
-                    <div style="font-size: 32px; font-weight: 800; color: ${statusColor}; letter-spacing: -1px; line-height: 1;">
+                    <div class="ig-spy-prob ${stateMod}">
                         ${probability}%
                     </div>
-                    <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">
+                    <div class="ig-spy-prob-label">
                         Story Hiding Probability
                     </div>
                 </div>
 
-                <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; color: #cbd5e1; border: 1px solid rgba(255,255,255,0.08); text-align: left; margin-bottom: 14px;">
+                <div class="ig-spy-reason-card">
                     ${reason}
                 </div>
 
-                <div style="background: rgba(255, 255, 255, 0.03); border-radius: 10px; padding: 12px; border: 1px solid rgba(255,255,255,0.06); font-size: 12px; text-align: left;">
-                    <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                        <span style="color: #94a3b8;">Target Profile:</span>
-                        <span style="color: #f8fafc; font-weight: 600;">@${safeUsername} (${targetType})</span>
+                <div class="ig-spy-meta-card">
+                    <div class="ig-spy-meta-row">
+                        <span class="ig-spy-meta-label">Target Profile:</span>
+                        <span class="ig-spy-meta-val is-strong">@${safeUsername} (${targetType})</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                        <span style="color: #94a3b8;">Highlights (Tray):</span>
+                    <div class="ig-spy-meta-row">
+                        <span class="ig-spy-meta-label">Highlights (Tray):</span>
                         <span>${highlightsDetail}</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; padding: 4px 0; ${!status.isPrivate ? "border-bottom: 1px solid rgba(255,255,255,0.05);" : ""}">
-                        <span style="color: #94a3b8;">Active Story:</span>
-                        <span>${storyStatusText}</span>
+                    <div class="ig-spy-meta-row${status.isPrivate ? " is-last" : ""}">
+                        <span class="ig-spy-meta-label">Active Story:</span>
+                        <span>${storyStatusHtml}</span>
                     </div>
                     ${!status.isPrivate ? `
-                    <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-                        <span style="color: #94a3b8;">Guest Session (Anon):</span>
-                        <span style="color: #cbd5e1;">${status.anonHighlightsCount} highlights</span>
+                    <div class="ig-spy-meta-row is-last">
+                        <span class="ig-spy-meta-label">Guest Session (Anon):</span>
+                        ${guestDetail}
                     </div>` : ""}
                 </div>
 
@@ -5356,7 +8772,7 @@ targetRunning: false,
     openTargetAudit: async (username, userId = null, forceRefresh = false) => {
       const cleanUser = String(username || "").replace(/^@+\s*/, "").trim().replace(/\s+/g, "");
       if (!cleanUser) return;
-      const stored = Storage.getTargetData(cleanUser);
+      const stored = Storage.getTargetData(cleanUser, null, userId);
       const stubUser = stored?.user || {
         username: cleanUser,
         id: userId || null
@@ -5401,6 +8817,39 @@ targetRunning: false,
           return;
         }
         const validatedUser = valRes.user;
+        const prevData = Storage.getTargetData(validatedUser.username, null, validatedUser.id) || Storage.getTargetData(cleanUser, null, targetUserObj?.id) || {};
+        const prevTargetHandle = String(
+          valRes.renamedFrom || prevData?.user?.username || prevData?.username || ""
+        ).replace(/^@+\s*/, "").trim();
+        const isTargetRenamed = Boolean(
+          prevTargetHandle && prevTargetHandle.toLowerCase() !== String(validatedUser.username || "").toLowerCase()
+        );
+        const collectedPrevNames = Utils.unique([
+          ...Array.isArray(prevData?.user?.previousUsernames) ? prevData.user.previousUsernames : [],
+          ...prevData?.user?.previousUsername ? [prevData.user.previousUsername] : [],
+          ...validatedUser.previousUsername ? [validatedUser.previousUsername] : [],
+          ...isTargetRenamed ? [prevTargetHandle] : []
+        ].map((n) => String(n || "").replace(/^@+\s*/, "").trim()).filter((n) => n && n.toLowerCase() !== String(validatedUser.username || "").toLowerCase()));
+        if (collectedPrevNames.length > 0) {
+          validatedUser.previousUsername = collectedPrevNames[collectedPrevNames.length - 1];
+          validatedUser.previousUsernames = collectedPrevNames;
+        }
+        if (isTargetRenamed) {
+          UI.targetLog(`[Target Renamed] @${prevTargetHandle} changed username to @${validatedUser.username} (ID: ${validatedUser.id}). Continuing existing audit history.`);
+          if ((validatedUser.followedByViewer || validatedUser.followsViewer) && typeof Storage.addRenamedEntries === "function") {
+            const rel = validatedUser.followedByViewer && validatedUser.followsViewer ? "mutual" : validatedUser.followsViewer ? "fan" : "following";
+            Storage.addRenamedEntries([{
+              id: String(validatedUser.id),
+              oldUsername: prevTargetHandle,
+              newUsername: validatedUser.username,
+              relationship: rel,
+              fullName: validatedUser.fullName || "",
+              profilePicUrl: validatedUser.profilePicUrl || null,
+              isVerified: Boolean(validatedUser.isVerified),
+              isPrivate: Boolean(validatedUser.isPrivate)
+            }]);
+          }
+        }
         UI.currentTargetUser = validatedUser;
         const titleEl = document.getElementById("ig-target-header-title");
         if (titleEl) {
@@ -5409,6 +8858,9 @@ targetRunning: false,
         const summaryBar = document.getElementById("ig-target-meta-summary");
         if (summaryBar) {
           let summaryHtml = '<span class="ig-target-meta-user">@' + Utils.escapeHtml(validatedUser.username) + "</span>";
+          if (validatedUser.previousUsername) {
+            summaryHtml += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + Utils.escapeHtml(validatedUser.previousUsername) + '">Formerly @' + Utils.escapeHtml(validatedUser.previousUsername) + "</span>";
+          }
           if (validatedUser.fullName) {
             summaryHtml += '<span class="ig-target-meta-name">' + Utils.escapeHtml(validatedUser.fullName) + "</span>";
           }
@@ -5416,19 +8868,14 @@ targetRunning: false,
           summaryHtml += '<span class="ig-target-meta-pill">' + Utils.formatNumber(validatedUser.followingCount) + " following</span>";
           summaryBar.innerHTML = summaryHtml;
         }
-        const prevData = Storage.getTargetData(validatedUser.username) || {};
         const isRestricted = validatedUser.isPrivate && !validatedUser.followedByViewer;
         if (isRestricted) {
           UI.targetLog(`[Privacy Notice] @${validatedUser.username} is a private account not followed by you. Network extraction is restricted by Meta.`);
           UI.targetLog(`[Metrics] Recorded public counts: ${validatedUser.followerCount} followers, ${validatedUser.followingCount} following.`);
-          const todayStr2 = Utils.now().split("T")[0];
-          const history2 = Array.isArray(prevData.history) ? [...prevData.history] : [];
-          const existHistIdx2 = history2.findIndex((h) => h.date === todayStr2);
-          if (existHistIdx2 > -1) {
-            history2[existHistIdx2] = { date: todayStr2, followers: validatedUser.followerCount, following: validatedUser.followingCount };
-          } else {
-            history2.push({ date: todayStr2, followers: validatedUser.followerCount, following: validatedUser.followingCount });
-          }
+          const history2 = Storage.upsertHistoryRecord(prevData.history || [], {
+            followers: validatedUser.followerCount || 0,
+            following: validatedUser.followingCount || 0
+          });
           const targetData2 = {
             user: validatedUser,
             username: validatedUser.username,
@@ -5438,6 +8885,10 @@ targetRunning: false,
             mutuals: [],
             newFollowers: [],
             lostFollowers: [],
+            newMutuals: [],
+            newFollowing: [],
+            lostFollowing: [],
+            lastAuditDelta: null,
             history: history2,
             lastAuditAt: Utils.now()
           };
@@ -5460,14 +8911,11 @@ targetRunning: false,
         );
         if (!userConfirmed) {
           UI.targetLog("[INFO] Extraction skipped by user. Saved profile metrics.");
-          const todayStr2 = Utils.now().split("T")[0];
-          const history2 = Array.isArray(prevData.history) ? [...prevData.history] : [];
-          const existHistIdx2 = history2.findIndex((h) => h.date === todayStr2);
-          if (existHistIdx2 > -1) {
-            history2[existHistIdx2] = { date: todayStr2, followers: validatedUser.followerCount, following: validatedUser.followingCount };
-          } else {
-            history2.push({ date: todayStr2, followers: validatedUser.followerCount, following: validatedUser.followingCount });
-          }
+          const hasExtractedBaseline = Array.isArray(prevData.followers) && prevData.followers.length > 0 || Array.isArray(prevData.following) && prevData.following.length > 0;
+          const history2 = hasExtractedBaseline ? Storage.normalizeHistoryRecords(prevData.history || []).list : Storage.upsertHistoryRecord(prevData.history || [], {
+            followers: validatedUser.followerCount || 0,
+            following: validatedUser.followingCount || 0
+          });
           const targetData2 = {
             user: validatedUser,
             username: validatedUser.username,
@@ -5477,8 +8925,12 @@ targetRunning: false,
             mutuals: prevData.mutuals || [],
             newFollowers: prevData.newFollowers || [],
             lostFollowers: prevData.lostFollowers || [],
+            newMutuals: prevData.newMutuals || [],
+            newFollowing: prevData.newFollowing || [],
+            lostFollowing: prevData.lostFollowing || [],
+            lastAuditDelta: prevData.lastAuditDelta || null,
             history: history2,
-            lastAuditAt: Utils.now()
+            lastAuditAt: prevData.lastAuditAt || Utils.now()
           };
           Storage.saveTargetData(validatedUser.username, targetData2);
           UI.renderTargetOverview(targetData2);
@@ -5500,97 +8952,297 @@ targetRunning: false,
         UI.hideTargetProgress();
         UI.setTargetStatus("Calculating Diffs...");
         UI.targetLog("[Diffing] Calculating changes and mutual connections...");
-        const currentFollowerNames = network.followers.map((u) => u.username);
-        const currentFollowingNames = network.following.map((u) => u.username);
-        const prevFollowerNames = (prevData.followers || []).map((u) => typeof u === "string" ? u : u.username);
-        const prevFollowingNames = (prevData.following || []).map((u) => typeof u === "string" ? u : u.username);
+        let currFollowers = Utils.toDetailedUserArray(network.followers || []);
+        let currFollowing = Utils.toDetailedUserArray(network.following || []);
+        let currMutuals = Utils.toDetailedUserArray(network.mutuals || []);
+        const viewerSnapshot = Storage.load();
+        if (viewerSnapshot && Array.isArray(viewerSnapshot.followers) && Array.isArray(viewerSnapshot.following)) {
+          const viewerFollowersLower = new Set(viewerSnapshot.followers.map((u) => String(u || "").toLowerCase()));
+          const viewerFollowingLower = new Set(viewerSnapshot.following.map((u) => String(u || "").toLowerCase()));
+          const tagShared = (u) => {
+            const lower = String(u.username || "").toLowerCase();
+            u.isViewerMutual = viewerFollowersLower.has(lower) && viewerFollowingLower.has(lower);
+          };
+          currMutuals.forEach(tagShared);
+          currFollowers.forEach(tagShared);
+          currFollowing.forEach(tagShared);
+        }
+        let currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
+        let currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
+        let currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
+        const prevFollowersDetailed = Utils.toDetailedUserArray(prevData.followers || []);
+        const prevFollowingDetailed = Utils.toDetailedUserArray(prevData.following || []);
+        const prevMutualsDetailed = Utils.toDetailedUserArray(prevData.mutuals || []);
+        const hasPreviousNetwork = prevFollowersDetailed.length > 0 || prevFollowingDetailed.length > 0;
+        const todayLocalStr = Utils.localDateStr();
+        const MAX_TRACKED_DIFF_ITEMS = 500;
         let newFollowersDetailed = [];
-        let newMutualsDetailed = [];
         let lostFollowersDetailed = [];
-        if (prevData && prevFollowerNames.length > 0) {
-          const allPrevUsersDetailed = [...prevData.followers || [], ...prevData.following || []];
-          const allCurrUsersDetailed = [...network.followers, ...network.following];
-          const globalRenamed = Utils.detectRenamedMutuals(allPrevUsersDetailed, allCurrUsersDetailed);
-          const globalRenamedOldSet = new Set(globalRenamed.map((r) => r.oldUsername));
-          const globalRenamedNewSet = new Set(globalRenamed.map((r) => r.newUsername));
-          const rawNewFollowersNames = Utils.diff(currentFollowerNames, prevFollowerNames);
-          const newFollowersNames = rawNewFollowersNames.filter((u) => !globalRenamedNewSet.has(u));
-          const rawLostFollowersNames = Utils.diff(prevFollowerNames, currentFollowerNames);
-          const lostFollowersNames = rawLostFollowersNames.filter((u) => !globalRenamedOldSet.has(u));
-          const currentFollowersMap = new Map();
-          network.followers.forEach((u) => currentFollowersMap.set(u.username, u));
-          const prevFollowersMap = new Map();
-          (prevData.followers || []).forEach((u) => {
-            if (u?.username) prevFollowersMap.set(u.username, u);
+        let newMutualsDetailed = [];
+        let newFollowingDetailed = [];
+        let lostFollowingDetailed = [];
+        let lastAuditDelta = {
+          gainedFollowers: 0,
+          lostFollowers: 0,
+          gainedFollowing: 0,
+          lostFollowing: 0,
+          newMutuals: 0,
+          renamed: 0
+        };
+        if (hasPreviousNetwork) {
+          const followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, currFollowers);
+          const followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, currFollowing);
+          const mutualRenames = Utils.detectRenamedUsers(prevMutualsDetailed, currMutuals);
+          const renameByOldLower = new Map();
+          [...followerRenames, ...followingRenames].forEach((r) => {
+            if (r?.oldUsername && r?.newUsername) {
+              renameByOldLower.set(r.oldUsername.toLowerCase(), r);
+            }
           });
-          newFollowersDetailed = newFollowersNames.map((name) => currentFollowersMap.get(name) || {
-            username: name,
-            url: `https://www.instagram.com/${name}/`
+          const followerRenamedOldLower = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+          const followerRenamedNewLower = new Set(followerRenames.map((r) => r.newUsername.toLowerCase()));
+          const followingRenamedOldLower = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+          const followingRenamedNewLower = new Set(followingRenames.map((r) => r.newUsername.toLowerCase()));
+          const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
+          const mutualRenamedNewLower = new Set(mutualRenames.map((r) => r.newUsername.toLowerCase()));
+          const prevFollowersByLower = new Map(prevFollowersDetailed.map((u) => [u.username.toLowerCase(), u]));
+          const prevFollowerIdsSet = new Set(prevFollowersDetailed.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+          const prevFollowingByLower = new Map(prevFollowingDetailed.map((u) => [u.username.toLowerCase(), u]));
+          const prevFollowingIdsSet = new Set(prevFollowingDetailed.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+          const prevMutualsLowerSet = new Set(prevMutualsDetailed.map((u) => u.username.toLowerCase()));
+          const prevMutualIdsSet = new Set(prevMutualsDetailed.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+          const scanNewFollowers = currFollowers.filter((u) => {
+            const lower = u.username.toLowerCase();
+            if (u.id && prevFollowerIdsSet.has(String(u.id))) return false;
+            return !prevFollowersByLower.has(lower) && !followerRenamedNewLower.has(lower);
+          }).map((u) => ({ ...u, date: todayLocalStr }));
+          const prevHeaderFollowers = Number(prevData?.user?.followerCount || 0);
+          const currHeaderFollowers = Number(validatedUser.followerCount || 0);
+          const prevHeaderFollowing = Number(prevData?.user?.followingCount || 0);
+          const currHeaderFollowing = Number(validatedUser.followingCount || 0);
+          const followersTruncatedGuard = Boolean(network.isPartialFollowers && prevFollowersDetailed.length > currFollowers.length);
+          const followingTruncatedGuard = Boolean(network.isPartialFollowing && prevFollowingDetailed.length > currFollowing.length);
+          const followersCumulativeGuard = Boolean(
+            !followersTruncatedGuard && currHeaderFollowers > 0 && currFollowers.length < currHeaderFollowers && prevFollowersDetailed.length > 0 && (prevHeaderFollowers === 0 || currHeaderFollowers >= prevHeaderFollowers)
+          );
+          const followingCumulativeGuard = Boolean(
+            !followingTruncatedGuard && currHeaderFollowing > 0 && currFollowing.length < currHeaderFollowing && prevFollowingDetailed.length > 0 && (prevHeaderFollowing === 0 || currHeaderFollowing >= prevHeaderFollowing)
+          );
+          if (followersTruncatedGuard || followersCumulativeGuard) {
+            const beforeLen = currFollowers.length;
+            const unrenamedPrevFollowers = prevFollowersDetailed.filter((u) => !followerRenamedOldLower.has(u.username.toLowerCase()));
+            let mergedFollowers = Utils.toDetailedUserArray(API.mergeExtractedUsers(currFollowers, unrenamedPrevFollowers));
+            if (followersCumulativeGuard && currHeaderFollowers > 0 && mergedFollowers.length > currHeaderFollowers) {
+              mergedFollowers = mergedFollowers.slice(0, currHeaderFollowers);
+            }
+            currFollowers = mergedFollowers;
+            currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
+            if (network.isRateLimitedFollowers) {
+              UI.targetLog(`[Anti-Ban Guard] Rate limit active on 'followers'. Preserved ${currFollowers.length} known followers from audit memory & suppressed false Lost Followers.`);
+            } else if (followersTruncatedGuard) {
+              UI.targetLog(`[Safety Guard] Meta returned a partial followers subset (${beforeLen}/${validatedUser.followerCount}). Preserving baseline & suppressing false Lost Followers alerts.`);
+            } else if (currFollowers.length > beforeLen) {
+              UI.targetLog(`[Cumulative Memory] Reconciled +${currFollowers.length - beforeLen} previously discovered follower(s) (${currFollowers.length}/${validatedUser.followerCount} total).`);
+            }
+          }
+          if (followingTruncatedGuard || followingCumulativeGuard) {
+            const beforeLen = currFollowing.length;
+            const unrenamedPrevFollowing = prevFollowingDetailed.filter((u) => !followingRenamedOldLower.has(u.username.toLowerCase()));
+            let mergedFollowing = Utils.toDetailedUserArray(API.mergeExtractedUsers(currFollowing, unrenamedPrevFollowing));
+            if (followingCumulativeGuard && currHeaderFollowing > 0 && mergedFollowing.length > currHeaderFollowing) {
+              mergedFollowing = mergedFollowing.slice(0, currHeaderFollowing);
+            }
+            currFollowing = mergedFollowing;
+            currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
+            if (network.isRateLimitedFollowing) {
+              UI.targetLog(`[Anti-Ban Guard] Rate limit active on 'following'. Preserved ${currFollowing.length} known following from audit memory & suppressed false Lost Following.`);
+            } else if (followingTruncatedGuard) {
+              UI.targetLog(`[Safety Guard] Meta returned a partial following subset (${beforeLen}/${validatedUser.followingCount}). Preserving baseline & suppressing false Lost Following calculations.`);
+            } else if (currFollowing.length > beforeLen) {
+              UI.targetLog(`[Cumulative Memory] Reconciled +${currFollowing.length - beforeLen} previously discovered following account(s) (${currFollowing.length}/${validatedUser.followingCount} total).`);
+            }
+          }
+          if (followersTruncatedGuard || followingTruncatedGuard || followersCumulativeGuard || followingCumulativeGuard) {
+            const followerIds = new Set(currFollowers.map((u) => u.id).filter(Boolean));
+            currMutuals = currFollowing.filter(
+              (u) => u.id && followerIds.has(u.id) || currFollowersByLower.has(u.username.toLowerCase())
+            );
+            currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
+          }
+          const currFollowerIdsSet = new Set(currFollowers.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+          const currFollowingIdsSet = new Set(currFollowing.map((u) => u.id ? String(u.id) : null).filter(Boolean));
+          const scanLostFollowers = followersTruncatedGuard || followersCumulativeGuard ? [] : prevFollowersDetailed.filter((u) => {
+            const lower = u.username.toLowerCase();
+            if (u.id && currFollowerIdsSet.has(String(u.id))) return false;
+            return !currFollowersByLower.has(lower) && !followerRenamedOldLower.has(lower);
+          }).map((u) => {
+            const lower = u.username.toLowerCase();
+            const ren = followingRenamedByOldLower.get(lower);
+            if (ren) {
+              const liveInFollowing2 = currFollowingByLower.get(ren.newUsername.toLowerCase());
+              return {
+                ...liveInFollowing2 || u,
+                id: ren.id || u.id || null,
+                username: ren.newUsername,
+                previousUsername: ren.oldUsername,
+                url: `https://www.instagram.com/${encodeURIComponent(ren.newUsername)}/`,
+                date: todayLocalStr
+              };
+            }
+            const liveInFollowing = currFollowingByLower.get(lower);
+            return {
+              ...liveInFollowing || u,
+              date: todayLocalStr
+            };
           });
-          lostFollowersDetailed = lostFollowersNames.map((name) => prevFollowersMap.get(name) || {
-            username: name,
-            url: `https://www.instagram.com/${name}/`
+          const scanNewFollowing = currFollowing.filter((u) => {
+            const lower = u.username.toLowerCase();
+            if (u.id && prevFollowingIdsSet.has(String(u.id))) return false;
+            return !prevFollowingByLower.has(lower) && !followingRenamedNewLower.has(lower);
+          }).map((u) => ({ ...u, date: todayLocalStr }));
+          const scanLostFollowing = followingTruncatedGuard || followingCumulativeGuard ? [] : prevFollowingDetailed.filter((u) => {
+            const lower = u.username.toLowerCase();
+            if (u.id && currFollowingIdsSet.has(String(u.id))) return false;
+            return !currFollowingByLower.has(lower) && !followingRenamedOldLower.has(lower);
+          }).map((u) => {
+            const lower = u.username.toLowerCase();
+            const liveInFollowers = currFollowersByLower.get(lower);
+            return {
+              ...liveInFollowers || u,
+              date: todayLocalStr
+            };
           });
-          const prevMutualNames = (prevData.mutuals || []).map((u) => typeof u === "string" ? u : u.username);
-          const currentMutualNames = network.mutuals.map((u) => u.username);
-          const rawNewMutualNames = Utils.diff(currentMutualNames, prevMutualNames);
-          const newMutualNames = rawNewMutualNames.filter((u) => !globalRenamedNewSet.has(u));
-          const currentMutualsMap = new Map();
-          network.mutuals.forEach((u) => currentMutualsMap.set(u.username, u));
-          newMutualsDetailed = newMutualNames.map((name) => currentMutualsMap.get(name) || {
-            username: name,
-            url: `https://www.instagram.com/${name}/`
-          });
-          UI.targetLog(`[Diff Results] Gained: +${newFollowersDetailed.length} followers | Lost: -${lostFollowersDetailed.length} followers | New Mutuals: +${newMutualsDetailed.length}`);
+          const scanNewMutuals = currMutuals.filter((u) => {
+            const lower = u.username.toLowerCase();
+            if (u.id && prevMutualIdsSet.has(String(u.id))) return false;
+            return !prevMutualsLowerSet.has(lower) && !mutualRenamedNewLower.has(lower);
+          }).map((u) => ({ ...u, date: todayLocalStr }));
+          lastAuditDelta = {
+            gainedFollowers: scanNewFollowers.length,
+            lostFollowers: scanLostFollowers.length,
+            gainedFollowing: scanNewFollowing.length,
+            lostFollowing: scanLostFollowing.length,
+            newMutuals: scanNewMutuals.length,
+            renamed: renameByOldLower.size
+          };
+          const mergeActiveGains = (prevGains, scanGains, activeLookupMap) => {
+            const mergedByLower = new Map();
+            Utils.toDetailedUserArray(prevGains || []).forEach((item) => {
+              const ren = renameByOldLower.get(item.username.toLowerCase());
+              const targetLower = (ren ? ren.newUsername : item.username).toLowerCase();
+              const live = activeLookupMap.get(targetLower);
+              if (!live) return;
+              mergedByLower.set(targetLower, {
+                ...item,
+                ...live,
+                date: item.date ? Utils.localDateStr(item.date) : todayLocalStr
+              });
+            });
+            scanGains.forEach((item) => {
+              const lower = item.username.toLowerCase();
+              if (mergedByLower.has(lower)) mergedByLower.delete(lower);
+              mergedByLower.set(lower, item);
+            });
+            const arr = Utils.toDetailedUserArray(Array.from(mergedByLower.values()));
+            return arr.length > MAX_TRACKED_DIFF_ITEMS ? arr.slice(arr.length - MAX_TRACKED_DIFF_ITEMS) : arr;
+          };
+          const mergeActiveLosses = (prevLosses, scanLosses, activeLookupMap, secondaryLookupMap) => {
+            const mergedByLower = new Map();
+            Utils.toDetailedUserArray(prevLosses || []).forEach((item) => {
+              const ren = renameByOldLower.get(item.username.toLowerCase());
+              const resolvedName = ren ? ren.newUsername : item.username;
+              const targetLower = resolvedName.toLowerCase();
+              if (activeLookupMap.has(targetLower)) return;
+              if (item.id && Array.from(activeLookupMap.values()).some((u) => u.id && String(u.id) === String(item.id))) return;
+              const secondaryLive = secondaryLookupMap ? secondaryLookupMap.get(targetLower) : null;
+              mergedByLower.set(targetLower, {
+                ...item,
+                ...secondaryLive || {},
+                username: resolvedName,
+                url: `https://www.instagram.com/${encodeURIComponent(resolvedName)}/`,
+                date: item.date ? Utils.localDateStr(item.date) : todayLocalStr
+              });
+            });
+            scanLosses.forEach((item) => {
+              const lower = item.username.toLowerCase();
+              if (mergedByLower.has(lower)) mergedByLower.delete(lower);
+              mergedByLower.set(lower, item);
+            });
+            const arr = Utils.toDetailedUserArray(Array.from(mergedByLower.values()));
+            return arr.length > MAX_TRACKED_DIFF_ITEMS ? arr.slice(arr.length - MAX_TRACKED_DIFF_ITEMS) : arr;
+          };
+          newFollowersDetailed = mergeActiveGains(prevData.newFollowers, scanNewFollowers, currFollowersByLower);
+          lostFollowersDetailed = mergeActiveLosses(prevData.lostFollowers, scanLostFollowers, currFollowersByLower, currFollowingByLower);
+          newMutualsDetailed = mergeActiveGains(prevData.newMutuals, scanNewMutuals, currMutualsByLower);
+          newFollowingDetailed = mergeActiveGains(prevData.newFollowing, scanNewFollowing, currFollowingByLower);
+          lostFollowingDetailed = mergeActiveLosses(prevData.lostFollowing, scanLostFollowing, currFollowingByLower, currFollowersByLower);
+          const formatPreviewList = (arr, limit = 5) => {
+            const names = (arr || []).slice(0, limit).map((u) => `@${u.username}`);
+            const extra = (arr || []).length - names.length;
+            return extra > 0 ? `${names.join(", ")} (+${extra} more)` : names.join(", ");
+          };
+          if (renameByOldLower.size > 0) {
+            const renamePairs = Array.from(renameByOldLower.values()).slice(0, 5).map((r) => `@${r.oldUsername} -> @${r.newUsername}`);
+            const extraRenames = renameByOldLower.size - renamePairs.length;
+            UI.targetLog(`[Network Renames] Detected ${renameByOldLower.size} username change(s) in @${validatedUser.username}'s network: ${renamePairs.join(", ")}${extraRenames > 0 ? ` (+${extraRenames} more)` : ""}.`);
+          }
+          if (scanNewMutuals.length > 0) {
+            UI.targetLog(`[New Mutuals] Detected +${scanNewMutuals.length} new mutual connection(s) for @${validatedUser.username}: ${formatPreviewList(scanNewMutuals)} (added to 'New Mutuals' tab).`);
+          }
+          if (scanNewFollowers.length > 0) {
+            UI.targetLog(`[New Followers] Detected +${scanNewFollowers.length} new follower(s): ${formatPreviewList(scanNewFollowers)}.`);
+          }
+          if (scanLostFollowers.length > 0) {
+            UI.targetLog(`[Lost Followers] Detected -${scanLostFollowers.length} lost follower(s): ${formatPreviewList(scanLostFollowers)}.`);
+          }
+          UI.targetLog(`[Diff Results] This scan: +${scanNewFollowers.length} followers, -${scanLostFollowers.length} lost, +${scanNewMutuals.length} new mutuals | Active tracked: +${newFollowersDetailed.length} followers / -${lostFollowersDetailed.length} lost / +${newMutualsDetailed.length} new mutuals`);
         } else {
           UI.targetLog("[Diff Results] Initial baseline recorded for @" + validatedUser.username + ".");
         }
-        const viewerSnapshot = Storage.load();
-        if (viewerSnapshot && Array.isArray(viewerSnapshot.followers) && Array.isArray(viewerSnapshot.following)) {
-          const viewerFollowers = new Set(viewerSnapshot.followers);
-          const viewerFollowing = new Set(viewerSnapshot.following);
-          network.mutuals.forEach((m) => {
-            m.isViewerMutual = viewerFollowers.has(m.username) && viewerFollowing.has(m.username);
-          });
-        }
-        const todayStr = Utils.now().split("T")[0];
-        const history = Array.isArray(prevData.history) ? [...prevData.history] : [];
-        const existHistIdx = history.findIndex((h) => h.date === todayStr);
-        const histEntry = {
-          date: todayStr,
-          followers: network.followers.length,
-          following: network.following.length,
-          mutuals: network.mutuals.length
-        };
-        if (existHistIdx > -1) {
-          history[existHistIdx] = histEntry;
-        } else {
-          history.push(histEntry);
-        }
-        if (Array.isArray(network.followers) && network.followers.length > 0) {
-          validatedUser.followerCount = Math.max(validatedUser.followerCount || 0, network.followers.length);
-        }
-        if (Array.isArray(network.following) && network.following.length > 0) {
-          validatedUser.followingCount = Math.max(validatedUser.followingCount || 0, network.following.length);
-        }
+        const authoritativeFollowersCount = Math.max(Number(validatedUser.followerCount) || 0, currFollowers.length);
+        const authoritativeFollowingCount = Math.max(Number(validatedUser.followingCount) || 0, currFollowing.length);
+        validatedUser.headerFollowerCount = Number(validatedUser.followerCount) || authoritativeFollowersCount;
+        validatedUser.headerFollowingCount = Number(validatedUser.followingCount) || authoritativeFollowingCount;
+        validatedUser.followerCount = authoritativeFollowersCount;
+        validatedUser.followingCount = authoritativeFollowingCount;
+        validatedUser.extractedFollowersCount = currFollowers.length;
+        validatedUser.extractedFollowingCount = currFollowing.length;
+        const history = Storage.upsertHistoryRecord(prevData.history || [], {
+          followers: authoritativeFollowersCount,
+          following: authoritativeFollowingCount,
+          mutuals: currMutuals.length,
+          scanSummary: {
+            gained: lastAuditDelta.gainedFollowers,
+            lost: lastAuditDelta.lostFollowers,
+            deactivated: 0,
+            blocked: 0,
+            renamed: lastAuditDelta.renamed
+          }
+        });
         const targetData = {
           user: validatedUser,
           username: validatedUser.username,
           isRestricted: false,
-          followers: network.followers,
-          following: network.following,
-          mutuals: network.mutuals,
+          followers: currFollowers,
+          following: currFollowing,
+          mutuals: currMutuals,
           newFollowers: newFollowersDetailed,
           lostFollowers: lostFollowersDetailed,
           newMutuals: newMutualsDetailed,
+          newFollowing: newFollowingDetailed,
+          lostFollowing: lostFollowingDetailed,
+          lastAuditDelta,
           history,
           lastAuditAt: Utils.now()
         };
-        Storage.syncFreshUserData([...network.followers, ...network.following]);
+        Storage.syncFreshUserData([...currFollowers, ...currFollowing]);
         Storage.saveTargetData(validatedUser.username, targetData);
         const finalSummaryBar = document.getElementById("ig-target-meta-summary");
         if (finalSummaryBar) {
           let summaryHtml = '<span class="ig-target-meta-user">@' + Utils.escapeHtml(validatedUser.username) + "</span>";
+          if (validatedUser.previousUsername) {
+            summaryHtml += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + Utils.escapeHtml(validatedUser.previousUsername) + '">Formerly @' + Utils.escapeHtml(validatedUser.previousUsername) + "</span>";
+          }
           if (validatedUser.fullName) {
             summaryHtml += '<span class="ig-target-meta-name">' + Utils.escapeHtml(validatedUser.fullName) + "</span>";
           }
@@ -5601,7 +9253,7 @@ targetRunning: false,
         UI.renderTargetOverview(targetData);
         UI.renderTargetLists(targetData);
         UI.renderTargetTrackerMainView();
-        UI.targetLog(`[Audit Finished] Successfully audited @${validatedUser.username} (${network.followers.length} followers, ${network.following.length} following, ${network.mutuals.length} mutuals).`);
+        UI.targetLog(`[Audit Finished] Successfully audited @${validatedUser.username} (${authoritativeFollowersCount} followers, ${authoritativeFollowingCount} following, ${currMutuals.length} mutuals).`);
         UI.setTargetStatus("Audit Completed");
         const overviewTab = document.querySelector('#ig-target-tabs [data-target="ig-target-view-overview"]');
         if (overviewTab) overviewTab.click();
@@ -5628,35 +9280,60 @@ targetRunning: false,
       if (btnRun) btnRun.onclick = App.run;
       const btnExport = document.getElementById("ig-export-csv");
       if (btnExport) btnExport.onclick = () => {
-        const activeUsers = typeof UI.getActiveViewUsers === "function" ? UI.getActiveViewUsers() : null;
-        const resultsToExport = activeUsers && activeUsers.length > 0 ? activeUsers : App.lastResults || window.__igLastResults;
-        if (resultsToExport && resultsToExport.length > 0) {
-          const dateStr = Utils.now().split("T")[0];
-          Utils.exportCSV(resultsToExport, "ig_analysis_" + dateStr + ".csv");
-          UI.log("CSV Exported (" + resultsToExport.length + " accounts).");
+        const ctx = typeof UI.getActiveExportContext === "function" ? UI.getActiveExportContext() : { mode: "none", slug: null, items: [] };
+        if (!ctx || !Array.isArray(ctx.items) || ctx.items.length === 0) {
+          UI.log("[INFO] No data in the active view to export.");
+          return;
         }
+        const dateStr = Utils.localDateStr();
+        if (ctx.mode === "history") {
+          Utils.exportHistoryCSV(ctx.items, `ig_history_${dateStr}.csv`);
+          UI.log(`CSV Exported (${ctx.items.length} history entries).`);
+          return;
+        }
+        const slug = ctx.slug || "analysis";
+        Utils.exportCSV(ctx.items, `ig_${slug}_${dateStr}.csv`);
+        UI.log(`CSV Exported (${ctx.items.length} accounts from ${slug}).`);
       };
       const btnReset = document.getElementById("ig-reset");
       if (btnReset) {
         btnReset.onclick = async () => {
           const confirmed = await UI.confirmAction(
             "Delete All Data",
-            "This action will wipe all your history, logs, and whitelists.<br><br>Are you sure you want to proceed?",
+            "This action will wipe all your history, logs, and whitelists for the active account.<br><br>Are you sure you want to proceed?",
             "Yes, Delete"
           );
           if (confirmed) {
             Storage.resetAll();
+            UI.paginationState = {};
+            UI.targetPaginationState = {};
+            UI.whitelistSearchQuery = "";
+            UI.currentTargetUser = null;
+            App.lastResults = [];
+            if (typeof window !== "undefined") window.__igLastResults = [];
             if (typeof API.clearFriendshipCache === "function") {
               API.clearFriendshipCache();
             }
-            UI.log("[INFO] Data reset.");
-            const mainPanel = document.getElementById("ig-analyzer-panel");
-            if (mainPanel) {
-              mainPanel.querySelectorAll(".ig-view-container").forEach((el) => {
-                if (el.id !== "ig-log") el.innerHTML = "";
-              });
+            const subpanel2 = document.getElementById("ig-target-subpanel");
+            if (subpanel2) subpanel2.style.display = "none";
+            UI.renderHistory([]);
+            UI.renderNominalList([], "ig-view-unfollowers", "Recent Unfollowers");
+            UI.renderNominalList([], "ig-view-deactivated", "Deactivated Accounts");
+            UI.renderNominalList([], "ig-view-blocked", "Blocked Accounts");
+            UI.renderRenamedList([], "ig-view-renamed", "Username Changes");
+            UI.renderNewFollowers([]);
+            UI.renderWhitelist([]);
+            if (typeof UI.renderTargetTrackerMainView === "function") {
+              UI.renderTargetTrackerMainView();
             }
-            if (btnExport) btnExport.disabled = true;
+            UI.renderPersistedSnapshot(null);
+            if (typeof UI.updateMainTabCounts === "function") {
+              UI.updateMainTabCounts();
+            }
+            if (typeof UI.syncMainExportButton === "function") {
+              UI.syncMainExportButton();
+            }
+            UI.log("[INFO] Data reset.");
           }
         };
       }
@@ -5713,8 +9390,9 @@ targetRunning: false,
             }
             if (window.__igLastResults) {
               window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
-              const exportBtn = document.getElementById("ig-export-csv");
-              if (exportBtn) exportBtn.disabled = window.__igLastResults.length === 0;
+            }
+            if (typeof UI.syncMainExportButton === "function") {
+              UI.syncMainExportButton();
             }
             const row = btnWl.closest(".ig-user-row");
             if (row) {
@@ -5756,11 +9434,14 @@ targetRunning: false,
             }
             const snapshot = Storage.load();
             if (snapshot && Array.isArray(snapshot.following) && Array.isArray(snapshot.followers)) {
-              if (snapshot.following.includes(targetUser) && !snapshot.followers.includes(targetUser)) {
+              const targetLower = targetUser.toLowerCase();
+              const inFollowing = snapshot.following.some((x) => String(typeof x === "string" ? x : x?.username || "").toLowerCase() === targetLower);
+              const inFollowers = snapshot.followers.some((x) => String(typeof x === "string" ? x : x?.username || "").toLowerCase() === targetLower);
+              if (inFollowing && !inFollowers) {
                 const notFollowingState = UI.paginationState["ig-view-notfollowing"];
                 if (notFollowingState && Array.isArray(notFollowingState.rawUsers)) {
-                  if (!notFollowingState.rawUsers.some((u) => u.username === targetUser)) {
-                    const knownObj = (snapshot.followingDetailed || []).find((u) => u.username === targetUser) || {
+                  if (!notFollowingState.rawUsers.some((u) => String(u.username || "").toLowerCase() === targetLower)) {
+                    const knownObj = (snapshot.followingDetailed || []).find((u) => String(u?.username || "").toLowerCase() === targetLower) || (typeof Storage.findKnownUserByUsername === "function" ? Storage.findKnownUserByUsername(targetUser) : null) || {
                       username: targetUser,
                       url: "https://www.instagram.com/" + targetUser + "/"
                     };
@@ -5771,6 +9452,9 @@ targetRunning: false,
                   }
                 }
               }
+            }
+            if (typeof UI.syncMainExportButton === "function") {
+              UI.syncMainExportButton();
             }
             return;
           }
@@ -5789,21 +9473,24 @@ targetRunning: false,
               UI.renderWhitelist([]);
               const snap = Storage.load();
               if (snap && Array.isArray(snap.following) && Array.isArray(snap.followers)) {
-                const following = snap.following;
-                const followers = snap.followers;
-                const notFollowingBackUsernames = Utils.diff(following, followers);
+                const followingNames = snap.following.map((x) => typeof x === "string" ? x : x?.username).filter(Boolean);
+                const followerNames = snap.followers.map((x) => typeof x === "string" ? x : x?.username).filter(Boolean);
+                const notFollowingBackUsernames = Utils.diff(followingNames, followerNames);
                 const allUsersMap = new Map();
                 [...snap.followingDetailed || [], ...snap.followersDetailed || []].forEach((u) => {
-                  if (u?.username) allUsersMap.set(u.username, u);
+                  if (u?.username) allUsersMap.set(u.username.toLowerCase(), u);
                 });
                 const restored = notFollowingBackUsernames.map((u) => ({
-                  ...allUsersMap.get(u) || {},
+                  ...allUsersMap.get(String(u).toLowerCase()) || {},
                   username: u,
                   url: "https://www.instagram.com/" + u + "/"
                 }));
                 UI.renderResults(restored, "Not Following You Back", "ig-view-notfollowing", true);
                 App.lastResults = restored;
                 window.__igLastResults = restored;
+              }
+              if (typeof UI.syncMainExportButton === "function") {
+                UI.syncMainExportButton();
               }
             }
             return;
@@ -5824,7 +9511,8 @@ targetRunning: false,
             e.preventDefault();
             e.stopPropagation();
             const username = btnCardOpen.getAttribute("data-username");
-            if (username) App.openTargetAudit(username, null, false);
+            const userId = btnCardOpen.getAttribute("data-user-id");
+            if (username) App.openTargetAudit(username, userId || null, false);
             return;
           }
           const btnCardRefresh = e.target.closest(".btn-target-card-refresh");
@@ -5832,7 +9520,8 @@ targetRunning: false,
             e.preventDefault();
             e.stopPropagation();
             const username = btnCardRefresh.getAttribute("data-username");
-            if (username) App.openTargetAudit(username, null, true);
+            const userId = btnCardRefresh.getAttribute("data-user-id");
+            if (username) App.openTargetAudit(username, userId || null, true);
             return;
           }
           const btnCardDelete = e.target.closest(".btn-target-card-delete");
@@ -5840,6 +9529,7 @@ targetRunning: false,
             e.preventDefault();
             e.stopPropagation();
             const username = btnCardDelete.getAttribute("data-username");
+            const userId = btnCardDelete.getAttribute("data-user-id");
             if (username) {
               const confirmed = await UI.confirmAction(
                 "Remove Monitored Target",
@@ -5849,7 +9539,7 @@ targetRunning: false,
                 Icons.trash
               );
               if (confirmed) {
-                Storage.removeTargetData(username);
+                Storage.removeTargetData(username, null, userId || null);
                 UI.renderTargetTrackerMainView();
                 UI.log(`[INFO] @${username} removed from monitored targets.`);
               }
@@ -5872,6 +9562,45 @@ targetRunning: false,
             if (cId) UI.changePage(cId, 1);
             return;
           }
+          const btnMainJump = e.target.closest(".ig-kpi-jump-btn[data-main-tab]");
+          if (btnMainJump) {
+            e.preventDefault();
+            e.stopPropagation();
+            const destId = btnMainJump.getAttribute("data-main-tab");
+            const tabBtn = destId ? panel.querySelector(`#ig-tabs .ig-tab-btn[data-target="${destId}"]`) : null;
+            if (tabBtn) tabBtn.click();
+            return;
+          }
+          const btnClearNominal = e.target.closest(".ig-btn-clear-nominal[data-clear-key]");
+          if (btnClearNominal) {
+            e.preventDefault();
+            e.stopPropagation();
+            const clearKey = btnClearNominal.getAttribute("data-clear-key");
+            const cId = btnClearNominal.getAttribute("data-container") || "";
+            const viewTitle = btnClearNominal.getAttribute("data-title") || "Records";
+            if (!clearKey) return;
+            const confirmed = await UI.confirmAction(
+              `Clear ${viewTitle}`,
+              `Are you sure you want to clear all saved entries in <b>${Utils.escapeHtml(viewTitle)}</b>?<br><br>Your main audience snapshot and other tabs will remain intact.`,
+              "Yes, Clear",
+              true,
+              Icons.trash
+            );
+            if (confirmed) {
+              Storage.clearNominalList(clearKey);
+              if (cId === "ig-view-renamed") {
+                UI.renderRenamedList([], cId, viewTitle);
+              } else if (cId) {
+                UI.renderNominalList([], cId, viewTitle, { storageKey: clearKey });
+              }
+              UI.renderHistory(Storage.getHistory());
+              if (typeof UI.updateMainTabCounts === "function") {
+                UI.updateMainTabCounts();
+              }
+              UI.log(`[INFO] Cleared ${viewTitle}.`);
+            }
+            return;
+          }
           const btnTargetSearch = e.target.closest("#ig-btn-target-search, .btn-target-search");
           if (btnTargetSearch) {
             e.preventDefault();
@@ -5884,7 +9613,8 @@ targetRunning: false,
             e.preventDefault();
             e.stopPropagation();
             const username = targetCard.getAttribute("data-username");
-            if (username) App.openTargetAudit(username, null, false);
+            const userId = targetCard.getAttribute("data-user-id");
+            if (username) App.openTargetAudit(username, userId || null, false);
             return;
           }
         });
@@ -5953,14 +9683,37 @@ targetRunning: false,
             if (listToExport && listToExport.length > 0) {
               const targetName = UI.currentTargetUser?.username || "target";
               const activeTab = subpanel.querySelector("#ig-target-tabs .ig-tab-btn.active");
-              const tabLabel = activeTab ? activeTab.innerText.trim().toLowerCase().replace(/\s+/g, "_") : "list";
-              const dateStr = Utils.now().split("T")[0];
+              const rawLabel = activeTab?.querySelector(".ig-tab-label")?.textContent || activeTab?.innerText || "list";
+              const tabLabel = rawLabel.trim().toLowerCase().replace(/\s+/g, "_");
+              const dateStr = Utils.localDateStr();
               Utils.exportCSV(listToExport, `@${targetName}_${tabLabel}_${dateStr}.csv`);
               UI.targetLog(`CSV Exported (${listToExport.length} accounts).`);
             }
           };
         }
         subpanel.addEventListener("click", async (e) => {
+          const btnSpy = e.target.closest(".btn-spy-story, .ig-btn-spy-story");
+          if (btnSpy) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (btnSpy.disabled) return;
+            const username = btnSpy.getAttribute("data-user");
+            const userId = btnSpy.getAttribute("data-user-id");
+            if (!username) return;
+            await App.runStorySpy(username, btnSpy, userId);
+            return;
+          }
+          const btnTargetAudit = e.target.closest(".btn-target-audit, .ig-btn-target-audit");
+          if (btnTargetAudit) {
+            e.preventDefault();
+            e.stopPropagation();
+            const username = btnTargetAudit.getAttribute("data-user");
+            const userId = btnTargetAudit.getAttribute("data-user-id");
+            if (username) {
+              App.openTargetAudit(username, userId, false);
+            }
+            return;
+          }
           const inspectTrigger = e.target.closest(".ig-user-avatar-trigger, .btn-inspect-user, .ig-btn-inspect-user");
           if (inspectTrigger) {
             e.preventDefault();
@@ -5981,6 +9734,15 @@ targetRunning: false,
               userObj.containerId = containerId;
             }
             UI.openHdPhotoModal(userObj);
+            return;
+          }
+          const btnTargetJump = e.target.closest(".ig-kpi-jump-btn[data-target-tab]");
+          if (btnTargetJump) {
+            e.preventDefault();
+            e.stopPropagation();
+            const destId = btnTargetJump.getAttribute("data-target-tab");
+            const tabBtn = destId ? subpanel.querySelector(`#ig-target-tabs .ig-tab-btn[data-target="${destId}"]`) : null;
+            if (tabBtn) tabBtn.click();
             return;
           }
           const btnPrev = e.target.closest(".ig-target-page-prev");
@@ -6019,7 +9781,7 @@ targetRunning: false,
       }, true);
     }
   });
-  const TOUR_SEEN_KEY = "ig_tour_completed_v1";
+  const TOUR_SEEN_KEY = CONFIG.TOUR_KEY;
   function getTamperGuide() {
     if (typeof window !== "undefined" && typeof window.tamperGuide === "function") {
       return window.tamperGuide;
@@ -6035,7 +9797,7 @@ targetRunning: false,
         id: "welcome",
         popover: {
           title: "Welcome to IG Analyzer!",
-          description: "Welcome to version 3.13.1! This complete guided tour walks you through every feature of your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>Let's get started!"
+          description: "Welcome to version 3.13.2! This complete guided tour walks you through every feature of your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>Let's get started!"
         }
       },
       {
@@ -6071,7 +9833,7 @@ targetRunning: false,
             content: "Click to Run Analysis",
             theme: "accent",
             position: "bottom",
-            icon: "🚀"
+            icon: Icons.play
           },
           dismissOnClick: true
         },

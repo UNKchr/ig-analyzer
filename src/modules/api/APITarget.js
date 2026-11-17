@@ -31,19 +31,18 @@ Object.assign(API, {
         let resolvedId = (options.userId && String(options.userId) !== "0" && String(options.userId) !== "null")
             ? String(options.userId).trim()
             : null;
+        let resolvedFromKnownSource = Boolean(resolvedId);
 
         if (cleanUserLower !== viewerName && viewerId && String(resolvedId) === String(viewerId)) {
             resolvedId = null;
+            resolvedFromKnownSource = false;
         }
 
-        if (!resolvedId && snap) {
-            const findInSnap = (list) => Array.isArray(list) ? list.find((u) => {
-                const name = typeof u === 'string' ? u : u?.username;
-                return name && name.toLowerCase() === cleanUserLower && u?.id && String(u.id) !== String(viewerId);
-            }) : null;
-            const matchUser = findInSnap(snap.following) || findInSnap(snap.followers);
-            if (matchUser && matchUser.id) {
-                resolvedId = String(matchUser.id);
+        if (!resolvedId && typeof Storage.findKnownUserByUsername === 'function') {
+            const knownUser = Storage.findKnownUserByUsername(cleanUser);
+            if (knownUser?.id && String(knownUser.id) !== "0" && (cleanUserLower === viewerName || String(knownUser.id) !== String(viewerId))) {
+                resolvedId = String(knownUser.id);
+                resolvedFromKnownSource = true;
             }
         }
 
@@ -51,6 +50,7 @@ Object.assign(API, {
             const existingTarget = Storage.getTargetData(cleanUser);
             if (existingTarget?.user?.id && (cleanUserLower === viewerName || String(existingTarget.user.id) !== String(viewerId))) {
                 resolvedId = String(existingTarget.user.id);
+                resolvedFromKnownSource = true;
             }
         }
 
@@ -68,6 +68,7 @@ Object.assign(API, {
         // Final viewer ID guard on resolvedId
         if (cleanUserLower !== viewerName && viewerId && String(resolvedId) === String(viewerId)) {
             resolvedId = null;
+            resolvedFromKnownSource = false;
         }
 
         // 2. If ID resolved, use reliable RelayModern GraphQL + REST Friendship Status
@@ -76,16 +77,27 @@ Object.assign(API, {
                 const profile = await API.fetchUserProfileHd(resolvedId, cleanUser, { ...options, forceRefresh: true });
                 if (profile) {
                     const profileUsername = (profile.username || '').toLowerCase();
-                    // STRICT CHECK: Ensure profile username matches target and is not viewer
-                    if (profileUsername && profileUsername !== cleanUserLower) {
-                        return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
-                    }
                     if (cleanUserLower !== viewerName && viewerId && String(profile.id) === String(viewerId)) {
                         return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
                     }
 
-                    let isFollowing = isFollowingInSnap;
-                    let isFollowedBy = isFollowerInSnap;
+                    const sameNumericId = Boolean(profile.id && String(profile.id) === String(resolvedId));
+                    if (profileUsername && profileUsername !== cleanUserLower && !sameNumericId && !resolvedFromKnownSource) {
+                        return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
+                    }
+
+                    const isRenamedTarget = Boolean(profileUsername && profileUsername !== cleanUserLower && (sameNumericId || resolvedFromKnownSource));
+                    const isFollowingInSnapCurrent = isRenamedTarget && Array.isArray(snap?.following) && snap.following.some((u) => {
+                        const name = typeof u === 'string' ? u : u?.username;
+                        return name && name.toLowerCase() === profileUsername;
+                    });
+                    const isFollowerInSnapCurrent = isRenamedTarget && Array.isArray(snap?.followers) && snap.followers.some((u) => {
+                        const name = typeof u === 'string' ? u : u?.username;
+                        return name && name.toLowerCase() === profileUsername;
+                    });
+
+                    let isFollowing = isFollowingInSnap || isFollowingInSnapCurrent;
+                    let isFollowedBy = isFollowerInSnap || isFollowerInSnapCurrent;
                     let isPrivate = Boolean(profile.isPrivate);
 
                     // Fetch authoritative friendship status from official REST endpoint
@@ -112,9 +124,11 @@ Object.assign(API, {
 
                     return {
                         exists: true,
+                        ...(isRenamedTarget ? { renamedFrom: cleanUser } : {}),
                         user: {
                             id: resolvedId,
                             username: profile.username || cleanUser,
+                            ...(isRenamedTarget ? { previousUsername: cleanUser } : {}),
                             fullName: profile.fullName || '',
                             isPrivate,
                             isVerified: Boolean(profile.isVerified),
@@ -212,15 +226,21 @@ Object.assign(API, {
                     return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
                 }
 
-                if (!html.includes(`/${cleanUser}/`) && !html.includes(`"${cleanUser}"`)) {
-                    return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
+                // Profile page loaded: try to recover the numeric ID from SSR HTML and retry the reliable GraphQL profile query
+                const idMatch = html.match(/\\?"profile_id\\?"\s*:\s*\\?"([1-9][0-9]{4,})\\?"/) ||
+                                html.match(/\\?"target_id\\?"\s*:\s*\\?"([1-9][0-9]{4,})\\?"/) ||
+                                html.match(new RegExp(`\\\\?"username\\\\?"\\s*:\\s*\\\\?"${cleanUser.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\\\?"[\\s\\S]{0,400}?\\\\?"(?:id|pk)\\\\?"\\s*:\\s*\\\\?"([1-9][0-9]{4,})\\\\?"`, 'i'));
+                const htmlId = idMatch?.[1] || null;
+                if (htmlId && !options._htmlRetry && (cleanUserLower === viewerName || htmlId !== String(viewerId))) {
+                    return API.validateTargetAccount(cleanUser, { ...options, userId: htmlId, _htmlRetry: true });
                 }
             }
         } catch (e) {
             if (e.name === 'AbortError' || options.signal?.aborted) throw e;
         }
 
-        return { exists: false, notFound: true, error: `Account @${cleanUser} does not exist on Instagram.` };
+        // Could not confirm either way: never claim the account doesn't exist without explicit 404 evidence
+        return { exists: false, error: `Could not verify @${cleanUser} right now (Instagram did not return profile data). Please try again in a few minutes.` };
     },
 
     fetchTargetNetwork: async (targetUser, options = {}, progressCallback = null, logCallback = null) => {
@@ -248,75 +268,85 @@ Object.assign(API, {
 
         log(`[Extraction] Beginning extraction for target account @${targetUser.username}...`);
 
-        const extractList = async (label, expectedTotal) => {
-            const users = [];
-            let maxId = null;
-            let hasNext = true;
-            const endpoint = label === "following" ? "following" : "followers";
+        const expectedFollowers = Number(targetUser.followerCount || 0);
+        const expectedFollowing = Number(targetUser.followingCount || 0);
 
-            while (hasNext) {
-                if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-
-                let url = `https://www.instagram.com/api/v1/friendships/${targetUser.id}/${endpoint}/?count=50&search_surface=follow_list_page`;
-                if (maxId) {
-                    url += `&max_id=${encodeURIComponent(maxId)}`;
-                }
-
-                const json = await API.fetchWithRetry(url, options);
-                const list = json?.users;
-
-                if (!Array.isArray(list)) {
-                    log(`[Warning] Received non-array response for ${label}.`);
-                    break;
-                }
-
-                list.forEach((u) => {
-                    const username = u?.username;
-                    if (!username) return;
-                    users.push({
-                        id: u?.pk ? String(u.pk) : (u?.id ? String(u.id) : null),
-                        username: String(username),
-                        fullName: u?.full_name || "",
-                        isPrivate: Boolean(u?.is_private),
-                        isVerified: Boolean(u?.is_verified),
-                        profilePicUrl: u?.profile_pic_url || null,
-                        latestReelMedia: u?.latest_reel_media || 0
-                    });
-                });
-
-                maxId = json?.next_max_id || null;
-                hasNext = Boolean(maxId);
-
-                const total = expectedTotal > 0 ? expectedTotal : 0;
-                setProgress(users.length, total, `Extracting target ${label} (${users.length}${total > 0 ? '/' + total : ''})...`);
-
-                if (hasNext) {
-                    await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 800, options.signal);
-                }
+        log(`Extracting followers for @${targetUser.username} (expected: ~${expectedFollowers})...`);
+        const followersRes = await API.extractCompleteUserList(
+            targetUser.id,
+            CONFIG.FOLLOWERS_HASH,
+            "followers",
+            options,
+            expectedFollowers,
+            {
+                onProgress: (curr, total) => setProgress(curr, total, `Extracting target followers (${curr}${total > 0 ? '/' + total : ''})...`),
+                onLog: (msg) => log(msg)
             }
-
-            return users;
-        };
-
-        log(`Extracting followers for @${targetUser.username} (expected: ~${targetUser.followerCount || 0})...`);
-        const followers = await extractList("followers", targetUser.followerCount || 0);
+        );
+        const followers = followersRes.users;
         log(`Extracted ${followers.length} followers for @${targetUser.username}.`);
+        if (expectedFollowers > 0 && followers.length < expectedFollowers && !followersRes.rateLimited) {
+            if (followersRes.limitedByMeta || followersRes.isPartial) {
+                log(`[Meta Notice] Instagram restricted full follower enumeration for @${targetUser.username} (${followers.length}/${expectedFollowers} accessible).`);
+            } else {
+                log(`[Info] Profile header counter: ${expectedFollowers} followers | Accessible accounts returned by list API: ${followers.length}.`);
+            }
+        }
 
-        await Utils.sleep(1000 + Math.random() * 500, options.signal);
+        let followingRes;
+        if (followersRes.rateLimited) {
+            log(`[Anti-Ban Guard] Skipping 'following' extraction because rate limit (429) was detected during 'followers'.`);
+            followingRes = {
+                users: [],
+                isPartial: true,
+                rateLimited: true,
+                limitedByMeta: false
+            };
+        } else {
+            // Humanized pause simulating closing 'Followers' modal and opening 'Following' modal (2.0s - 3.2s)
+            await Utils.sleep(2000 + Math.random() * 1200, options.signal);
 
-        log(`Extracting following for @${targetUser.username} (expected: ~${targetUser.followingCount || 0})...`);
-        const following = await extractList("following", targetUser.followingCount || 0);
-        log(`Extracted ${following.length} following for @${targetUser.username}.`);
+            log(`Extracting following for @${targetUser.username} (expected: ~${expectedFollowing})...`);
+            followingRes = await API.extractCompleteUserList(
+                targetUser.id,
+                CONFIG.FOLLOWING_HASH,
+                "following",
+                options,
+                expectedFollowing,
+                {
+                    onProgress: (curr, total) => setProgress(curr, total, `Extracting target following (${curr}${total > 0 ? '/' + total : ''})...`),
+                    onLog: (msg) => log(msg)
+                }
+            );
+        }
+        const following = followingRes.users;
+        if (!followersRes.rateLimited) {
+            log(`Extracted ${following.length} following for @${targetUser.username}.`);
+        }
+        if (expectedFollowing > 0 && following.length < expectedFollowing && !followingRes.rateLimited) {
+            if (followingRes.limitedByMeta || followingRes.isPartial) {
+                log(`[Meta Notice] Instagram restricted full following enumeration for @${targetUser.username} (${following.length}/${expectedFollowing} accessible).`);
+            } else {
+                log(`[Info] Profile header counter: ${expectedFollowing} following | Accessible accounts returned by list API: ${following.length}.`);
+            }
+        }
 
-        const followerUsernames = new Set(followers.map((u) => u.username));
-        const mutuals = following.filter((u) => followerUsernames.has(u.username));
+        const followerIds = new Set(followers.map((u) => u.id).filter(Boolean));
+        const followerUsernamesLower = new Set(followers.map((u) => u.username.toLowerCase()));
+        const mutuals = following.filter((u) =>
+            (u.id && followerIds.has(u.id)) || followerUsernamesLower.has(u.username.toLowerCase())
+        );
         log(`Computed ${mutuals.length} mutual connections for @${targetUser.username}.`);
 
         return {
             followers,
             following,
             mutuals,
-            isRestricted: false
+            isRestricted: false,
+            isPartialFollowers: Boolean(followersRes.isPartial),
+            isPartialFollowing: Boolean(followingRes.isPartial),
+            isRateLimitedFollowers: Boolean(followersRes.rateLimited),
+            isRateLimitedFollowing: Boolean(followingRes.rateLimited)
         };
     }
 

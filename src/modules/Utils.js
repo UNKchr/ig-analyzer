@@ -18,6 +18,67 @@ export const Utils = {
         }
     }),
     now: () => (new Date()).toISOString(),
+
+    /**
+     * Returns a location-agnostic calendar date string (YYYY-MM-DD) in the viewer's local time zone.
+     * Uses Temporal.PlainDate / Temporal.Now when available and falls back to local Date calendar fields.
+     * @param {Date | string | number | null} [dateInput=null]
+     * @returns {string}
+     */
+    localDateStr: (dateInput = null) => {
+        if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+            return dateInput.trim();
+        }
+        try {
+            if (dateInput === null || dateInput === undefined) {
+                if (typeof globalThis.Temporal !== 'undefined' && typeof globalThis.Temporal.Now?.plainDateISO === 'function') {
+                    return globalThis.Temporal.Now.plainDateISO().toString();
+                }
+                const now = new Date();
+                return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            }
+
+            const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+            if (Number.isNaN(d.getTime())) {
+                return Utils.localDateStr(null);
+            }
+
+            if (typeof globalThis.Temporal !== 'undefined' && typeof globalThis.Temporal.Instant?.fromEpochMilliseconds === 'function') {
+                const tz = globalThis.Temporal.Now.timeZoneId();
+                return globalThis.Temporal.Instant.fromEpochMilliseconds(d.getTime())
+                    .toZonedDateTimeISO(tz)
+                    .toPlainDate()
+                    .toString();
+            }
+
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        } catch (e) {
+            const fallback = new Date();
+            return `${fallback.getFullYear()}-${String(fallback.getMonth() + 1).padStart(2, '0')}-${String(fallback.getDate()).padStart(2, '0')}`;
+        }
+    },
+
+    /**
+     * Returns wall-clock local time formatted as HH:MM:SS.
+     * @param {Date | string | number | null} [dateInput=null]
+     * @returns {string}
+     */
+    localTimeStr: (dateInput = null) => {
+        try {
+            if ((dateInput === null || dateInput === undefined) && typeof globalThis.Temporal !== 'undefined' && typeof globalThis.Temporal.Now?.plainTimeISO === 'function') {
+                const pt = globalThis.Temporal.Now.plainTimeISO();
+                return `${String(pt.hour).padStart(2, '0')}:${String(pt.minute).padStart(2, '0')}:${String(pt.second).padStart(2, '0')}`;
+            }
+            const d = (dateInput === null || dateInput === undefined)
+                ? new Date()
+                : (dateInput instanceof Date ? dateInput : new Date(dateInput));
+            if (Number.isNaN(d.getTime())) return '';
+            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+        } catch (e) {
+            return '';
+        }
+    },
+
     log: (msg) => console.log(`[IG Analyzer] ${msg}`),
     logError: (msg, err) => console.error(`[IG Analyzer Error] ${msg}`, err),
 
@@ -166,6 +227,74 @@ export const Utils = {
         return '';
     },
 
+    generateUuid: () => {
+        try {
+            if (typeof globalThis.crypto?.randomUUID === 'function') {
+                return globalThis.crypto.randomUUID();
+            }
+        } catch (e) {}
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+            const r = Math.floor(Math.random() * 16);
+            const v = c === 'x' ? r : ((r & 0x3) | 0x8);
+            return v.toString(16);
+        });
+    },
+
+    /**
+     * Dynamically resolves the active numeric Relay GraphQL doc_id for a given Polaris operation
+     * directly from Instagram's live module loader (`unsafeWindow.require`) or inline bundles,
+     * falling back safely when running offline or in test harnesses.
+     * @param {string} operationName
+     * @param {string | null} [fallbackDocId=null]
+     * @returns {string | null}
+     */
+    getRelayDocId: (operationName, fallbackDocId = null) => {
+        if (!operationName || typeof operationName !== 'string') return fallbackDocId;
+        const isNumericDocId = (val) => val !== null && val !== undefined && /^[0-9]{10,25}$/.test(String(val).trim());
+
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            if (typeof win?.require === 'function') {
+                const candidateModules = [
+                    `${operationName}_instagramRelayOperation`,
+                    `${operationName}$Parameters`,
+                    operationName
+                ];
+                for (const modName of candidateModules) {
+                    try {
+                        const mod = win.require(modName);
+                        if (isNumericDocId(mod)) return String(mod).trim();
+                        if (isNumericDocId(mod?.default)) return String(mod.default).trim();
+                        if (isNumericDocId(mod?.params?.id)) return String(mod.params.id).trim();
+                        if (isNumericDocId(mod?.default?.params?.id)) return String(mod.default.params.id).trim();
+                        if (isNumericDocId(mod?.id)) return String(mod.id).trim();
+                    } catch (innerErr) {
+                        // Module may not be loaded in current chunk; continue checking candidates
+                    }
+                }
+            }
+        } catch (e) {}
+
+        try {
+            const scripts = document.querySelectorAll('script:not([src])');
+            const escapedOp = operationName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const opRegex = new RegExp(
+                `(?:"${escapedOp}_instagramRelayOperation"[^"0-9]{1,80}"([0-9]{10,25})")|(?:"name"\\s*:\\s*"${escapedOp}"[\\s\\S]{1,160}?"id"\\s*:\\s*"([0-9]{10,25})")`
+            );
+            for (const script of scripts) {
+                const text = script.textContent || '';
+                if (!text || !text.includes(operationName)) continue;
+                const match = text.match(opRegex);
+                const resolved = match?.[1] || match?.[2] || null;
+                if (isNumericDocId(resolved)) {
+                    return String(resolved).trim();
+                }
+            }
+        } catch (e) {}
+
+        return fallbackDocId;
+    },
+
     getUserId: () => {
         // 1. Check document.cookie (strictly non-zero)
         const matchCookie = document.cookie.match(/(?:^|;\s*)ds_user_id=([1-9][0-9]*)/);
@@ -173,13 +302,13 @@ export const Utils = {
             return matchCookie[1];
         }
 
-        // 2. Check window / unsafeWindow objects
+        // 2. Check window / unsafeWindow viewer objects (never rawProfileUser, which belongs to visited profiles)
         try {
             const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
             const viewerId = win._sharedData?.config?.viewerId || 
+                             win._sharedData?.config?.viewer?.id ||
                              win.__initialData?.pending?.viewer?.id || 
-                             win.__initialData?.data?.viewer?.id ||
-                             win._sharedData?.rawProfileUser?.id;
+                             win.__initialData?.data?.viewer?.id;
             if (viewerId && String(viewerId) !== "0" && /^[1-9][0-9]*$/.test(String(viewerId))) {
                 return String(viewerId);
             }
@@ -190,7 +319,7 @@ export const Utils = {
         } catch (e) {
         }
 
-        // 3. Search script tags for real, non-zero IDs
+        // 3. Search script tags for real, non-zero viewer IDs
         try {
             const scripts = document.querySelectorAll('script');
             for (const script of scripts) {
@@ -212,26 +341,16 @@ export const Utils = {
         } catch (e) {
         }
 
-        // 4. Meta tag (owner_user_id)
-        try {
-            const metaTag = document.querySelector('meta[property="instapp:owner_user_id"]');
-            if (metaTag && metaTag.content && metaTag.content !== "0" && /^[1-9][0-9]*$/.test(metaTag.content)) {
-                return metaTag.content;
-            }
-        } catch (e) {
-        }
-
         return null;
     },
 
     getUsername: () => {
-        // 1. Check window / unsafeWindow objects
+        // 1. Check window / unsafeWindow viewer objects (never rawProfileUser)
         try {
             const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
             const u = win._sharedData?.config?.viewer?.username || 
                       win.__initialData?.data?.viewer?.username || 
-                      win.__initialData?.pending?.viewer?.username ||
-                      win._sharedData?.rawProfileUser?.username;
+                      win.__initialData?.pending?.viewer?.username;
             if (u && typeof u === 'string') return u.trim();
         } catch (e) {}
 
@@ -345,79 +464,141 @@ export const Utils = {
     },
     unique: (arr) => [...new Set(arr)],
 
+    /**
+     * Normalizes and deduplicates an array of user strings or objects while preserving enriched badges/metadata.
+     * @param {Array<string | object>} arr
+     * @returns {Array<object>}
+     */
     toDetailedUserArray: (arr) => {
         if (!Array.isArray(arr)) return [];
-        return arr
-        .map((u) => {
+        const seenIds = new Set();
+        const seenUsernames = new Set();
+        const result = [];
+
+        for (const u of arr) {
+            let normalized = null;
             if (typeof u === "string") {
                 const cleanName = String(u).replace(/^@+/, '').trim();
-                return cleanName ? {
-                    id: null,
-                    username: cleanName,
-                    fullName: "",
-                    isPrivate: false,
-                    isVerified: false,
-                    profilePicUrl: null,
-                    latestReelMedia: 0,
-                    isBestie: false,
-                    outgoingRequest: false,
-                    url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
-                } : null;
-            }
-            if (u && typeof u === "object") {
+                if (cleanName) {
+                    normalized = {
+                        id: null,
+                        username: cleanName,
+                        fullName: "",
+                        isPrivate: false,
+                        isVerified: false,
+                        profilePicUrl: null,
+                        latestReelMedia: 0,
+                        isBestie: false,
+                        outgoingRequest: false,
+                        url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
+                    };
+                }
+            } else if (u && typeof u === "object") {
                 const rawName = u.username || u.name || '';
                 const cleanName = String(rawName).replace(/^@+/, '').trim();
-                if (!cleanName) return null;
-                const pic = Utils.sanitizeImageUrl(u.profilePicUrl || u.profile_pic_url || null);
-                return { 
-                    id: u.id ? String(u.id) : null, 
-                    username: cleanName,
-                    fullName: u.fullName || u.full_name || "",
-                    isPrivate: Boolean(u.isPrivate ?? u.is_private),
-                    isVerified: Boolean(u.isVerified ?? u.is_verified),
-                    profilePicUrl: pic,
-                    latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,
-                    isBestie: Boolean(u.isBestie ?? u.is_bestie),
-                    outgoingRequest: Boolean(u.outgoingRequest ?? u.outgoing_request),
-                    url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
-                };
+                if (cleanName) {
+                    const pic = Utils.sanitizeImageUrl(u.profilePicUrl || u.profile_pic_url || null);
+                    const idStr = (u.id && String(u.id) !== "0" && String(u.id) !== "null" && String(u.id) !== "undefined")
+                        ? String(u.id)
+                        : null;
+                    normalized = {
+                        id: idStr,
+                        username: cleanName,
+                        fullName: u.fullName || u.full_name || "",
+                        isPrivate: Boolean(u.isPrivate ?? u.is_private),
+                        isVerified: Boolean(u.isVerified ?? u.is_verified),
+                        profilePicUrl: pic,
+                        latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,
+                        isBestie: Boolean(u.isBestie ?? u.is_bestie),
+                        outgoingRequest: Boolean(u.outgoingRequest ?? u.outgoing_request),
+                        url: `https://www.instagram.com/${encodeURIComponent(cleanName)}/`
+                    };
+                    if (u.followsBack !== undefined && u.followsBack !== null) {
+                        normalized.followsBack = Boolean(u.followsBack);
+                    }
+                    if (u.date) {
+                        normalized.date = String(u.date);
+                    }
+                    if (u.isBusiness !== undefined) {
+                        normalized.isBusiness = Boolean(u.isBusiness);
+                    }
+                    if (u.isCreator !== undefined) {
+                        normalized.isCreator = Boolean(u.isCreator);
+                    }
+                    if (u.category) {
+                        normalized.category = String(u.category);
+                    }
+                    if (u.isViewerMutual !== undefined) {
+                        normalized.isViewerMutual = Boolean(u.isViewerMutual);
+                    }
+                    if (u.previousUsername) {
+                        normalized.previousUsername = String(u.previousUsername);
+                    }
+                    if (u.occurrences !== undefined && u.occurrences !== null) {
+                        normalized.occurrences = Number(u.occurrences) || 1;
+                    }
+                }
             }
-            return null;
-        })
-        .filter(Boolean);
+
+            if (!normalized) continue;
+
+            const lowerName = normalized.username.toLowerCase();
+            if ((normalized.id && seenIds.has(normalized.id)) || seenUsernames.has(lowerName)) {
+                continue;
+            }
+            if (normalized.id) seenIds.add(normalized.id);
+            seenUsernames.add(lowerName);
+            result.push(normalized);
+        }
+
+        return result;
     },
+
+    deduplicateUsers: (arr) => Utils.toDetailedUserArray(arr),
 
     mapById: (arr) => {
         const map = new Map();
         (arr || []).forEach((u) => {
-            if (u?.id) map.set(String(u.id), u);
+            if (u?.id && String(u.id) !== "0") map.set(String(u.id), u);
         });
         return map;
     },
 
     intersectionById: (a, b) => {
-        const bIDs = new Set((b || []).map((x) => x?.id).filter(Boolean));
-        return (a || []).filter((x) => x?.id && bIDs.has(x.id));
+        const bIDs = new Set((b || []).map((x) => x?.id ? String(x.id) : null).filter(Boolean));
+        return (a || []).filter((x) => x?.id && bIDs.has(String(x.id)));
     },
 
-    detectRenamedMutuals: (prevMutuals, currentMutuals) => {
-        const prevById = Utils.mapById(prevMutuals);
-        const currById = Utils.mapById(currentMutuals);
+    /**
+     * Detects accounts that kept the same immutable Instagram numeric ID while changing their @username.
+     * @param {Array<object>} prevUsers
+     * @param {Array<object>} currentUsers
+     * @returns {Array<object>}
+     */
+    detectRenamedUsers: (prevUsers, currentUsers) => {
+        const prevById = Utils.mapById(prevUsers);
+        const currById = Utils.mapById(currentUsers);
 
         const changes = [];
         prevById.forEach((prevUser, id) => {
             const currUser = currById.get(id);
-            if (!currUser) return;
+            if (!currUser || !prevUser?.username || !currUser?.username) return;
             if (prevUser.username !== currUser.username) {
-                changes.push({ 
-                    id,
+                changes.push({
+                    id: String(id),
                     oldUsername: prevUser.username,
                     newUsername: currUser.username,
-                 });
+                    fullName: currUser.fullName || prevUser.fullName || "",
+                    profilePicUrl: currUser.profilePicUrl || prevUser.profilePicUrl || null,
+                    isVerified: Boolean(currUser.isVerified ?? prevUser.isVerified),
+                    isPrivate: Boolean(currUser.isPrivate ?? prevUser.isPrivate)
+                });
             }
         });
         return changes;
     },
+
+    detectRenamedMutuals: (prevMutuals, currentMutuals) => Utils.detectRenamedUsers(prevMutuals, currentMutuals),
 
     exportCSV: (data, filename) => {
         if (!data || !data.length) return;
@@ -432,11 +613,42 @@ export const Utils = {
             return `"${text.replace(/"/g, '""')}"`;
         };
 
-        const header = ['Username', 'Profile URL'].map(sanitizeCell).join(',');
+        const hasRenamedCols = data.some((u) => u && typeof u === 'object' && (u.oldUsername || u.newUsername));
+        const hasPrevUserCol = !hasRenamedCols && data.some((u) => u && typeof u === 'object' && u.previousUsername);
+        const hasOccurrencesCol = !hasRenamedCols && data.some((u) => u && typeof u === 'object' && Number(u.occurrences) > 1);
+        const hasDateCol = data.some((u) => u && typeof u === 'object' && u.date);
+
+        let headerCols = ['Username'];
+        if (hasRenamedCols) {
+            headerCols = ['Previous Username', 'Current Username', 'Relationship'];
+        } else {
+            if (hasPrevUserCol) headerCols.push('Previous Username');
+            if (hasOccurrencesCol) headerCols.push('Occurrences');
+        }
+        if (hasDateCol) headerCols.push('Detected Date');
+        headerCols.push('Profile URL');
+
+        const header = headerCols.map(sanitizeCell).join(',');
         const rows = data.map((u) => {
-            const uName = typeof u === 'string' ? u : (u?.username || '');
-            const profileUrl = (typeof u === 'object' && u?.url) ? u.url : Utils.sanitizeUrl(uName);
-            return [uName, profileUrl].map(sanitizeCell).join(',');
+            const isObj = u && typeof u === 'object';
+            const uName = typeof u === 'string' ? u : (u?.newUsername || u?.username || '');
+            const profileUrl = (isObj && u?.url) ? u.url : Utils.sanitizeUrl(uName);
+            let cols = [uName];
+
+            if (hasRenamedCols) {
+                cols = [
+                    isObj ? (u.oldUsername || '') : '',
+                    uName,
+                    isObj ? (u.relationship || '') : ''
+                ];
+            } else {
+                if (hasPrevUserCol) cols.push(isObj ? (u.previousUsername || '') : '');
+                if (hasOccurrencesCol) cols.push(isObj ? String(Number(u.occurrences) || 1) : '1');
+            }
+            if (hasDateCol) cols.push(isObj ? (u.date || '') : '');
+            cols.push(profileUrl);
+
+            return cols.map(sanitizeCell).join(',');
         });
         // Include UTF-8 BOM (\uFEFF) for universal spreadsheet compatibility
         const csvContent = '\uFEFF' + [header, ...rows].join('\r\n');
@@ -445,6 +657,64 @@ export const Utils = {
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
         link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+    },
+
+    exportHistoryCSV: (historyList, filename) => {
+        if (!Array.isArray(historyList) || historyList.length === 0) return;
+
+        const sanitizeCell = (val) => {
+            let text = String(val ?? '');
+            if (/^[=+\-@\t\r]/.test(text)) {
+                text = "'" + text;
+            }
+            return `"${text.replace(/"/g, '""')}"`;
+        };
+
+        const headerCols = [
+            'Date',
+            'Followers',
+            'Start Followers',
+            'Day Delta Followers',
+            'Intraday Delta Followers',
+            'Following',
+            'Day Delta Following',
+            'Mutuals',
+            'Scans Count'
+        ];
+
+        const header = headerCols.map(sanitizeCell).join(',');
+        const rows = historyList.map((entry) => {
+            const followers = Number(entry?.followers ?? 0);
+            const startFollowers = Number(entry?.startFollowers ?? followers);
+            const dayDeltaFollowers = Number(entry?.dayDeltaFollowers ?? entry?.lastDeltaFollowers ?? 0);
+            const intradayDeltaFollowers = Number(entry?.intradayDeltaFollowers ?? (followers - startFollowers));
+            const following = Number(entry?.following ?? 0);
+            const dayDeltaFollowing = Number(entry?.dayDeltaFollowing ?? entry?.lastDeltaFollowing ?? 0);
+            const mutuals = (entry?.mutuals !== undefined && entry?.mutuals !== null) ? Number(entry.mutuals) : '';
+            const scansCount = Number(entry?.scansCount || 1);
+
+            return [
+                entry?.date || '',
+                followers,
+                startFollowers,
+                dayDeltaFollowers,
+                intradayDeltaFollowers,
+                following,
+                dayDeltaFollowing,
+                mutuals,
+                scansCount
+            ].map(sanitizeCell).join(',');
+        });
+
+        const csvContent = '\uFEFF' + [header, ...rows].join('\r\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.setAttribute('download', filename || `ig_history_${Utils.localDateStr()}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -506,10 +776,34 @@ export const Utils = {
         return n.toLocaleString();
     },
 
+    formatExactNumber: (num) => {
+        if (num === null || num === undefined || num === '' || isNaN(Number(num))) return '—';
+        return Number(num).toLocaleString();
+    },
+
     formatDate: (isoOrTimestamp) => {
         if (!isoOrTimestamp) return '-';
         try {
-            const d = new Date(isoOrTimestamp);
+            const raw = String(isoOrTimestamp).trim();
+            // Prevent UTC-midnight date shift for location-agnostic calendar strings (YYYY-MM-DD)
+            if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+                if (typeof globalThis.Temporal !== 'undefined' && typeof globalThis.Temporal.PlainDate?.from === 'function') {
+                    return globalThis.Temporal.PlainDate.from(raw).toLocaleString(undefined, {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                    });
+                }
+                const [y, m, day] = raw.split('-').map(Number);
+                const localDay = new Date(y, m - 1, day);
+                return localDay.toLocaleDateString(undefined, {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                });
+            }
+
+            const d = isoOrTimestamp instanceof Date ? isoOrTimestamp : new Date(isoOrTimestamp);
             if (isNaN(d.getTime())) return String(isoOrTimestamp);
             return d.toLocaleDateString(undefined, {
                 year: 'numeric',

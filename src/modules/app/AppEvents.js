@@ -13,16 +13,25 @@ Object.assign(App, {
         
         const btnExport = document.getElementById("ig-export-csv");
         if (btnExport) btnExport.onclick = () => {
-            const activeUsers = (typeof UI.getActiveViewUsers === 'function') ? UI.getActiveViewUsers() : null;
-            const resultsToExport = (activeUsers && activeUsers.length > 0)
-                ? activeUsers
-                : (App.lastResults || window.__igLastResults);
+            const ctx = (typeof UI.getActiveExportContext === 'function')
+                ? UI.getActiveExportContext()
+                : { mode: 'none', slug: null, items: [] };
 
-            if (resultsToExport && resultsToExport.length > 0) {
-                const dateStr = Utils.now().split("T")[0];
-                Utils.exportCSV(resultsToExport, "ig_analysis_" + dateStr + ".csv");
-                UI.log("CSV Exported (" + resultsToExport.length + " accounts).");
+            if (!ctx || !Array.isArray(ctx.items) || ctx.items.length === 0) {
+                UI.log("[INFO] No data in the active view to export.");
+                return;
             }
+
+            const dateStr = Utils.localDateStr();
+            if (ctx.mode === 'history') {
+                Utils.exportHistoryCSV(ctx.items, `ig_history_${dateStr}.csv`);
+                UI.log(`CSV Exported (${ctx.items.length} history entries).`);
+                return;
+            }
+
+            const slug = ctx.slug || 'analysis';
+            Utils.exportCSV(ctx.items, `ig_${slug}_${dateStr}.csv`);
+            UI.log(`CSV Exported (${ctx.items.length} accounts from ${slug}).`);
         };
         
         const btnReset = document.getElementById("ig-reset");
@@ -30,23 +39,43 @@ Object.assign(App, {
             btnReset.onclick = async () => {
                 const confirmed = await UI.confirmAction(
                     "Delete All Data", 
-                    "This action will wipe all your history, logs, and whitelists.<br><br>Are you sure you want to proceed?",
+                    "This action will wipe all your history, logs, and whitelists for the active account.<br><br>Are you sure you want to proceed?",
                     "Yes, Delete"
                 );
 
                 if (confirmed) {
                     Storage.resetAll();
+                    UI.paginationState = {};
+                    UI.targetPaginationState = {};
+                    UI.whitelistSearchQuery = '';
+                    UI.currentTargetUser = null;
+                    App.lastResults = [];
+                    if (typeof window !== 'undefined') window.__igLastResults = [];
                     if (typeof API.clearFriendshipCache === 'function') {
                         API.clearFriendshipCache();
                     }
-                    UI.log("[INFO] Data reset.");
-                    const mainPanel = document.getElementById("ig-analyzer-panel");
-                    if (mainPanel) {
-                        mainPanel.querySelectorAll(".ig-view-container").forEach((el) => {
-                            if (el.id !== "ig-log") el.innerHTML = "";
-                        });
+                    const subpanel = document.getElementById("ig-target-subpanel");
+                    if (subpanel) subpanel.style.display = "none";
+
+                    UI.renderHistory([]);
+                    UI.renderNominalList([], "ig-view-unfollowers", "Recent Unfollowers");
+                    UI.renderNominalList([], "ig-view-deactivated", "Deactivated Accounts");
+                    UI.renderNominalList([], "ig-view-blocked", "Blocked Accounts");
+                    UI.renderRenamedList([], "ig-view-renamed", "Username Changes");
+                    UI.renderNewFollowers([]);
+                    UI.renderWhitelist([]);
+                    if (typeof UI.renderTargetTrackerMainView === 'function') {
+                        UI.renderTargetTrackerMainView();
                     }
-                    if (btnExport) btnExport.disabled = true;
+                    UI.renderPersistedSnapshot(null);
+
+                    if (typeof UI.updateMainTabCounts === 'function') {
+                        UI.updateMainTabCounts();
+                    }
+                    if (typeof UI.syncMainExportButton === 'function') {
+                        UI.syncMainExportButton();
+                    }
+                    UI.log("[INFO] Data reset.");
                 }
             };
         }
@@ -113,8 +142,9 @@ Object.assign(App, {
                     }
                     if (window.__igLastResults) {
                         window.__igLastResults = window.__igLastResults.filter((u) => u.username !== targetUser);
-                        const exportBtn = document.getElementById("ig-export-csv");
-                        if (exportBtn) exportBtn.disabled = window.__igLastResults.length === 0;
+                    }
+                    if (typeof UI.syncMainExportButton === 'function') {
+                        UI.syncMainExportButton();
                     }
 
                     const row = btnWl.closest(".ig-user-row");
@@ -163,14 +193,19 @@ Object.assign(App, {
                     // Restore immediately into "Not Following You Back" list if applicable
                     const snapshot = Storage.load();
                     if (snapshot && Array.isArray(snapshot.following) && Array.isArray(snapshot.followers)) {
-                        if (snapshot.following.includes(targetUser) && !snapshot.followers.includes(targetUser)) {
+                        const targetLower = targetUser.toLowerCase();
+                        const inFollowing = snapshot.following.some((x) => String(typeof x === 'string' ? x : x?.username || '').toLowerCase() === targetLower);
+                        const inFollowers = snapshot.followers.some((x) => String(typeof x === 'string' ? x : x?.username || '').toLowerCase() === targetLower);
+                        if (inFollowing && !inFollowers) {
                             const notFollowingState = UI.paginationState["ig-view-notfollowing"];
                             if (notFollowingState && Array.isArray(notFollowingState.rawUsers)) {
-                                if (!notFollowingState.rawUsers.some((u) => u.username === targetUser)) {
-                                    const knownObj = (snapshot.followingDetailed || []).find((u) => u.username === targetUser) || {
-                                        username: targetUser,
-                                        url: "https://www.instagram.com/" + targetUser + "/"
-                                    };
+                                if (!notFollowingState.rawUsers.some((u) => String(u.username || '').toLowerCase() === targetLower)) {
+                                    const knownObj = (snapshot.followingDetailed || []).find((u) => String(u?.username || '').toLowerCase() === targetLower)
+                                        || (typeof Storage.findKnownUserByUsername === 'function' ? Storage.findKnownUserByUsername(targetUser) : null)
+                                        || {
+                                            username: targetUser,
+                                            url: "https://www.instagram.com/" + targetUser + "/"
+                                        };
                                     notFollowingState.rawUsers.unshift(knownObj);
                                     UI.applyFilters("ig-view-notfollowing");
                                     if (App.lastResults) App.lastResults.unshift(knownObj);
@@ -178,6 +213,9 @@ Object.assign(App, {
                                 }
                             }
                         }
+                    }
+                    if (typeof UI.syncMainExportButton === 'function') {
+                        UI.syncMainExportButton();
                     }
                     return;
                 }
@@ -198,21 +236,24 @@ Object.assign(App, {
                         UI.renderWhitelist([]);
                         const snap = Storage.load();
                         if (snap && Array.isArray(snap.following) && Array.isArray(snap.followers)) {
-                            const following = snap.following;
-                            const followers = snap.followers;
-                            const notFollowingBackUsernames = Utils.diff(following, followers);
+                            const followingNames = snap.following.map((x) => typeof x === 'string' ? x : x?.username).filter(Boolean);
+                            const followerNames = snap.followers.map((x) => typeof x === 'string' ? x : x?.username).filter(Boolean);
+                            const notFollowingBackUsernames = Utils.diff(followingNames, followerNames);
                             const allUsersMap = new Map();
                             [...(snap.followingDetailed || []), ...(snap.followersDetailed || [])].forEach((u) => {
-                                if (u?.username) allUsersMap.set(u.username, u);
+                                if (u?.username) allUsersMap.set(u.username.toLowerCase(), u);
                             });
                             const restored = notFollowingBackUsernames.map((u) => ({
-                                ...(allUsersMap.get(u) || {}),
+                                ...(allUsersMap.get(String(u).toLowerCase()) || {}),
                                 username: u,
                                 url: "https://www.instagram.com/" + u + "/"
                             }));
                             UI.renderResults(restored, "Not Following You Back", "ig-view-notfollowing", true);
                             App.lastResults = restored;
                             window.__igLastResults = restored;
+                        }
+                        if (typeof UI.syncMainExportButton === 'function') {
+                            UI.syncMainExportButton();
                         }
                     }
                     return;
@@ -237,7 +278,8 @@ Object.assign(App, {
                     e.preventDefault();
                     e.stopPropagation();
                     const username = btnCardOpen.getAttribute("data-username");
-                    if (username) App.openTargetAudit(username, null, false);
+                    const userId = btnCardOpen.getAttribute("data-user-id");
+                    if (username) App.openTargetAudit(username, userId || null, false);
                     return;
                 }
 
@@ -247,7 +289,8 @@ Object.assign(App, {
                     e.preventDefault();
                     e.stopPropagation();
                     const username = btnCardRefresh.getAttribute("data-username");
-                    if (username) App.openTargetAudit(username, null, true);
+                    const userId = btnCardRefresh.getAttribute("data-user-id");
+                    if (username) App.openTargetAudit(username, userId || null, true);
                     return;
                 }
 
@@ -257,6 +300,7 @@ Object.assign(App, {
                     e.preventDefault();
                     e.stopPropagation();
                     const username = btnCardDelete.getAttribute("data-username");
+                    const userId = btnCardDelete.getAttribute("data-user-id");
                     if (username) {
                         const confirmed = await UI.confirmAction(
                             "Remove Monitored Target",
@@ -266,7 +310,7 @@ Object.assign(App, {
                             Icons.trash
                         );
                         if (confirmed) {
-                            Storage.removeTargetData(username);
+                            Storage.removeTargetData(username, null, userId || null);
                             UI.renderTargetTrackerMainView();
                             UI.log(`[INFO] @${username} removed from monitored targets.`);
                         }
@@ -293,7 +337,51 @@ Object.assign(App, {
                     return;
                 }
 
-                // 11. Delegated Target Tracker Search Button
+                // 11. Delegated KPI Tab Jump Buttons (Main Panel)
+                const btnMainJump = e.target.closest(".ig-kpi-jump-btn[data-main-tab]");
+                if (btnMainJump) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const destId = btnMainJump.getAttribute("data-main-tab");
+                    const tabBtn = destId ? panel.querySelector(`#ig-tabs .ig-tab-btn[data-target="${destId}"]`) : null;
+                    if (tabBtn) tabBtn.click();
+                    return;
+                }
+
+                // 12. Delegated Clear Individual Nominal / Renamed History Button
+                const btnClearNominal = e.target.closest(".ig-btn-clear-nominal[data-clear-key]");
+                if (btnClearNominal) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const clearKey = btnClearNominal.getAttribute("data-clear-key");
+                    const cId = btnClearNominal.getAttribute("data-container") || "";
+                    const viewTitle = btnClearNominal.getAttribute("data-title") || "Records";
+                    if (!clearKey) return;
+
+                    const confirmed = await UI.confirmAction(
+                        `Clear ${viewTitle}`,
+                        `Are you sure you want to clear all saved entries in <b>${Utils.escapeHtml(viewTitle)}</b>?<br><br>Your main audience snapshot and other tabs will remain intact.`,
+                        "Yes, Clear",
+                        true,
+                        Icons.trash
+                    );
+                    if (confirmed) {
+                        Storage.clearNominalList(clearKey);
+                        if (cId === "ig-view-renamed") {
+                            UI.renderRenamedList([], cId, viewTitle);
+                        } else if (cId) {
+                            UI.renderNominalList([], cId, viewTitle, { storageKey: clearKey });
+                        }
+                        UI.renderHistory(Storage.getHistory());
+                        if (typeof UI.updateMainTabCounts === 'function') {
+                            UI.updateMainTabCounts();
+                        }
+                        UI.log(`[INFO] Cleared ${viewTitle}.`);
+                    }
+                    return;
+                }
+
+                // 13. Delegated Target Tracker Search Button
                 const btnTargetSearch = e.target.closest("#ig-btn-target-search, .btn-target-search");
                 if (btnTargetSearch) {
                     e.preventDefault();
@@ -302,13 +390,14 @@ Object.assign(App, {
                     return;
                 }
 
-                // 12. Delegated Target Card Click (open subpanel)
+                // 14. Delegated Target Card Click (open subpanel)
                 const targetCard = e.target.closest(".ig-target-card");
                 if (targetCard && !e.target.closest(".btn-target-card-delete, .btn-target-card-refresh, .btn-target-card-open, a, button")) {
                     e.preventDefault();
                     e.stopPropagation();
                     const username = targetCard.getAttribute("data-username");
-                    if (username) App.openTargetAudit(username, null, false);
+                    const userId = targetCard.getAttribute("data-user-id");
+                    if (username) App.openTargetAudit(username, userId || null, false);
                     return;
                 }
             });
@@ -388,8 +477,9 @@ Object.assign(App, {
                     if (listToExport && listToExport.length > 0) {
                         const targetName = UI.currentTargetUser?.username || 'target';
                         const activeTab = subpanel.querySelector('#ig-target-tabs .ig-tab-btn.active');
-                        const tabLabel = activeTab ? activeTab.innerText.trim().toLowerCase().replace(/\s+/g, '_') : 'list';
-                        const dateStr = Utils.now().split("T")[0];
+                        const rawLabel = activeTab?.querySelector('.ig-tab-label')?.textContent || activeTab?.innerText || 'list';
+                        const tabLabel = rawLabel.trim().toLowerCase().replace(/\s+/g, '_');
+                        const dateStr = Utils.localDateStr();
                         Utils.exportCSV(listToExport, `@${targetName}_${tabLabel}_${dateStr}.csv`);
                         UI.targetLog(`CSV Exported (${listToExport.length} accounts).`);
                     }
@@ -397,6 +487,32 @@ Object.assign(App, {
             }
 
             subpanel.addEventListener("click", async (e) => {
+                // 0. Delegated Story Spy Button in Target Subpanel
+                const btnSpy = e.target.closest(".btn-spy-story, .ig-btn-spy-story");
+                if (btnSpy) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (btnSpy.disabled) return;
+                    const username = btnSpy.getAttribute("data-user");
+                    const userId = btnSpy.getAttribute("data-user-id");
+                    if (!username) return;
+                    await App.runStorySpy(username, btnSpy, userId);
+                    return;
+                }
+
+                // 0b. Delegated Target Audit Button in Target Subpanel
+                const btnTargetAudit = e.target.closest(".btn-target-audit, .ig-btn-target-audit");
+                if (btnTargetAudit) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const username = btnTargetAudit.getAttribute("data-user");
+                    const userId = btnTargetAudit.getAttribute("data-user-id");
+                    if (username) {
+                        App.openTargetAudit(username, userId, false);
+                    }
+                    return;
+                }
+
                 // 1. Delegated Avatar & Inspect Button Click (Quick-Card Modal)
                 const inspectTrigger = e.target.closest(".ig-user-avatar-trigger, .btn-inspect-user, .ig-btn-inspect-user");
                 if (inspectTrigger) {
@@ -422,7 +538,18 @@ Object.assign(App, {
                     return;
                 }
 
-                // 2. Delegated Target Subpanel Pagination Controls
+                // 2. Delegated KPI Tab Jump Buttons (Target Subpanel — CSP Safe)
+                const btnTargetJump = e.target.closest(".ig-kpi-jump-btn[data-target-tab]");
+                if (btnTargetJump) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const destId = btnTargetJump.getAttribute("data-target-tab");
+                    const tabBtn = destId ? subpanel.querySelector(`#ig-target-tabs .ig-tab-btn[data-target="${destId}"]`) : null;
+                    if (tabBtn) tabBtn.click();
+                    return;
+                }
+
+                // 3. Delegated Target Subpanel Pagination Controls
                 const btnPrev = e.target.closest(".ig-target-page-prev");
                 if (btnPrev && !btnPrev.disabled) {
                     e.preventDefault();

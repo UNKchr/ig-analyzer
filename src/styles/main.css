@@ -7,6 +7,7 @@
 #ig-analyzer-panel,
 #ig-target-subpanel,
 #ig-safety-modal,
+#ig-hd-modal,
 .ig-backup-overlay {
     /* Color Palette - Dark Mode (Default: Slate / Zinc Depth) */
     --iga-bg-primary: rgba(15, 23, 42, 0.92);
@@ -102,6 +103,7 @@
 #ig-analyzer-panel.ig-light-theme,
 #ig-target-subpanel.ig-light-theme,
 #ig-safety-modal.ig-light-theme,
+#ig-hd-modal.ig-light-theme,
 .ig-backup-overlay.ig-light-theme {
     --iga-bg-primary: rgba(255, 255, 255, 0.96);
     --iga-bg-secondary: #f8fafc;
@@ -708,6 +710,7 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    container-type: inline-size;
     background: var(--iga-surface);
     border: 1px solid var(--iga-border);
     border-radius: var(--iga-radius-lg);
@@ -1030,6 +1033,8 @@
     min-height: 48px;
     flex-shrink: 0;
     box-sizing: border-box;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 300px auto 52px;
     transition: background 0.2s var(--iga-ease-default),
                 border-color 0.2s var(--iga-ease-default),
                 transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
@@ -1040,6 +1045,12 @@
                 padding 0.28s ease;
 }
 
+@supports not (content-visibility: auto) {
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-row {
+        contain: layout style paint;
+    }
+}
+
 :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-row:hover {
     background: var(--iga-surface-hover);
     border-color: var(--iga-border-hover);
@@ -1047,6 +1058,8 @@
 
 /* Slide-out to right animation when clicking Ignore */
 :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-row.ig-row-slide-out {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
     transform: translateX(100%);
     opacity: 0;
     max-height: 0;
@@ -1169,6 +1182,11 @@
 
 :is(#ig-analyzer-panel, #ig-target-subpanel) .has-bestie-ring {
     outline: 2px solid #22c55e !important;
+    outline-offset: 1px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .has-story-ring {
+    outline: 2px solid #e1306c !important;
     outline-offset: 1px;
 }
 
@@ -1529,7 +1547,7 @@
     background: rgba(0, 0, 0, 0.82);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    z-index: 100000;
+    z-index: 20000000;
     align-items: center;
     justify-content: center;
     padding: 16px;
@@ -1787,7 +1805,7 @@
     background: rgba(0, 0, 0, 0.65);
     -webkit-backdrop-filter: blur(12px);
     backdrop-filter: blur(12px);
-    z-index: 1000000;
+    z-index: 15000000;
     box-sizing: border-box;
 }
 
@@ -2027,15 +2045,19 @@
     max-height: 88vh;
     overflow-y: auto;
     padding: 22px 18px 18px 18px !important;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ig-scrollbar-thumb) transparent;
 }
 
-.ig-quick-card::-webkit-scrollbar {
-    width: 5px;
-}
+@supports not (scrollbar-color: auto) {
+    .ig-quick-card::-webkit-scrollbar {
+        width: 5px;
+    }
 
-.ig-quick-card::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
-    border-radius: 4px;
+    .ig-quick-card::-webkit-scrollbar-thumb {
+        background: var(--ig-scrollbar-thumb);
+        border-radius: 4px;
+    }
 }
 
 .ig-qc-header {
@@ -2126,7 +2148,7 @@
 }
 
 .ig-qc-bio-card {
-    background: rgba(15, 23, 42, 0.55);
+    background: var(--iga-bg-secondary);
     border: 1px solid var(--iga-border);
     border-radius: var(--iga-radius-md);
     padding: 10px 12px;
@@ -2163,7 +2185,7 @@
 }
 
 .ig-qc-mutuals-card {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--iga-surface);
     border: 1px solid var(--iga-border);
     border-radius: var(--iga-radius-md);
     padding: 8px 12px;
@@ -2195,6 +2217,17 @@
     border: 2px solid var(--iga-bg-primary);
     margin-left: -6px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.ig-facepile-avatar.ig-facepile-fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--iga-accent-subtle);
+    color: var(--iga-accent);
+    font-size: 10px;
+    font-weight: 700;
+    user-select: none;
 }
 
 .ig-facepile-avatar:first-child {
@@ -2295,8 +2328,12 @@
     color: var(--iga-text-muted);
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
     gap: 3px;
-    white-space: nowrap;
+    line-height: 1.25;
+    text-align: center;
+    white-space: normal;
 }
 
 :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-sub.is-positive {
@@ -2815,6 +2852,8 @@
 .ig-target-view {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
+    container-type: inline-size;
     padding: 14px;
     display: none;
 }
@@ -2963,3 +3002,1176 @@
     background: #f1f5f9;
     border-color: rgba(0, 0, 0, 0.05);
 }
+
+/* ============================================================
+   Stage 7: Interactive Visual Statistics, SVG Charts & Enriched Lists
+   ============================================================ */
+
+/* --- Tab Count Badges --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 15px;
+    padding: 0 5px;
+    border-radius: var(--iga-radius-full);
+    font-size: 9.5px;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    background: rgba(148, 163, 184, 0.16);
+    color: var(--iga-text-muted);
+    pointer-events: none;
+    transition: background 0.2s var(--iga-ease-default), color 0.2s var(--iga-ease-default);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel).ig-light-theme .ig-tab-count {
+    background: rgba(15, 23, 42, 0.08);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-tab-btn.active .ig-tab-count {
+    background: var(--iga-accent-subtle);
+    color: var(--iga-accent);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-tab-count.is-empty {
+    display: none !important;
+}
+
+/* --- KPI Sub-actions, Jump Buttons & Container-Aware KPI Grid --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-value.is-neutral,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-sub.is-neutral {
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-sub-split {
+    gap: 4px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-sep {
+    color: var(--iga-text-dim);
+    font-weight: 500;
+    user-select: none;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 1px 5px;
+    border-radius: 5px;
+    font-family: var(--iga-font-sans);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--iga-text-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-variant-numeric: tabular-nums;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn.is-positive {
+    color: var(--iga-success);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn.is-negative {
+    color: var(--iga-danger);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn:hover {
+    background: var(--iga-surface-hover);
+    border-color: var(--iga-border-hover);
+    text-decoration: underline;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn.is-positive:hover {
+    background: var(--iga-success-subtle);
+    border-color: rgba(16, 185, 129, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn.is-negative:hover {
+    background: var(--iga-danger-subtle);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-kpi-jump-btn:focus-visible {
+    outline: 2px solid var(--iga-border-focus);
+    outline-offset: 1px;
+}
+
+@media (max-width: 560px) {
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-kpi-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@supports (container-type: inline-size) {
+    @media (max-width: 560px) {
+        :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-kpi-grid {
+            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+        }
+    }
+
+    @container (max-width: 480px) {
+        :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-kpi-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-kpi-grid > .ig-kpi-card:nth-child(3):last-child {
+            grid-column: 1 / -1;
+        }
+    }
+}
+
+/* --- Interactive Inline SVG Trend Chart (UICharts.js) --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-trend-chart-mount {
+    margin-bottom: 12px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-trend-chart-card {
+    background: var(--iga-bg-secondary);
+    border: 1px solid var(--iga-border);
+    border-radius: var(--iga-radius-lg);
+    padding: 12px 14px;
+    box-shadow: var(--iga-shadow-sm);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--iga-text-bright);
+    letter-spacing: -0.2px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-window-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: var(--iga-radius-full);
+    font-size: 10px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    background: var(--iga-surface);
+    color: var(--iga-text-muted);
+    border: 1px solid var(--iga-border);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-window-pill.is-positive {
+    background: var(--iga-success-subtle);
+    color: var(--iga-success);
+    border-color: rgba(16, 185, 129, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-window-pill.is-negative {
+    background: var(--iga-danger-subtle);
+    color: var(--iga-danger);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-seg-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    background: var(--iga-surface);
+    border: 1px solid var(--iga-border);
+    border-radius: var(--iga-radius-sm);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-seg-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: none;
+    padding: 3px 7px;
+    border-radius: 4px;
+    font-family: var(--iga-font-sans);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--iga-text-muted);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-seg-btn:hover:not(.is-active) {
+    color: var(--iga-text-bright);
+    background: var(--iga-surface-hover);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-seg-btn.is-active {
+    background: var(--iga-accent);
+    color: #ffffff;
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 22px;
+    padding: 4px 8px;
+    margin-bottom: 6px;
+    border-radius: var(--iga-radius-sm);
+    background: var(--iga-surface);
+    border: 1px solid var(--iga-border);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-date {
+    font-family: var(--iga-font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-val {
+    font-weight: 700;
+    color: var(--iga-text-bright);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-unit {
+    font-weight: 500;
+    font-size: 10px;
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-delta {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: var(--iga-radius-full);
+    font-size: 10px;
+    font-weight: 700;
+    background: rgba(148, 163, 184, 0.14);
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-delta.is-positive {
+    background: var(--iga-success-subtle);
+    color: var(--iga-success);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-delta.is-negative {
+    background: var(--iga-danger-subtle);
+    color: var(--iga-danger);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-readout-intra {
+    font-size: 10px;
+    color: var(--iga-text-dim);
+    margin-left: auto;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-stage {
+    position: relative;
+    width: 100%;
+    height: 158px;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-trend-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+    overflow: visible;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-grid-line {
+    stroke: var(--iga-border);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-grid-line.is-mid {
+    stroke-dasharray: 3 3;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-axis-text {
+    fill: var(--iga-text-dim);
+    font-size: 9.5px;
+    font-family: var(--iga-font-mono);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-area,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-line {
+    pointer-events: none;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-dot {
+    pointer-events: none;
+    stroke: var(--iga-bg-primary);
+    stroke-width: 1.5;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-active-dot {
+    pointer-events: none;
+    stroke: var(--iga-text-bright);
+    stroke-width: 2;
+    transition: opacity 0.12s ease;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-crosshair {
+    stroke: var(--iga-text-dim);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-hit {
+    fill: transparent;
+    cursor: crosshair;
+    outline: none;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-hit:focus-visible {
+    fill: rgba(59, 130, 246, 0.08);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tooltip {
+    position: absolute;
+    top: 6px;
+    transform: translateX(-14%);
+    pointer-events: none;
+    z-index: 6;
+    background: var(--iga-bg-primary);
+    border: 1px solid var(--iga-border-hover);
+    border-radius: var(--iga-radius-sm);
+    padding: 5px 8px;
+    box-shadow: var(--iga-shadow-md);
+    font-size: 10.5px;
+    line-height: 1.3;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tooltip.is-right {
+    transform: translateX(-86%);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tt-date {
+    font-size: 9.5px;
+    font-family: var(--iga-font-mono);
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tt-val {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--iga-text-bright);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tt-delta {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tt-delta.is-positive {
+    color: var(--iga-success);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-chart-tt-delta.is-negative {
+    color: var(--iga-danger);
+}
+
+/* --- Audience & Network Composition Card --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-composition-card {
+    background: var(--iga-bg-secondary);
+    border: 1px solid var(--iga-border);
+    border-radius: var(--iga-radius-lg);
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    box-shadow: var(--iga-shadow-sm);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--iga-text-bright);
+    letter-spacing: -0.2px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-ratio-pill {
+    font-size: 10.5px;
+    padding: 2px 8px;
+    border-radius: var(--iga-radius-full);
+    background: var(--iga-surface);
+    border: 1px solid var(--iga-border);
+    color: var(--iga-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-ratio-pill strong {
+    color: var(--iga-text-bright);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-bar {
+    display: flex;
+    width: 100%;
+    height: 9px;
+    border-radius: var(--iga-radius-full);
+    overflow: hidden;
+    background: var(--iga-surface);
+    gap: 2px;
+    margin: 9px 0 8px 0;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-seg {
+    height: 100%;
+    min-width: 4px;
+    transition: width 0.35s var(--iga-ease-default);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-seg.is-mutuals,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-dot.is-mutuals {
+    background: #10b981;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-seg.is-fans,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-dot.is-fans {
+    background: #3b82f6;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-seg.is-notback,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-dot.is-notback {
+    background: #f59e0b;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-legend {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 10.5px;
+    color: var(--iga-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-legend-item strong {
+    color: var(--iga-text-bright);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 9px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-metric-box {
+    background: var(--iga-surface);
+    border: 1px solid var(--iga-border);
+    border-radius: var(--iga-radius-sm);
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 1px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-metric-label {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-comp-metric-val {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--iga-text-bright);
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- Target Card Sparklines --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-target-card-sparkline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 6px;
+    border-radius: var(--iga-radius-sm);
+    background: var(--iga-surface);
+    border: 1px solid var(--iga-border);
+    flex-shrink: 0;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-sparkline-svg {
+    display: block;
+    overflow: visible;
+}
+
+/* --- Sticky & Container-Responsive History Table --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-table-scroll-region {
+    overflow: auto;
+    max-inline-size: 100%;
+    max-block-size: min(340px, 55vh);
+    container-type: inline-size;
+    border: 1px solid var(--iga-border);
+    border-radius: var(--iga-radius-md);
+    background: var(--iga-bg-secondary);
+    outline: none;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-table-scroll-region:focus-visible {
+    border-color: var(--iga-border-focus);
+    box-shadow: 0 0 0 2px var(--iga-accent-subtle);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar-thumb {
+    background: var(--ig-scrollbar-thumb);
+    border-radius: var(--iga-radius-full);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table {
+    margin-top: 0;
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table thead {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 2;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table thead th {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 2;
+    background: var(--iga-bg-secondary);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tbody th {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+    background: var(--iga-bg-secondary);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--iga-border);
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tbody tr:hover th {
+    background: var(--iga-surface-hover);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tbody tr:last-child th,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+@container (width < 380px) {
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table,
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table thead,
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tbody,
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tr,
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table th,
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table td {
+        display: block;
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table thead {
+        display: none;
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tr {
+        border-bottom: 1px solid var(--iga-border);
+        padding-block-end: 4px;
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table tbody th {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 2;
+        background: var(--iga-surface);
+        border-bottom: 1px solid var(--iga-border);
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table {
+        --label-2: "Followers";
+        --label-3: "Following";
+        --label-4: "Mutuals";
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table td {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 5px 10px;
+        border-bottom: none;
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table td:nth-child(2)::before {
+        content: var(--label-2) ": ";
+        color: var(--iga-text-muted);
+        font-weight: 600;
+        font-size: 10px;
+        text-transform: uppercase;
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table td:nth-child(3)::before {
+        content: var(--label-3) ": ";
+        color: var(--iga-text-muted);
+        font-weight: 600;
+        font-size: 10px;
+        text-transform: uppercase;
+    }
+
+    :is(#ig-analyzer-panel, #ig-target-subpanel) .ig-history-table td:nth-child(4)::before {
+        content: var(--label-4) ": ";
+        color: var(--iga-text-muted);
+        font-weight: 600;
+        font-size: 10px;
+        text-transform: uppercase;
+    }
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-delta-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    margin-left: 4px;
+    border-radius: var(--iga-radius-full);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+    background: rgba(148, 163, 184, 0.14);
+    color: var(--iga-text-muted);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-delta-pill.is-positive {
+    background: var(--iga-success-subtle);
+    color: var(--iga-success);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-delta-pill.is-negative {
+    background: var(--iga-danger-subtle);
+    color: var(--iga-danger);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-scans-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 5px;
+    margin-left: 6px;
+    border-radius: var(--iga-radius-sm);
+    font-size: 9.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    background: var(--iga-accent-subtle);
+    color: var(--iga-accent);
+    border: 1px solid rgba(59, 130, 246, 0.22);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-metric-muted {
+    color: var(--iga-text-dim);
+    font-weight: 500;
+}
+
+/* --- Enriched Nominal & Renamed User Lists --- */
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-view-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-btn-clear-nominal {
+    padding: 3px 9px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--iga-danger);
+    background: var(--iga-danger-subtle);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: var(--iga-radius-sm);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-btn-clear-nominal:hover {
+    color: #ffffff;
+    background: var(--iga-danger);
+    border-color: var(--iga-danger);
+    box-shadow: 0 2px 6px rgba(239, 68, 68, 0.28);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-text-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.25;
+    gap: 2px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-title-line {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-user-fullname {
+    font-size: 11px;
+    color: var(--iga-text-muted);
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-rename-flow {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-rename-old {
+    color: var(--iga-text-muted);
+    font-family: var(--iga-font-mono);
+    font-size: 11px;
+    text-decoration: line-through;
+    text-decoration-color: rgba(239, 68, 68, 0.45);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-rename-arrow {
+    display: inline-flex;
+    align-items: center;
+    color: var(--iga-accent);
+    flex-shrink: 0;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-rename-new {
+    color: var(--iga-text-bright);
+    font-weight: 700;
+    font-size: 12px;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-badge-repeat {
+    background: var(--iga-warning-subtle);
+    color: var(--iga-warning);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-badge-prev-user {
+    background: rgba(99, 102, 241, 0.14);
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel).ig-light-theme .ig-badge-prev-user {
+    background: rgba(79, 70, 229, 0.1);
+    color: #4f46e5;
+    border-color: rgba(79, 70, 229, 0.25);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-badge-following,
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-badge-public {
+    background: var(--iga-accent-subtle);
+    color: var(--iga-accent);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-badge-churn {
+    background: var(--iga-danger-subtle);
+    color: var(--iga-danger);
+    border: 1px solid rgba(239, 68, 68, 0.28);
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel) .ig-badge-new-mutual-solid {
+    background: var(--iga-success) !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    border: none !important;
+}
+
+/* ============================================================
+   Stage 8: Component-Specific Color-Scheme, Light Mode Surfaces & Story Spy
+   ============================================================ */
+
+/* Apply color-scheme strictly on opaque surface roots and re-specify background + color */
+#ig-analyzer-panel,
+#ig-target-subpanel,
+.ig-backup-overlay .ig-backup-dialog {
+    color-scheme: dark;
+    background: var(--iga-bg-primary);
+    color: var(--iga-text-main);
+}
+
+#ig-safety-modal .ig-modal-content,
+#ig-hd-modal .ig-hd-modal-card {
+    color-scheme: dark;
+    background: var(--iga-bg-primary);
+    color: var(--iga-text-bright);
+}
+
+#ig-analyzer-panel.ig-light-theme,
+#ig-target-subpanel.ig-light-theme,
+.ig-backup-overlay.ig-light-theme .ig-backup-dialog {
+    color-scheme: light;
+    background: var(--iga-bg-primary);
+    color: var(--iga-text-main);
+}
+
+#ig-safety-modal.ig-light-theme .ig-modal-content,
+#ig-hd-modal.ig-light-theme .ig-hd-modal-card {
+    color-scheme: light;
+    background: var(--iga-bg-primary);
+    color: var(--iga-text-bright);
+}
+
+#ig-hd-modal.ig-light-theme .ig-hd-modal-card {
+    box-shadow: var(--iga-shadow-lg);
+}
+
+#ig-hd-modal.ig-light-theme .ig-hd-avatar-frame {
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+}
+
+/* Light Mode polish for Target Tracker inside main panel & Story Spy button */
+#ig-analyzer-panel.ig-light-theme .ig-target-card-avatar {
+    background: #e2e8f0;
+    color: #334155;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel).ig-light-theme .btn-spy-story,
+:is(#ig-analyzer-panel, #ig-target-subpanel).ig-light-theme .ig-btn-spy-story {
+    background: rgba(147, 51, 234, 0.1) !important;
+    border-color: rgba(147, 51, 234, 0.28) !important;
+    color: #7e22ce !important;
+}
+
+:is(#ig-analyzer-panel, #ig-target-subpanel).ig-light-theme .btn-spy-story:hover:not(:disabled),
+:is(#ig-analyzer-panel, #ig-target-subpanel).ig-light-theme .ig-btn-spy-story:hover:not(:disabled) {
+    background: #7e22ce !important;
+    border-color: #7e22ce !important;
+    color: #ffffff !important;
+}
+
+.ig-spy-btn-busy {
+    opacity: 0.65;
+    cursor: wait !important;
+}
+
+/* --- Story Spy Diagnostic Modal (#ig-safety-modal) --- */
+#ig-safety-modal .ig-spy-hero {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border-radius: var(--iga-radius-md);
+    border: 1px solid var(--iga-border);
+    background: var(--iga-surface);
+    text-align: center;
+}
+
+#ig-safety-modal .ig-spy-hero.is-safe,
+#ig-safety-modal .ig-spy-hero:has(.is-safe) {
+    background: var(--iga-success-subtle);
+    border-color: rgba(16, 185, 129, 0.35);
+    --ig-spy-tone: var(--iga-success);
+}
+
+#ig-safety-modal .ig-spy-hero.is-warn,
+#ig-safety-modal .ig-spy-hero:has(.is-warn) {
+    background: var(--iga-warning-subtle);
+    border-color: rgba(245, 158, 11, 0.35);
+    --ig-spy-tone: var(--iga-warning);
+}
+
+#ig-safety-modal .ig-spy-hero.is-danger,
+#ig-safety-modal .ig-spy-hero:has(.is-danger) {
+    background: var(--iga-danger-subtle);
+    border-color: rgba(239, 68, 68, 0.35);
+    --ig-spy-tone: var(--iga-danger);
+}
+
+#ig-safety-modal .ig-spy-badge {
+    font-size: 10.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--ig-spy-tone, var(--iga-accent));
+    margin-bottom: 4px;
+}
+
+#ig-safety-modal .ig-spy-badge.is-safe { color: var(--iga-success); }
+#ig-safety-modal .ig-spy-badge.is-warn { color: var(--iga-warning); }
+#ig-safety-modal .ig-spy-badge.is-danger { color: var(--iga-danger); }
+
+#ig-safety-modal .ig-spy-prob {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--iga-text-bright);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+#ig-safety-modal .ig-spy-prob.is-safe { color: var(--iga-success); }
+#ig-safety-modal .ig-spy-prob.is-warn { color: var(--iga-warning); }
+#ig-safety-modal .ig-spy-prob.is-danger { color: var(--iga-danger); }
+
+#ig-safety-modal .ig-spy-prob-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--iga-text-muted);
+    margin-top: 2px;
+}
+
+#ig-safety-modal .ig-spy-reason-card {
+    text-align: left;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--iga-text-main);
+    background: var(--iga-bg-secondary);
+    padding: 11px 13px;
+    border-radius: var(--iga-radius-md);
+    border: 1px solid var(--iga-border);
+    margin-bottom: 10px;
+}
+
+#ig-safety-modal .ig-spy-meta-card {
+    text-align: left;
+    font-size: 11px;
+    color: var(--iga-text-muted);
+    background: var(--iga-surface);
+    padding: 9px 12px;
+    border-radius: var(--iga-radius-md);
+    border: 1px solid var(--iga-border);
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+#ig-safety-modal .ig-spy-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--iga-border);
+}
+
+#ig-safety-modal .ig-spy-meta-row.is-last,
+#ig-safety-modal .ig-spy-meta-row:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+#ig-safety-modal .ig-spy-meta-label {
+    color: var(--iga-text-muted);
+}
+
+#ig-safety-modal .ig-spy-meta-val {
+    font-weight: 600;
+    color: var(--iga-text-bright);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+#ig-safety-modal .ig-spy-meta-val.is-strong {
+    font-weight: 700;
+    color: var(--iga-text-bright);
+}
+
+#ig-safety-modal .ig-spy-val-muted {
+    color: var(--iga-text-muted);
+    font-weight: 500;
+}
+
+#ig-safety-modal .ig-spy-val-safe,
+#ig-safety-modal .ig-spy-val-success {
+    color: var(--iga-success);
+    font-weight: 600;
+}
+
+#ig-safety-modal .ig-spy-val-warn {
+    color: var(--iga-warning);
+    font-weight: 600;
+}
+
+#ig-safety-modal .ig-spy-val-danger {
+    color: var(--iga-danger);
+    font-weight: 600;
+}
+
+#ig-safety-modal .ig-spy-val-story,
+#ig-safety-modal .ig-spy-val-accent {
+    color: #e1306c;
+    font-weight: 700;
+}
+
+#ig-safety-modal .ig-spy-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--iga-text-dim);
+    flex-shrink: 0;
+}
+
+#ig-safety-modal .ig-spy-dot.is-current {
+    background: var(--iga-accent);
+    box-shadow: 0 0 6px rgba(59, 130, 246, 0.45);
+}
+
+#ig-safety-modal .ig-spy-dot.is-story {
+    background: #e1306c;
+    box-shadow: 0 0 6px rgba(225, 48, 108, 0.5);
+}
+
+#ig-safety-modal .ig-spy-dot.is-empty {
+    background: transparent;
+    border: 1.5px solid var(--iga-text-dim);
+}
+
+#ig-safety-modal .ig-spy-timeline {
+    margin-top: 10px;
+    text-align: left;
+    background: var(--iga-bg-secondary);
+    border: 1px solid var(--iga-border);
+    border-radius: var(--iga-radius-md);
+    padding: 9px 11px;
+}
+
+#ig-safety-modal .ig-spy-timeline-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--iga-text-muted);
+    margin-bottom: 6px;
+}
+
+#ig-safety-modal .ig-spy-timeline-list {
+    max-height: 110px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-right: 4px;
+}
+
+#ig-safety-modal .ig-spy-timeline-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    padding: 4px 7px;
+    border-radius: 4px;
+    background: var(--iga-surface);
+}
+
+#ig-safety-modal .ig-spy-timeline-row.is-current {
+    border: 1px solid var(--iga-border-focus);
+}
+
+#ig-safety-modal .ig-spy-timeline-when {
+    color: var(--iga-text-muted);
+    font-family: var(--iga-font-mono);
+    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+#ig-safety-modal .ig-spy-timeline-summary {
+    font-weight: 600;
+    color: var(--iga-text-main);
+    text-align: right;
+}
+
+#ig-safety-modal .ig-spy-timeline-summary.is-safe {
+    color: var(--iga-success);
+}
+
+#ig-safety-modal .ig-spy-timeline-summary.is-warn {
+    color: var(--iga-warning);
+}
+
+#ig-safety-modal .ig-spy-timeline-summary.is-danger {
+    color: var(--iga-danger);
+}
+

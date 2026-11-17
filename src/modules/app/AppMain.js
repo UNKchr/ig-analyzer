@@ -76,125 +76,214 @@ Object.assign(App, {
             const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following", { signal }, expectedFollowing); 
             if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
+            // Humanized pause simulating closing 'Following' modal and opening 'Followers' modal (1.8s - 2.8s)
+            await Utils.sleep(1800 + Math.random() * 1000, signal);
+
             UI.log("Fetching 'Followers'...");
             const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal }, expectedFollowers); 
             if (signal.aborted) throw new DOMException("Aborted", "AbortError"); 
 
             
-            const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw); 
-            const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw); 
-            const following = followingDetailed.map((u) => u.username); 
-            const followers = followersDetailed.map((u) => u.username); 
-            
-            UI.hideProgress();
-            UI.setStatus("Calculating Metrics...");
-            
-            Storage.addHistoryEntry(followers.length, following.length);
-            UI.renderHistory(Storage.getHistory());
-            
-            const notFollowingBackUsernames = Utils.diff(following, followers);
-            const fansUsernames = Utils.diff(followers, following);
-            const mutualsUsernames = Utils.intersection(followers, following);
-            
-            const whitelist = Storage.getWhitelist();
-            const filteredNotFollowing = notFollowingBackUsernames.filter((u) => !whitelist.includes(u));
-            
-            const allUsersMap = new Map();
+            const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw);
+            const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw);
+            const following = followingDetailed.map((u) => u.username);
+            const followers = followersDetailed.map((u) => u.username);
+
+            const currFollowingLowerSet = new Set(following.map((u) => u.toLowerCase()));
+            const currFollowersLowerSet = new Set(followers.map((u) => u.toLowerCase()));
+
+            const allUsersByLower = new Map();
             [...followingDetailed, ...followersDetailed].forEach((u) => {
-                if (u?.username) allUsersMap.set(u.username, u);
+                if (!u?.username) return;
+                const key = u.username.toLowerCase();
+                const existing = allUsersByLower.get(key);
+                if (!existing) {
+                    allUsersByLower.set(key, u);
+                } else {
+                    allUsersByLower.set(key, {
+                        ...existing,
+                        ...u,
+                        id: u.id || existing.id || null,
+                        fullName: u.fullName || existing.fullName || '',
+                        profilePicUrl: u.profilePicUrl || existing.profilePicUrl || null
+                    });
+                }
             });
 
+            UI.hideProgress();
+            UI.setStatus("Calculating Metrics...");
+
+            const prev = Storage.load();
+            let prevFollowersDetailed = [];
+            let prevFollowingDetailed = [];
+            let followerRenames = [];
+            let followingRenames = [];
+            let allRenames = [];
+
+            if (prev) {
+                prevFollowersDetailed = Utils.toDetailedUserArray(
+                    Array.isArray(prev.followersDetailed) ? prev.followersDetailed : (prev.followers || [])
+                );
+                prevFollowingDetailed = Utils.toDetailedUserArray(
+                    Array.isArray(prev.followingDetailed) ? prev.followingDetailed : (prev.following || [])
+                );
+
+                // Detect username changes independently per list so Rename + Unfollow & Rename + FollowBack are never masked
+                followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, followersDetailed);
+                followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, followingDetailed);
+
+                const renameMapById = new Map();
+                followerRenames.forEach((r) => {
+                    const isMutualNow = currFollowingLowerSet.has(r.newUsername.toLowerCase());
+                    renameMapById.set(String(r.id), {
+                        ...r,
+                        relationship: isMutualNow ? 'mutual' : 'fan'
+                    });
+                });
+                followingRenames.forEach((r) => {
+                    const idStr = String(r.id);
+                    if (renameMapById.has(idStr)) {
+                        renameMapById.get(idStr).relationship = 'mutual';
+                    } else {
+                        const isMutualNow = currFollowersLowerSet.has(r.newUsername.toLowerCase());
+                        renameMapById.set(idStr, {
+                            ...r,
+                            relationship: isMutualNow ? 'mutual' : 'following'
+                        });
+                    }
+                });
+                allRenames = Array.from(renameMapById.values());
+            }
+
+            // Reconcile persisted lists & heal Whitelist BEFORE computing filteredNotFollowing
+            const { whitelist, reactivatedFollowersLowerSet } = Storage.reconcileAudienceState({
+                followersDetailed,
+                followingDetailed,
+                allRenames
+            });
+
+            const whitelistLowerSet = new Set(whitelist.map((u) => String(u || '').toLowerCase()));
+            const notFollowingBackUsernames = following.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
+            const filteredNotFollowing = notFollowingBackUsernames.filter((u) => !whitelistLowerSet.has(u.toLowerCase()));
+            const fansUsernames = followers.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
+            const mutualsUsernames = followers.filter((u) => currFollowingLowerSet.has(u.toLowerCase()));
+
             const mapToDetailed = (arr) => arr.map((u) => {
-                const userObj = allUsersMap.get(u) || {};
+                const userObj = allUsersByLower.get(String(u || '').toLowerCase()) || {};
+                const canonicalName = userObj.username || u;
                 return {
                     ...userObj,
-                    username: u,
-                    url: "https://www.instagram.com/" + u + "/"
+                    username: canonicalName,
+                    url: `https://www.instagram.com/${encodeURIComponent(canonicalName)}/`
                 };
             });
-            
+
             const notFollowingBackDetailed = mapToDetailed(filteredNotFollowing);
             const fansDetailed = mapToDetailed(fansUsernames);
             const mutualsDetailed = mapToDetailed(mutualsUsernames);
-            
+
             UI.log("Not Following Back (filtered): " + notFollowingBackDetailed.length);
             UI.log("Fans: " + fansDetailed.length);
             UI.log("Mutuals: " + mutualsDetailed.length);
-            
-            const prev = Storage.load();
+
+            const todayLocalStr = Utils.localDateStr();
+            const scanSummary = {
+                gained: 0,
+                lost: 0,
+                deactivated: 0,
+                blocked: 0,
+                renamed: allRenames.length
+            };
+
             if (prev) {
-                
-                const prevFollowersDetailed = Utils.toDetailedUserArray(
-                    Array.isArray(prev.followersDetailed) ? prev.followersDetailed : (prev.followers || [])
-                ); 
-                const prevFollowingDetailed = Utils.toDetailedUserArray(
-                    Array.isArray(prev.followingDetailed) ? prev.followingDetailed : (prev.following || [])
-                ); 
+                const prevFollowers = prevFollowersDetailed.map((u) => u.username);
+                const prevFollowing = prevFollowingDetailed.map((u) => u.username);
+                const prevFollowersLowerSet = new Set(prevFollowers.map((u) => u.toLowerCase()));
+                const prevFollowingLowerSet = new Set(prevFollowing.map((u) => u.toLowerCase()));
 
-                const prevFollowers = prevFollowersDetailed.map((u) => u.username); 
-                const prevFollowing = prevFollowingDetailed.map((u) => u.username); 
+                const prevUsersByLower = new Map();
+                [...prevFollowingDetailed, ...prevFollowersDetailed].forEach((u) => {
+                    if (u?.username) prevUsersByLower.set(u.username.toLowerCase(), u);
+                });
 
-                // Calculate globally renamed users to prevent false unfollows/new follows
-                const allPrevUsersDetailed = [...prevFollowersDetailed, ...prevFollowingDetailed];
-                const allCurrUsersDetailed = [...followersDetailed, ...followingDetailed];
-                const globalRenamed = Utils.detectRenamedMutuals(allPrevUsersDetailed, allCurrUsersDetailed);
-                const globalRenamedOldSet = new Set(globalRenamed.map(r => r.oldUsername));
-                const globalRenamedNewSet = new Set(globalRenamed.map(r => r.newUsername));
-                
-                // Auto-heal the whitelist if any whitelisted users changed their username
-                if (globalRenamed.length > 0) {
-                    let wl = Storage.getWhitelist();
-                    let wlChanged = false;
-                    globalRenamed.forEach(r => {
-                        const idx = wl.indexOf(r.oldUsername);
-                        if (idx !== -1) {
-                            wl[idx] = r.newUsername;
-                            wlChanged = true;
-                        }
-                    });
-                    if (wlChanged) {
-                        Storage.setScopedValue(CONFIG.WHITELIST_KEY, wl);
-                    }
+                if (allRenames.length > 0) {
+                    Storage.addRenamedEntries(allRenames);
+                    UI.log("Detected " + allRenames.length + " confirmed username change(s).");
                 }
 
-                const rawNewFollowers = Utils.diff(followers, prevFollowers);
-                const newFollowers = rawNewFollowers.filter(u => !globalRenamedNewSet.has(u));
+                if (reactivatedFollowersLowerSet.size > 0) {
+                    UI.log("Restored " + reactivatedFollowersLowerSet.size + " reactivated account(s) from Deactivated.");
+                }
+
+                // New Followers: exclude accounts that merely renamed inside followers OR reactivated from Deactivated
+                const followerRenamedNewLowerSet = new Set(followerRenames.map((r) => r.newUsername.toLowerCase()));
+                const rawNewFollowers = followers.filter((u) => !prevFollowersLowerSet.has(u.toLowerCase()));
+                const newFollowers = rawNewFollowers.filter((u) => {
+                    const lower = u.toLowerCase();
+                    return !followerRenamedNewLowerSet.has(lower) && !reactivatedFollowersLowerSet.has(lower);
+                });
 
                 UI.log("New followers since last run: " + newFollowers.length);
                 const newFollowersDetailed = mapToDetailed(newFollowers).map((u) => ({
                     ...u,
-                    followsBack: following.includes(u.username),
-                    date: Utils.now().split("T")[0]
+                    followsBack: currFollowingLowerSet.has(u.username.toLowerCase()),
+                    date: todayLocalStr
                 }));
                 if (newFollowersDetailed.length > 0) {
                     Storage.addNewFollowersEntries(newFollowersDetailed);
                 }
-                
-                const rawLostFollowers = Utils.diff(prevFollowers, followers);
-                const lostFollowers = rawLostFollowers.filter(u => !globalRenamedOldSet.has(u));
+                scanSummary.gained = newFollowersDetailed.length;
 
-                const rawLostFollowing = Utils.diff(prevFollowing, following);
-                const lostFollowing = rawLostFollowing.filter(u => !globalRenamedOldSet.has(u));
+                // Lost Followers: exclude ONLY accounts that renamed while staying in followers (catching Rename + Unfollow!)
+                const followerRenamedOldLowerSet = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+                const followingRenamedOldLowerSet = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+                const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
 
-                const missingUsers = Utils.intersection(lostFollowers, lostFollowing);
+                const rawLostFollowers = prevFollowers.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
+                const lostFollowers = rawLostFollowers.filter((u) => !followerRenamedOldLowerSet.has(u.toLowerCase()));
 
-                
-                const prevMutualsDetailed = Utils.intersectionById(prevFollowersDetailed, prevFollowingDetailed); 
-                const currMutualsDetailed = Utils.intersectionById(followersDetailed, followingDetailed); 
-                const renamedEntries = Utils.detectRenamedMutuals(prevMutualsDetailed, currMutualsDetailed); 
+                const rawLostFollowing = prevFollowing.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
+                const lostFollowing = rawLostFollowing.filter((u) => !followingRenamedOldLowerSet.has(u.toLowerCase()));
+                const lostFollowingLowerSet = new Set(lostFollowing.map((u) => u.toLowerCase()));
 
-                if (renamedEntries.length > 0) {
-                    Storage.addRenamedEntries(renamedEntries); 
-                    UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY), "ig-view-renamed", "Username Changes"); 
-                    UI.log("Detected " + renamedEntries.length + " confirmed username change(s) in mutuals."); 
-                }
+                const missingUsers = lostFollowers.filter((u) => lostFollowingLowerSet.has(u.toLowerCase()));
+                const missingLowerSet = new Set(missingUsers.map((u) => u.toLowerCase()));
+
+                const buildLostEntry = (rawHandle) => {
+                    const lower = String(rawHandle || '').toLowerCase();
+                    const ren = followingRenamedByOldLower.get(lower);
+                    if (ren) {
+                        // Mutual renamed @old -> @new AND unfollowed viewer (still in viewer's following)
+                        const liveProfile = allUsersByLower.get(ren.newUsername.toLowerCase());
+                        return {
+                            id: ren.id || liveProfile?.id || null,
+                            username: ren.newUsername,
+                            previousUsername: ren.oldUsername,
+                            fullName: liveProfile?.fullName || ren.fullName || '',
+                            profilePicUrl: liveProfile?.profilePicUrl || ren.profilePicUrl || null,
+                            isVerified: Boolean(liveProfile?.isVerified ?? ren.isVerified),
+                            isPrivate: Boolean(liveProfile?.isPrivate ?? ren.isPrivate),
+                            date: todayLocalStr
+                        };
+                    }
+                    const liveOrPrev = allUsersByLower.get(lower) || prevUsersByLower.get(lower) || {};
+                    return {
+                        id: liveOrPrev.id || null,
+                        username: liveOrPrev.username || rawHandle,
+                        fullName: liveOrPrev.fullName || '',
+                        profilePicUrl: liveOrPrev.profilePicUrl || null,
+                        isVerified: Boolean(liveOrPrev.isVerified),
+                        isPrivate: Boolean(liveOrPrev.isPrivate),
+                        date: todayLocalStr
+                    };
+                };
 
                 const newDeactivated = [];
                 const newBlocked = [];
                 const newUnfollowers = [];
 
                 // Ordinary unfollowers: lost followers who didn't vanish from both lists simultaneously
-                const ordinaryUnfollowers = lostFollowers.filter((u) => !missingUsers.includes(u));
+                const ordinaryUnfollowers = lostFollowers.filter((u) => !missingLowerSet.has(u.toLowerCase()));
                 if (ordinaryUnfollowers.length > 0) {
                     newUnfollowers.push(...ordinaryUnfollowers);
                 }
@@ -225,10 +314,10 @@ Object.assign(App, {
                             newUnfollowers.push(username);
                             // Auto-heal: If an account was previously misclassified as Blocked, remove it!
                             let currentBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
-                            if (currentBlocked.some((b) => b.username === username)) {
-                                currentBlocked = currentBlocked.filter((b) => b.username !== username);
+                            const uLower = username.toLowerCase();
+                            if (currentBlocked.some((b) => String(b.username || '').toLowerCase() === uLower)) {
+                                currentBlocked = currentBlocked.filter((b) => String(b.username || '').toLowerCase() !== uLower);
                                 Storage.setScopedValue(CONFIG.BLOCKED_KEY, currentBlocked);
-                                UI.renderNominalList(currentBlocked, "ig-view-blocked", "Blocked Accounts");
                             }
                         } else {
                             Utils.logError(
@@ -243,43 +332,46 @@ Object.assign(App, {
                         }
                     }
                     UI.hideProgress();
-                }    
-    
+                }
+
                 if (newUnfollowers.length > 0) {
                     UI.log("Identified " + newUnfollowers.length + " new unfollower(s).");
-                    Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers);
+                    Storage.addNominalEntries(CONFIG.CHURN_KEY, newUnfollowers.map(buildLostEntry));
                 }
-                
+
                 if (newDeactivated.length > 0) {
                     UI.log("Identified " + newDeactivated.length + " deactivated account(s).");
-                    Storage.addNominalEntries(CONFIG.DEACTIVATED_KEY, newDeactivated);
+                    Storage.addNominalEntries(CONFIG.DEACTIVATED_KEY, newDeactivated.map(buildLostEntry));
                 }
 
                 if (newBlocked.length > 0) {
                     UI.log("Identified " + newBlocked.length + " account(s) that blocked you.");
-                    Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked);
+                    Storage.addNominalEntries(CONFIG.BLOCKED_KEY, newBlocked.map(buildLostEntry));
                 }
 
-                // Auto-cleanup: remove any account from BLOCKED_KEY if currently present in following or followers
-                const activeHandles = new Set([...following, ...followers]);
-                let storedBlocked = Storage.getNominalList(CONFIG.BLOCKED_KEY);
-                const cleanedBlocked = storedBlocked.filter((b) => !activeHandles.has(b.username));
-                if (cleanedBlocked.length !== storedBlocked.length) {
-                    Storage.setScopedValue(CONFIG.BLOCKED_KEY, cleanedBlocked);
-                    UI.renderNominalList(cleanedBlocked, "ig-view-blocked", "Blocked Accounts");
-                }
+                scanSummary.lost = newUnfollowers.length;
+                scanSummary.deactivated = newDeactivated.length;
+                scanSummary.blocked = newBlocked.length;
             } else {
                 UI.log("First run: Initial state established.");
             }
 
+            // Record daily & intra-day history AFTER full reconciliation so summary and KPIs reflect post-scan state
+            Storage.addHistoryEntry(followers.length, following.length, null, {
+                mutuals: mutualsDetailed.length,
+                fans: fansDetailed.length,
+                notFollowingBack: notFollowingBackDetailed.length,
+                scanSummary
+            });
+
             Storage.syncFreshUserData([...followingDetailed, ...followersDetailed]);
-            
+
             Storage.save({
-                version: 4, 
+                version: 4,
                 lastRun: Utils.now(),
-                followers, 
-                following, 
-                followersDetailed, 
+                followers,
+                following,
+                followersDetailed,
                 followingDetailed,
                 notFollowingBackDetailed,
                 fansDetailed,
@@ -292,7 +384,8 @@ Object.assign(App, {
                 renamed: Storage.getNominalList(CONFIG.RENAMED_KEY),
                 history: Storage.getHistory()
             });
-            
+
+            UI.renderHistory(Storage.getHistory());
             UI.renderResults(notFollowingBackDetailed, "Not Following You Back", "ig-view-notfollowing", true);
             UI.renderResults(fansDetailed, "Fans (They follow you, you don't)", "ig-view-fans", false);
             UI.renderResults(mutualsDetailed, "Mutual Connections", "ig-view-mutuals", false);

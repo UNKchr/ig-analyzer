@@ -114,9 +114,14 @@ Object.assign(API, {
             params.append("__user", "0");
             params.append("__a", "1");
             params.append("__req", "1");
+            // Proven doc_id is ALWAYS primary (its variables match exactly). Live runtime doc_id is only a fallback.
+            const PROVEN_PROFILE_DOC_ID = "28036671149327607";
+            const liveProfileDocId = Utils.getRelayDocId("PolarisProfilePageContentQuery", null);
+            const profileDocIds = [PROVEN_PROFILE_DOC_ID];
+            if (liveProfileDocId && liveProfileDocId !== PROVEN_PROFILE_DOC_ID) profileDocIds.push(liveProfileDocId);
             params.append("fb_api_caller_class", "RelayModern");
             params.append("fb_api_req_friendly_name", "PolarisProfilePageContentQuery");
-            params.append("doc_id", "28036671149327607");
+            params.append("doc_id", PROVEN_PROFILE_DOC_ID);
             params.append("server_timestamps", "true");
             params.append("variables", JSON.stringify({
                 enable_integrity_filters: true,
@@ -138,18 +143,22 @@ Object.assign(API, {
             if (lsd) headers["X-FB-LSD"] = lsd;
 
             let user = null;
-            try {
-                const json = await API.fetchWithRetry(url, {
-                    method: "POST",
-                    headers,
-                    body: params.toString(),
-                    optional: true,
-                    signal: options.signal
-                }, 1);
-                user = json?.data?.user;
-            } catch (graphqlErr) {
-                if (graphqlErr.name === 'AbortError' || options.signal?.aborted) throw graphqlErr;
-                console.warn(`[IG Analyzer] GraphQL profile fetch failed for @${cleanUser}:`, graphqlErr);
+            for (const docId of profileDocIds) {
+                params.set("doc_id", docId);
+                try {
+                    const json = await API.fetchWithRetry(url, {
+                        method: "POST",
+                        headers,
+                        body: params.toString(),
+                        optional: true,
+                        signal: options.signal
+                    }, 1);
+                    user = json?.data?.user || null;
+                } catch (graphqlErr) {
+                    if (graphqlErr.name === 'AbortError' || options.signal?.aborted) throw graphqlErr;
+                    console.warn(`[IG Analyzer] GraphQL profile fetch failed for @${cleanUser} (doc_id ${docId}):`, graphqlErr?.message || graphqlErr);
+                }
+                if (user) break;
             }
 
             if (user) {
@@ -179,8 +188,10 @@ Object.assign(API, {
                     : [];
                 const facepileUsers = Array.isArray(user?.profile_context_facepile_users)
                     ? user.profile_context_facepile_users.map((f) => ({
-                        id: f.id,
-                        profilePicUrl: Utils.sanitizeImageUrl(f.profile_pic_url)
+                        id: f?.id ? String(f.id) : null,
+                        username: f?.username || '',
+                        fullName: f?.full_name || '',
+                        profilePicUrl: Utils.sanitizeImageUrl(f?.profile_pic_url)
                     }))
                     : [];
 

@@ -1,7 +1,7 @@
 export const CONFIG = {
     SCRIPT_ID: "ig-analyzer",
     SCRIPT_NAME: "Instagram Follower Analyzer",
-    BACKUP_SCHEMA_VERSION: 1,
+    BACKUP_SCHEMA_VERSION: 2,
     STORAGE_KEY: "ig_snapshot_v2",
     POSITION_KEY: "ig_panel_position_v2",
     WHITELIST_KEY: "ig_whitelist_v2",
@@ -20,11 +20,19 @@ export const CONFIG = {
     STORY_MIN_ANOMALIES_FOR_FLAG: 2,
     STORY_STREAK_FOR_MEDIUM_CONFIDENCE: 2,
     FOLLOWING_HASH: "d04b0a864b4b54837c0d870b0e77e076",
+    FOLLOWING_ALT_HASH: "3dec7e2c57367ef3da3d987d89f9dbc8",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
+    HIGHLIGHTS_HASH: "d4d88dc1500312af6f937f7b804c68c3",
     PAGE_SIZE: 50,
+    FRIENDSHIPS_PAGE_SIZE: 12,     // Native Instagram Web modal batch size (?count=12)
+    FRIENDSHIPS_RATE_LIMIT_MS: 1250, // Natural scroll pacing for count=12 pages
     BASE_RATE_LIMIT_MS: 2000, // Increased pacing for native REST API sensitivity
     MAX_RETRIES: 4,           
     COOLDOWN_429_MS: 60000,   // Cooldown period when encountering HTTP 429
+    RATE_LIMIT_STATE_KEY: "ig_rate_limit_buckets_v1",
+    RATE_LIMIT_CIRCUIT_MS: 300000,
+    BREATHER_EVERY_PAGES: 10,      // Insert human scroll breather every 10 pages
+    BREATHER_PAUSE_MS: 2500,       // Extra breather duration (ms)
     MAX_AUTO_VERIFY_ACCOUNTS: 5, // Maximum lost accounts to auto-verify per scan
     ASBD_ID: "359341",        // Modern Meta ASBD header identifier
     DEBUG: false,

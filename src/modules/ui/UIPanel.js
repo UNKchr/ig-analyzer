@@ -38,17 +38,17 @@ Object.assign(UI, {
             '  <div class="ig-tabs-container" id="ig-tabs">',
             '    <div id="ig-tab-indicator" class="ig-tab-indicator"></div>',
             '    <button class="ig-tab-btn active" data-target="ig-log"><span class="ig-tab-icon">' + Icons.logs + '</span><span class="ig-tab-label">Logs</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-history"><span class="ig-tab-icon">' + Icons.history + '</span><span class="ig-tab-label">History</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-notfollowing"><span class="ig-tab-icon">' + Icons.notFollowing + '</span><span class="ig-tab-label">Not Following</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-fans"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Fans</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-targettracker"><span class="ig-tab-icon">' + Icons.target + '</span><span class="ig-tab-label">Target Tracker</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-whitelist"><span class="ig-tab-icon">' + Icons.shieldCheck + '</span><span class="ig-tab-label">Whitelist</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-view-renamed"><span class="ig-tab-icon">' + Icons.renamed + '</span><span class="ig-tab-label">Renamed</span></button>', 
+            '    <button class="ig-tab-btn" data-target="ig-view-history"><span class="ig-tab-icon">' + Icons.history + '</span><span class="ig-tab-label">History</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-history">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-notfollowing"><span class="ig-tab-icon">' + Icons.notFollowing + '</span><span class="ig-tab-label">Not Following</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-notfollowing">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-fans"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Fans</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-fans">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-mutuals">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-targettracker"><span class="ig-tab-icon">' + Icons.target + '</span><span class="ig-tab-label">Target Tracker</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-targettracker">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-newfollowers">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-whitelist"><span class="ig-tab-icon">' + Icons.shieldCheck + '</span><span class="ig-tab-label">Whitelist</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-whitelist">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-unfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Unfollowers</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-unfollowers">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-deactivated"><span class="ig-tab-icon">' + Icons.deactivated + '</span><span class="ig-tab-label">Deactivated</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-deactivated">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-blocked"><span class="ig-tab-icon">' + Icons.blocked + '</span><span class="ig-tab-label">Blocked</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-blocked">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-view-renamed"><span class="ig-tab-icon">' + Icons.renamed + '</span><span class="ig-tab-label">Renamed</span><span class="ig-tab-count is-empty" data-tab-count="ig-view-renamed">0</span></button>', 
             '  </div>',
             '</div>',
             '<div id="ig-log" class="ig-view-container ig-view active"></div>',
@@ -68,7 +68,7 @@ Object.assign(UI, {
             '    <span class="ig-bmc-icon">' + Icons.coffee + '</span>',
             '    <span class="ig-bmc-text">Buy me a coffee</span>',
             '  </a>',
-            '  <span class="ig-footer-meta">v3.13.1</span>',
+            '  <span class="ig-footer-meta">v3.13.2</span>',
             '</div>'
         ].join("\n");
         document.body.appendChild(panel);
@@ -121,74 +121,93 @@ Object.assign(UI, {
         UI.renderWhitelist(Storage.getWhitelist());
         UI.renderTargetTrackerMainView();
         UI.renderPersistedSnapshot(Storage.load());
+        UI.updateMainTabCounts();
+        UI.syncMainExportButton();
 
         Utils.getUserIdAsync().then((asyncId) => {
             if (asyncId && asyncId !== Storage.getCurrentUserId()) {
                 Storage.setCurrentUserId(asyncId);
-                UI.renderHistory(Storage.getHistory(asyncId));
-                UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, asyncId), "ig-view-unfollowers", "Recent Unfollowers");
-                UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, asyncId), "ig-view-deactivated", "Deactivated Accounts");
-                UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, asyncId), "ig-view-blocked", "Blocked Accounts");
-                UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, asyncId), "ig-view-renamed", "Username Changes"); 
+                UI.renderHistory(Storage.getHistory(asyncId), asyncId);
+                UI.renderNominalList(Storage.getNominalList(CONFIG.CHURN_KEY, asyncId), "ig-view-unfollowers", "Recent Unfollowers", { userId: asyncId });
+                UI.renderNominalList(Storage.getNominalList(CONFIG.DEACTIVATED_KEY, asyncId), "ig-view-deactivated", "Deactivated Accounts", { userId: asyncId });
+                UI.renderNominalList(Storage.getNominalList(CONFIG.BLOCKED_KEY, asyncId), "ig-view-blocked", "Blocked Accounts", { userId: asyncId });
+                UI.renderRenamedList(Storage.getNominalList(CONFIG.RENAMED_KEY, asyncId), "ig-view-renamed", "Username Changes", { userId: asyncId }); 
                 UI.renderNewFollowers(Storage.getNewFollowersList(asyncId));
                 UI.renderWhitelist(Storage.getWhitelist(asyncId));
                 UI.renderTargetTrackerMainView(asyncId);
-                UI.renderPersistedSnapshot(Storage.load(asyncId));
+                UI.renderPersistedSnapshot(Storage.load(asyncId), asyncId);
+                UI.updateMainTabCounts(asyncId);
+                UI.syncMainExportButton();
             }
         }).catch(() => {});
+    },
+
+    applyCurrentTheme: () => {
+        const panel = document.getElementById('ig-analyzer-panel');
+        const subpanel = document.getElementById('ig-target-subpanel');
+        const safetyModal = document.getElementById('ig-safety-modal');
+        const hdModal = document.getElementById('ig-hd-modal');
+        const backupPopup = document.getElementById('ig-backup-popup');
+        const backupOverlays = typeof document.querySelectorAll === 'function'
+            ? Array.from(document.querySelectorAll('.ig-backup-overlay'))
+            : [];
+        const targets = Array.from(new Set([panel, subpanel, safetyModal, hdModal, backupPopup, ...backupOverlays].filter(Boolean)));
+        if (targets.length === 0) return;
+
+        const html = document.documentElement;
+        const body = document.body;
+
+        // 1. Check for explicit dark mode classes/attributes on Instagram Web
+        const isExplicitDark = Boolean(
+            html?.classList?.contains('_aa55') ||
+            html?.getAttribute?.('data-theme') === 'dark' ||
+            (body && body.getAttribute?.('data-theme') === 'dark')
+        );
+
+        if (isExplicitDark) {
+            targets.forEach((t) => t.classList.remove('ig-light-theme'));
+            return;
+        }
+
+        // 2. Check for explicit light mode attribute
+        const isExplicitLight = Boolean(
+            html?.getAttribute?.('data-theme') === 'light' ||
+            (body && body.getAttribute?.('data-theme') === 'light')
+        );
+
+        if (isExplicitLight) {
+            targets.forEach((t) => t.classList.add('ig-light-theme'));
+            return;
+        }
+
+        // 3. Computed background color with Instagram light theme (#fafafa / rgb(250, 250, 250)) tolerance
+        const bodyBg = (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function' && (body || html))
+            ? window.getComputedStyle(body || html).backgroundColor
+            : '';
+        const isLightBg = bodyBg === 'rgb(255, 255, 255)' ||
+                          bodyBg === '#ffffff' ||
+                          bodyBg === 'white' ||
+                          bodyBg === 'rgb(250, 250, 250)' ||
+                          bodyBg === '#fafafa';
+
+        if (isLightBg) {
+            targets.forEach((t) => t.classList.add('ig-light-theme'));
+            return;
+        }
+
+        // 4. Fallback to OS prefers-color-scheme
+        if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            targets.forEach((t) => t.classList.add('ig-light-theme'));
+        } else {
+            targets.forEach((t) => t.classList.remove('ig-light-theme'));
+        }
     },
 
     setupThemeObserver: () => {
         let rafId = null;
 
         const checkTheme = () => {
-            const panel = document.getElementById('ig-analyzer-panel');
-            const subpanel = document.getElementById('ig-target-subpanel');
-            const safetyModal = document.getElementById('ig-safety-modal');
-            const targets = [panel, subpanel, safetyModal].filter(Boolean);
-            if (targets.length === 0) return;
-
-            const html = document.documentElement;
-            const body = document.body;
-
-            // 1. Check for explicit dark mode classes/attributes on Instagram Web
-            const isExplicitDark = html.classList.contains('_aa55') || 
-                                   html.getAttribute('data-theme') === 'dark' || 
-                                   (body && body.getAttribute('data-theme') === 'dark');
-
-            if (isExplicitDark) {
-                targets.forEach(t => t.classList.remove('ig-light-theme'));
-                return;
-            }
-
-            // 2. Check for explicit light mode attribute
-            const isExplicitLight = html.getAttribute('data-theme') === 'light' ||
-                                    (body && body.getAttribute('data-theme') === 'light');
-
-            if (isExplicitLight) {
-                targets.forEach(t => t.classList.add('ig-light-theme'));
-                return;
-            }
-
-            // 3. Computed background color with Instagram light theme (#fafafa / rgb(250, 250, 250)) tolerance
-            const bodyBg = window.getComputedStyle(body || html).backgroundColor;
-            const isLightBg = bodyBg === 'rgb(255, 255, 255)' || 
-                              bodyBg === '#ffffff' || 
-                              bodyBg === 'white' || 
-                              bodyBg === 'rgb(250, 250, 250)' || 
-                              bodyBg === '#fafafa';
-
-            if (isLightBg) {
-                targets.forEach(t => t.classList.add('ig-light-theme'));
-                return;
-            }
-
-            // 4. Fallback to OS prefers-color-scheme
-            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
-                targets.forEach(t => t.classList.add('ig-light-theme'));
-            } else {
-                targets.forEach(t => t.classList.remove('ig-light-theme'));
-            }
+            UI.applyCurrentTheme();
         };
 
         checkTheme();
@@ -267,6 +286,9 @@ Object.assign(UI, {
                     }
                 }
                 updateIndicator(target, true);
+                if (typeof UI.syncMainExportButton === 'function') {
+                    UI.syncMainExportButton();
+                }
             };
         });
 
@@ -392,13 +414,24 @@ Object.assign(UI, {
 
     resetPosition: () => {
         const panel = document.getElementById("ig-analyzer-panel");
-        if (!panel) return;
-        panel.style.left = "auto";
-        panel.style.top = (CONFIG.DEFAULT_POSITION.top || 80) + "px";
-        panel.style.right = (CONFIG.DEFAULT_POSITION.right || 20) + "px";
-        panel.style.width = (CONFIG.DEFAULT_POSITION.width || 717) + "px";
-        panel.style.height = (CONFIG.DEFAULT_POSITION.height || 560) + "px";
-        GM_deleteValue(CONFIG.POSITION_KEY);
+        if (panel) {
+            panel.style.left = "auto";
+            panel.style.top = (CONFIG.DEFAULT_POSITION.top || 80) + "px";
+            panel.style.right = (CONFIG.DEFAULT_POSITION.right || 20) + "px";
+            panel.style.width = (CONFIG.DEFAULT_POSITION.width || 717) + "px";
+            panel.style.height = (CONFIG.DEFAULT_POSITION.height || 560) + "px";
+            GM_deleteValue(CONFIG.POSITION_KEY);
+        }
+        const subpanel = document.getElementById("ig-target-subpanel");
+        if (subpanel) {
+            const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+            subpanel.style.left = Math.max(30, vw - 960) + "px";
+            subpanel.style.top = "90px";
+            subpanel.style.right = "auto";
+            subpanel.style.width = "";
+            subpanel.style.height = "";
+            GM_deleteValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY);
+        }
     },
 
     toggleMinimize: () => {
@@ -448,5 +481,138 @@ Object.assign(UI, {
         { id: 'pending', label: 'Pending', icon: Icons.clock },
         { id: 'story', label: 'With Story', icon: Icons.storyRing },
         { id: 'verified', label: 'Verified', icon: Icons.verified }
-    ]
+    ],
+
+    NOMINAL_CHIPS_DEF: [
+        { id: 'all', label: 'All', icon: null },
+        { id: 'repeat', label: 'Repeat 2x+', icon: Icons.repeat },
+        { id: 'renamed', label: 'Renamed', icon: Icons.renamed },
+        { id: 'private', label: 'Private', icon: Icons.lock },
+        { id: 'verified', label: 'Verified', icon: Icons.verified }
+    ],
+
+    RENAMED_CHIPS_DEF: [
+        { id: 'all', label: 'All', icon: null },
+        { id: 'mutual', label: 'Mutual', icon: Icons.mutuals },
+        { id: 'fan', label: 'Fan', icon: Icons.fans },
+        { id: 'following', label: 'Following', icon: Icons.user },
+        { id: 'verified', label: 'Verified', icon: Icons.verified }
+    ],
+
+    refreshMainTabIndicator: () => {
+        const tabsContainer = document.getElementById('ig-tabs');
+        if (!tabsContainer || typeof UI.updateTabIndicator !== 'function') return;
+        const activeBtn = tabsContainer.querySelector('.ig-tab-btn.active');
+        if (activeBtn) {
+            UI.updateTabIndicator(activeBtn, false);
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => UI.updateTabIndicator(activeBtn, false));
+            }
+        }
+    },
+
+    getActiveExportContext: () => {
+        const activeTab = document.querySelector('#ig-tabs .ig-tab-btn.active');
+        const targetId = activeTab ? activeTab.getAttribute('data-target') : 'ig-log';
+
+        const paginatedSlugs = {
+            'ig-view-notfollowing': 'not_following_back',
+            'ig-view-fans': 'fans',
+            'ig-view-mutuals': 'mutuals',
+            'ig-view-newfollowers': 'new_followers',
+            'ig-view-unfollowers': 'unfollowers',
+            'ig-view-deactivated': 'deactivated',
+            'ig-view-blocked': 'blocked',
+            'ig-view-renamed': 'renamed'
+        };
+
+        if (targetId && Object.prototype.hasOwnProperty.call(paginatedSlugs, targetId)) {
+            const state = UI.paginationState[targetId];
+            return {
+                mode: 'users',
+                slug: paginatedSlugs[targetId],
+                items: Array.isArray(state?.users) ? state.users : []
+            };
+        }
+
+        if (targetId === 'ig-view-whitelist') {
+            const rawWl = Storage.getWhitelist();
+            const q = String(UI.whitelistSearchQuery || '').trim().toLowerCase();
+            const filtered = q
+                ? rawWl.filter((u) => String(u || '').toLowerCase().includes(q))
+                : rawWl;
+            const items = filtered.slice().reverse().map((username) => {
+                const known = typeof Storage.findKnownUserByUsername === 'function'
+                    ? Storage.findKnownUserByUsername(username)
+                    : null;
+                return {
+                    ...(known || {}),
+                    username: String(username || '').replace(/^@+/, '').trim(),
+                    url: Utils.sanitizeUrl(username)
+                };
+            });
+            return { mode: 'users', slug: 'whitelist', items };
+        }
+
+        if (targetId === 'ig-view-history') {
+            return {
+                mode: 'history',
+                slug: 'history',
+                items: Storage.getHistory()
+            };
+        }
+
+        if (targetId === 'ig-log') {
+            const nfRaw = UI.paginationState['ig-view-notfollowing']?.rawUsers;
+            const fallback = Array.isArray(nfRaw) ? nfRaw : (Array.isArray(window.__igLastResults) ? window.__igLastResults : []);
+            return {
+                mode: 'users',
+                slug: 'not_following_back',
+                items: fallback
+            };
+        }
+
+        return { mode: 'none', slug: 'none', items: [] };
+    },
+
+    syncMainExportButton: () => {
+        const exportBtn = document.getElementById('ig-export-csv');
+        if (!exportBtn) return;
+        const ctx = typeof UI.getActiveExportContext === 'function' ? UI.getActiveExportContext() : null;
+        exportBtn.disabled = !ctx || !Array.isArray(ctx.items) || ctx.items.length === 0;
+    },
+
+    updateMainTabCounts: (userId = null) => {
+        const tabsContainer = document.getElementById('ig-tabs');
+        if (!tabsContainer) return;
+
+        const snap = Storage.load(userId);
+        const countsMap = {
+            'ig-view-history': Storage.getHistory(userId).length,
+            'ig-view-notfollowing': UI.paginationState['ig-view-notfollowing']?.rawUsers?.length ?? 0,
+            'ig-view-fans': UI.paginationState['ig-view-fans']?.rawUsers?.length ?? (snap?.fansDetailed?.length ?? 0),
+            'ig-view-mutuals': UI.paginationState['ig-view-mutuals']?.rawUsers?.length ?? (snap?.mutualsDetailed?.length ?? 0),
+            'ig-view-targettracker': Object.keys(Storage.getTargetTrackerMap(userId) || {}).length,
+            'ig-view-newfollowers': Storage.getNewFollowersList(userId).length,
+            'ig-view-whitelist': Storage.getWhitelist(userId).length,
+            'ig-view-unfollowers': Storage.getNominalList(CONFIG.CHURN_KEY, userId).length,
+            'ig-view-deactivated': Storage.getNominalList(CONFIG.DEACTIVATED_KEY, userId).length,
+            'ig-view-blocked': Storage.getNominalList(CONFIG.BLOCKED_KEY, userId).length,
+            'ig-view-renamed': Storage.getNominalList(CONFIG.RENAMED_KEY, userId).length
+        };
+
+        Object.entries(countsMap).forEach(([tabId, rawCount]) => {
+            const badge = tabsContainer.querySelector(`[data-tab-count="${tabId}"]`);
+            if (!badge) return;
+            const count = Math.max(0, Number(rawCount) || 0);
+            badge.textContent = count > 0 ? Utils.formatNumber(count) : '0';
+            if (count > 0) {
+                badge.classList.remove('is-empty');
+            } else {
+                badge.classList.add('is-empty');
+            }
+        });
+
+        UI.refreshMainTabIndicator();
+    }
 });

@@ -45,12 +45,12 @@ Object.assign(UI, {
             '  <div class="ig-tabs-container" id="ig-target-tabs">',
             '    <div id="ig-target-tab-indicator" class="ig-tab-indicator"></div>',
             '    <button class="ig-tab-btn active" data-target="ig-target-view-overview"><span class="ig-tab-icon">' + Icons.metrics + '</span><span class="ig-tab-label">Overview</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-target-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-target-view-newmutuals"><span class="ig-tab-icon">' + Icons.newMutuals + '</span><span class="ig-tab-label">New Mutuals</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-target-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-target-view-lostfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Lost Followers</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-target-view-followers"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Followers</span></button>',
-            '    <button class="ig-tab-btn" data-target="ig-target-view-following"><span class="ig-tab-icon">' + Icons.user + '</span><span class="ig-tab-label">Following</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-target-view-mutuals"><span class="ig-tab-icon">' + Icons.mutuals + '</span><span class="ig-tab-label">Mutuals</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-mutuals">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-target-view-newmutuals"><span class="ig-tab-icon">' + Icons.newMutuals + '</span><span class="ig-tab-label">New Mutuals</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-newmutuals">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-target-view-newfollowers"><span class="ig-tab-icon">' + Icons.userPlus + '</span><span class="ig-tab-label">New Followers</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-newfollowers">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-target-view-lostfollowers"><span class="ig-tab-icon">' + Icons.unfollowers + '</span><span class="ig-tab-label">Lost Followers</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-lostfollowers">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-target-view-followers"><span class="ig-tab-icon">' + Icons.fans + '</span><span class="ig-tab-label">Followers</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-followers">0</span></button>',
+            '    <button class="ig-tab-btn" data-target="ig-target-view-following"><span class="ig-tab-icon">' + Icons.user + '</span><span class="ig-tab-label">Following</span><span class="ig-tab-count is-empty" data-target-count="ig-target-view-following">0</span></button>',
             '    <button class="ig-tab-btn" data-target="ig-target-view-logs"><span class="ig-tab-icon">' + Icons.logs + '</span><span class="ig-tab-label">Logs</span></button>',
             '  </div>',
             '</div>',
@@ -147,8 +147,60 @@ Object.assign(UI, {
             }, { passive: true });
         }
 
+        UI.updateTargetTabIndicator = updateIndicator;
+
         UI.setupTargetDrag(subpanel, subpanel.querySelector("#ig-target-header"));
         UI.loadTargetPosition(subpanel);
+    },
+
+    refreshTargetTabIndicator: () => {
+        const tabsContainer = document.getElementById("ig-target-tabs");
+        if (!tabsContainer || typeof UI.updateTargetTabIndicator !== 'function') return;
+        const activeBtn = tabsContainer.querySelector('.ig-tab-btn.active');
+        if (activeBtn) {
+            UI.updateTargetTabIndicator(activeBtn, false);
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => UI.updateTargetTabIndicator(activeBtn, false));
+            }
+        }
+    },
+
+    updateTargetTabCounts: (targetData = null) => {
+        const tabsContainer = document.getElementById("ig-target-tabs");
+        if (!tabsContainer) return;
+
+        const isRestricted = Boolean(targetData?.isRestricted);
+        const countsMap = (!targetData || isRestricted)
+            ? {
+                'ig-target-view-mutuals': 0,
+                'ig-target-view-newmutuals': 0,
+                'ig-target-view-newfollowers': 0,
+                'ig-target-view-lostfollowers': 0,
+                'ig-target-view-followers': 0,
+                'ig-target-view-following': 0
+            }
+            : {
+                'ig-target-view-mutuals': (targetData.mutuals || []).length,
+                'ig-target-view-newmutuals': (targetData.newMutualsDetailed || targetData.newMutuals || []).length,
+                'ig-target-view-newfollowers': (targetData.newFollowers || []).length,
+                'ig-target-view-lostfollowers': (targetData.lostFollowers || []).length,
+                'ig-target-view-followers': (targetData.followers || []).length,
+                'ig-target-view-following': (targetData.following || []).length
+            };
+
+        Object.entries(countsMap).forEach(([tabId, rawCount]) => {
+            const badge = tabsContainer.querySelector(`[data-target-count="${tabId}"]`);
+            if (!badge) return;
+            const count = Math.max(0, Number(rawCount) || 0);
+            badge.textContent = count > 0 ? Utils.formatNumber(count) : '0';
+            if (count > 0) {
+                badge.classList.remove('is-empty');
+            } else {
+                badge.classList.add('is-empty');
+            }
+        });
+
+        UI.refreshTargetTabIndicator();
     },
 
     setupTargetDrag: (panel, handle) => {
@@ -167,7 +219,8 @@ Object.assign(UI, {
             panel.style.left = raw.x + "px";
             panel.style.top = raw.y + "px";
             panel.style.right = "auto";
-            GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { x: raw.x, y: raw.y });
+            const prev = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, {}) || {};
+            GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { ...prev, x: raw.x, y: raw.y });
         });
         document.addEventListener("mouseup", () => {
             if (isDragging) {
@@ -176,10 +229,46 @@ Object.assign(UI, {
                 document.body.style.userSelect = "";
             }
         });
+
+        window.addEventListener("resize", () => {
+            if (panel.style.display === "none") return;
+            const clamped = UI.clampPosition(panel, panel.offsetLeft, panel.offsetTop);
+            panel.style.left = clamped.x + "px";
+            panel.style.top = clamped.y + "px";
+            panel.style.right = "auto";
+            const prev = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, {}) || {};
+            GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { ...prev, x: clamped.x, y: clamped.y });
+        });
+
+        if (typeof ResizeObserver === "function") {
+            let resizeTimer = null;
+            const ro = new ResizeObserver(() => {
+                if (panel.style.display === "none" || panel.classList.contains("is-minimized")) return;
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(() => {
+                    if (panel.style.display === "none" || panel.classList.contains("is-minimized")) return;
+                    const w = panel.offsetWidth;
+                    const h = panel.offsetHeight;
+                    if (w >= 360 && h >= 260) {
+                        const prev = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, {}) || {};
+                        GM_setValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, { ...prev, width: w, height: h });
+                    }
+                }, 250);
+            });
+            ro.observe(panel);
+        }
     },
 
     loadTargetPosition: (panel) => {
         const pos = GM_getValue(CONFIG.TARGET_SUBPANEL_POSITION_KEY, null);
+        if (pos && typeof pos.width === "number" && typeof pos.height === "number") {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const safeW = Math.min(pos.width, vw - 40);
+            const safeH = Math.min(pos.height, vh - 40);
+            if (safeW >= 360) panel.style.width = safeW + "px";
+            if (safeH >= 260) panel.style.height = safeH + "px";
+        }
         if (pos && typeof pos.x === "number") {
             const clamped = UI.clampPosition(panel, pos.x, pos.y);
             panel.style.left = clamped.x + "px";
@@ -198,6 +287,7 @@ Object.assign(UI, {
         UI.currentTargetUser = targetUserObj;
         const subpanel = document.getElementById("ig-target-subpanel");
         if (!subpanel) return;
+        if (typeof UI.applyCurrentTheme === "function") UI.applyCurrentTheme();
 
         const cleanUser = String(targetUserObj.username || '').replace(/^@/, '').trim();
         const titleEl = document.getElementById("ig-target-header-title");
@@ -207,16 +297,22 @@ Object.assign(UI, {
 
         const summaryBar = document.getElementById("ig-target-meta-summary");
         if (summaryBar) {
+            const prevHandle = targetUserObj.previousUsername || storedData?.user?.previousUsername || '';
             let summaryHtml = '<span class="ig-target-meta-user">@' + Utils.escapeHtml(cleanUser) + '</span>';
+            if (prevHandle && prevHandle.toLowerCase() !== cleanUser.toLowerCase()) {
+                summaryHtml += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + Utils.escapeHtml(prevHandle) + '">Formerly @' + Utils.escapeHtml(prevHandle) + '</span>';
+            }
             if (targetUserObj.fullName) {
                 summaryHtml += '<span class="ig-target-meta-name">' + Utils.escapeHtml(targetUserObj.fullName) + '</span>';
             }
-            const fCount = (Array.isArray(storedData?.followers) && storedData.followers.length > 0)
-                ? storedData.followers.length
-                : (targetUserObj.followerCount || 0);
-            const ingCount = (Array.isArray(storedData?.following) && storedData.following.length > 0)
-                ? storedData.following.length
-                : (targetUserObj.followingCount || 0);
+            const fCount = Math.max(
+                Number(targetUserObj.followerCount ?? storedData?.user?.followerCount) || 0,
+                Array.isArray(storedData?.followers) ? storedData.followers.length : 0
+            );
+            const ingCount = Math.max(
+                Number(targetUserObj.followingCount ?? storedData?.user?.followingCount) || 0,
+                Array.isArray(storedData?.following) ? storedData.following.length : 0
+            );
             summaryHtml += '<span class="ig-target-meta-pill">' + Utils.formatNumber(fCount) + ' followers</span>';
             summaryHtml += '<span class="ig-target-meta-pill">' + Utils.formatNumber(ingCount) + ' following</span>';
             summaryBar.innerHTML = summaryHtml;
@@ -224,11 +320,12 @@ Object.assign(UI, {
 
         subpanel.style.display = "flex";
         subpanel.classList.remove("is-minimized");
+        UI.loadTargetPosition(subpanel);
 
         const overviewTab = subpanel.querySelector('[data-target="ig-target-view-overview"]');
         if (overviewTab) overviewTab.click();
 
-        const dataToRender = storedData || Storage.getTargetData(cleanUser);
+        const dataToRender = storedData || Storage.getTargetData(cleanUser, null, targetUserObj.id);
         if (dataToRender) {
             UI.renderTargetOverview(dataToRender);
             UI.renderTargetLists(dataToRender);
@@ -249,6 +346,7 @@ Object.assign(UI, {
             });
             const expBtn = document.getElementById("ig-target-export-csv");
             if (expBtn) expBtn.disabled = true;
+            UI.updateTargetTabCounts(null);
         }
     },
 
@@ -280,9 +378,7 @@ Object.assign(UI, {
         try {
             const box = document.getElementById("ig-target-view-logs");
             if (box) {
-                const nowStr = (typeof Utils.now === 'function' ? Utils.now() : new Date().toISOString());
-                const timeParts = nowStr.split("T");
-                const timeStr = (timeParts.length > 1 ? timeParts[1].split(".")[0] : '') || nowStr;
+                const timeStr = (typeof Utils.localTimeStr === 'function' ? Utils.localTimeStr() : '') || new Date().toLocaleTimeString();
                 const entry = document.createElement("div");
                 entry.className = "ig-log-entry";
                 const timeSpan = document.createElement("span");
@@ -361,23 +457,110 @@ Object.assign(UI, {
         const safeInitial = safeUser ? safeUser.charAt(0).toUpperCase() : '?';
         const avatarHtml = '<div class="ig-user-avatar ig-avatar-monogram" data-avatar-url="' + (avatarUrl || '') + '" data-username="' + safeUser + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
-        const followersCount = (Array.isArray(targetData.followers) && targetData.followers.length > 0)
-            ? targetData.followers.length
-            : (u.followerCount || 0);
-        const followingCount = (Array.isArray(targetData.following) && targetData.following.length > 0)
-            ? targetData.following.length
-            : (u.followingCount || 0);
+        const followersCount = Math.max(
+            Number(u.followerCount) || 0,
+            Array.isArray(targetData.followers) ? targetData.followers.length : 0
+        );
+        const followingCount = Math.max(
+            Number(u.followingCount) || 0,
+            Array.isArray(targetData.following) ? targetData.following.length : 0
+        );
         const mutualsCount = (Array.isArray(targetData.mutuals) && targetData.mutuals.length > 0)
             ? targetData.mutuals.length
             : (typeof u.mutualsCount === 'number' ? u.mutualsCount : 0);
-        const newCount = targetData.newFollowers ? targetData.newFollowers.length : 0;
-        const lostCount = targetData.lostFollowers ? targetData.lostFollowers.length : 0;
-        const newMutualsCount = targetData.newMutuals ? targetData.newMutuals.length : 0;
-        const netFlow = newCount - lostCount;
+
+        const newCount = Array.isArray(targetData.newFollowers) ? targetData.newFollowers.length : 0;
+        const lostCount = Array.isArray(targetData.lostFollowers) ? targetData.lostFollowers.length : 0;
+        const newIngCount = Array.isArray(targetData.newFollowing) ? targetData.newFollowing.length : 0;
+        const lostIngCount = Array.isArray(targetData.lostFollowing) ? targetData.lostFollowing.length : 0;
+        const newMutualsCount = Array.isArray(targetData.newMutuals) ? targetData.newMutuals.length : 0;
+
+        const safeHistory = Storage.normalizeHistoryRecords(Array.isArray(targetData.history) ? targetData.history : []).list;
+        const reversedHistory = safeHistory.slice().reverse();
+        const latestHist = reversedHistory[0] || null;
+        const prevHist = reversedHistory.length > 1 ? reversedHistory[1] : null;
+        const oldestHist = safeHistory[0] || null;
+
+        // True Audience Balance: historical net growth vs opening audit baseline (works for both public & restricted private accounts)
+        const baselineFollowers = oldestHist
+            ? Number(oldestHist.startFollowers ?? oldestHist.followers ?? followersCount)
+            : followersCount;
+        const netFlow = safeHistory.length > 0
+            ? (Number(followersCount) - baselineFollowers)
+            : (newCount - lostCount);
         const netSign = netFlow > 0 ? '+' : '';
         const netClass = netFlow > 0 ? 'is-positive' : (netFlow < 0 ? 'is-negative' : 'is-neutral');
 
+        const fHistMeta = latestHist
+            ? UI.buildKpiDelta(
+                followersCount,
+                prevHist ? prevHist.followers : null,
+                latestHist.startFollowers,
+                latestHist.lastDeltaFollowers,
+                latestHist.scansCount
+            )
+            : { text: 'First record', cls: 'is-neutral', icon: Icons.neutral };
+
+        const ingHistMeta = latestHist
+            ? UI.buildKpiDelta(
+                followingCount,
+                prevHist ? prevHist.following : null,
+                latestHist.startFollowing,
+                latestHist.lastDeltaFollowing,
+                latestHist.scansCount
+            )
+            : { text: 'First record', cls: 'is-neutral', icon: Icons.neutral };
+
+        let followersSubHtml = '';
+        if (!isRestricted && (newCount > 0 || lostCount > 0)) {
+            followersSubHtml = '<div class="ig-kpi-sub ig-kpi-sub-split">' +
+                '<button type="button" class="ig-kpi-jump-btn is-positive" data-target-tab="ig-target-view-newfollowers" title="View New Followers">+' + newCount + ' new</button>' +
+                '<span class="ig-kpi-sep">/</span>' +
+                '<button type="button" class="ig-kpi-jump-btn is-negative" data-target-tab="ig-target-view-lostfollowers" title="View Lost Followers">-' + lostCount + ' lost</button>' +
+                '</div>';
+        } else {
+            followersSubHtml = '<div class="ig-kpi-sub ' + fHistMeta.cls + '">' + fHistMeta.icon + ' <span>' + Utils.escapeHtml(fHistMeta.text) + '</span></div>';
+        }
+
+        let followingSubHtml = '';
+        if (!isRestricted && (newIngCount > 0 || lostIngCount > 0)) {
+            followingSubHtml = '<div class="ig-kpi-sub ig-kpi-sub-split">' +
+                '<span class="is-positive" style="font-weight:600;">+' + newIngCount + '</span>' +
+                '<span class="ig-kpi-sep">/</span>' +
+                '<span class="is-negative" style="font-weight:600;">-' + lostIngCount + '</span>' +
+                '<span>following</span>' +
+                '</div>';
+        } else {
+            followingSubHtml = '<div class="ig-kpi-sub ' + ingHistMeta.cls + '">' + ingHistMeta.icon + ' <span>' + Utils.escapeHtml(ingHistMeta.text) + '</span></div>';
+        }
+
+        let mutualsSubHtml = '';
+        if (!isRestricted && newMutualsCount > 0) {
+            mutualsSubHtml = '<div class="ig-kpi-sub"><button type="button" class="ig-kpi-jump-btn is-positive" data-target-tab="ig-target-view-newmutuals" title="View New Mutuals">' + Icons.sparkles + ' <span>+' + newMutualsCount + ' new</span></button></div>';
+        } else if (isRestricted) {
+            mutualsSubHtml = '<div class="ig-kpi-sub is-neutral">' + Icons.lock + ' <span>Restricted</span></div>';
+        } else {
+            const recipPct = followingCount > 0 ? Math.round((mutualsCount / followingCount) * 100) : 0;
+            mutualsSubHtml = '<div class="ig-kpi-sub is-neutral">' + Icons.mutuals + ' <span>' + recipPct + '% reciprocity</span></div>';
+        }
+
+        let balanceSubHtml = '';
+        if (isRestricted) {
+            const sinceText = oldestHist?.date ? `Since ${oldestHist.date}` : 'Header tracking';
+            balanceSubHtml = '<div class="ig-kpi-sub is-neutral"><span>' + Utils.escapeHtml(sinceText) + '</span></div>';
+        } else {
+            balanceSubHtml = '<div class="ig-kpi-sub ig-kpi-sub-split">' +
+                '<button type="button" class="ig-kpi-jump-btn is-positive" data-target-tab="ig-target-view-newfollowers" title="New followers tracked">+' + newCount + '</button>' +
+                '<span class="ig-kpi-sep">/</span>' +
+                '<button type="button" class="ig-kpi-jump-btn is-negative" data-target-tab="ig-target-view-lostfollowers" title="Lost followers tracked">-' + lostCount + '</button>' +
+                '</div>';
+        }
+
         let html = '';
+
+        const prevUserStr = u.previousUsername && String(u.previousUsername).toLowerCase() !== String(u.username || targetData.username || '').toLowerCase()
+            ? Utils.escapeHtml(u.previousUsername)
+            : '';
 
         html += '<div class="ig-target-overview-header">';
         html += '  <div class="ig-target-overview-avatar-wrap">' + avatarHtml + '</div>';
@@ -385,6 +568,7 @@ Object.assign(UI, {
         html += '    <div class="ig-target-overview-title-row">';
         html += '      <span class="ig-target-overview-username">@' + safeUser + '</span>';
         if (isVerified) html += '<span title="Verified">' + Icons.verified + '</span>';
+        if (prevUserStr) html += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + prevUserStr + '">Formerly @' + prevUserStr + '</span>';
         if (isPrivate) html += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + ' Private</span>';
         else html += '<span class="ig-badge-pill ig-badge-public">Public</span>';
         if (u.followedByViewer) html += '<span class="ig-badge-pill ig-badge-mutual">You follow</span>';
@@ -407,46 +591,96 @@ Object.assign(UI, {
         html += '<div class="ig-history-kpi-grid" style="margin-top: 14px;">';
         html += '  <div class="ig-kpi-card">';
         html += '    <div class="ig-kpi-label">Followers</div>';
-        html += '    <div class="ig-kpi-value">' + Utils.formatNumber(followersCount) + '</div>';
-        html += '    <div class="ig-kpi-sub ' + (newCount > 0 ? 'is-positive' : '') + '">' + Icons.userPlus + ' <span>+' + newCount + ' new</span></div>';
+        html += '    <div class="ig-kpi-value" title="' + Utils.formatExactNumber(followersCount) + ' followers">' + Utils.formatNumber(followersCount) + '</div>';
+        html += '    ' + followersSubHtml;
         html += '  </div>';
         html += '  <div class="ig-kpi-card">';
         html += '    <div class="ig-kpi-label">Following</div>';
-        html += '    <div class="ig-kpi-value">' + Utils.formatNumber(followingCount) + '</div>';
-        html += '    <div class="ig-kpi-sub ' + (lostCount > 0 ? 'is-negative' : '') + '">' + Icons.unfollowers + ' <span>-' + lostCount + ' lost</span></div>';
+        html += '    <div class="ig-kpi-value" title="' + Utils.formatExactNumber(followingCount) + ' following">' + Utils.formatNumber(followingCount) + '</div>';
+        html += '    ' + followingSubHtml;
         html += '  </div>';
         html += '  <div class="ig-kpi-card">';
         html += '    <div class="ig-kpi-label">Mutual Connections</div>';
-        html += '    <div class="ig-kpi-value">' + (isRestricted ? '-' : Utils.formatNumber(mutualsCount)) + '</div>';
-        if (newMutualsCount > 0) {
-            html += '    <div class="ig-kpi-sub is-positive" style="cursor: pointer;" onclick="document.querySelector(\'[data-target=\\\'ig-target-view-newmutuals\\\']\').click()" title="View New Mutuals">' + Icons.sparkles + ' <span>+' + newMutualsCount + ' new</span></div>';
-        } else {
-            html += '    <div class="ig-kpi-sub is-neutral">' + Icons.mutuals + ' <span>' + (isRestricted ? 'Restricted' : 'Internal Mutuals') + '</span></div>';
-        }
+        html += '    <div class="ig-kpi-value" title="' + (isRestricted ? 'Restricted' : Utils.formatExactNumber(mutualsCount) + ' mutuals') + '">' + (isRestricted ? '—' : Utils.formatNumber(mutualsCount)) + '</div>';
+        html += '    ' + mutualsSubHtml;
         html += '  </div>';
         html += '  <div class="ig-kpi-card">';
         html += '    <div class="ig-kpi-label">Audience Balance</div>';
-        html += '    <div class="ig-kpi-value ' + netClass + '">' + (isRestricted ? '0' : netSign + netFlow) + '</div>';
-        html += '    <div class="ig-kpi-sub"><span style="color:#22c55e;">+' + newCount + '</span> / <span style="color:#ef4444;">-' + lostCount + '</span></div>';
+        html += '    <div class="ig-kpi-value ' + netClass + '" title="Net vs opening baseline (' + Utils.formatExactNumber(baselineFollowers) + ')">' + netSign + netFlow.toLocaleString() + '</div>';
+        html += '    ' + balanceSubHtml;
         html += '  </div>';
         html += '</div>';
 
-        if (Array.isArray(targetData.history) && targetData.history.length > 0) {
-            html += '<div class="ig-section-title" style="margin-top: 18px;">Audit History <span class="ig-badge">' + targetData.history.length + '</span></div>';
-            html += '<table class="ig-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th><th>Mutuals</th></tr></thead><tbody>';
-            targetData.history.slice().reverse().forEach((h) => {
+        if (safeHistory.length > 0) {
+            html += '<div class="ig-trend-chart-mount">' + UI.renderTrendChartCard(safeHistory, { scope: 'target', isRestricted }) + '</div>';
+        }
+
+        if (!isRestricted && (followersCount > 0 || followingCount > 0)) {
+            html += UI.renderAudienceCompositionCard({
+                followers: followersCount,
+                following: followingCount,
+                mutuals: mutualsCount,
+                fans: Math.max(0, followersCount - mutualsCount),
+                notFollowingBack: Math.max(0, followingCount - mutualsCount),
+                mode: 'target'
+            });
+        }
+
+        if (safeHistory.length > 0) {
+            html += '<div class="ig-section-title" style="margin-top: 16px;">Audit History <span class="ig-badge">' + safeHistory.length + '</span></div>';
+            html += '<div class="ig-table-scroll-region" tabindex="0" role="region" aria-label="Target audit history table">';
+            html += '<table class="ig-table ig-history-table"><thead><tr><th>Date</th><th>Followers</th><th>Following</th><th>Mutuals</th></tr></thead><tbody>';
+            reversedHistory.forEach((h, index) => {
+                const isBaselineRow = index === reversedHistory.length - 1;
+                const prevDay = !isBaselineRow ? reversedHistory[index + 1] : null;
+                const scans = Number(h.scansCount) || 1;
+
+                const dayDiffF = prevDay ? (Number(h.followers ?? 0) - Number(prevDay.followers ?? 0)) : 0;
+                const intraF = Number(h.followers ?? 0) - Number(h.startFollowers ?? h.followers ?? 0);
+                const fDeltaHtml = UI.formatDeltaPillHtml(dayDiffF, { intradayDelta: intraF, scansCount: scans, isBaselineRow });
+
+                const dayDiffIng = prevDay ? (Number(h.following ?? 0) - Number(prevDay.following ?? 0)) : 0;
+                const intraIng = Number(h.following ?? 0) - Number(h.startFollowing ?? h.following ?? 0);
+                const ingDeltaHtml = UI.formatDeltaPillHtml(dayDiffIng, { intradayDelta: intraIng, scansCount: scans, isBaselineRow });
+
+                let mutCellHtml = '<span class="ig-metric-muted">—</span>';
+                if (!isRestricted && h.mutuals !== undefined && h.mutuals !== null && !Number.isNaN(Number(h.mutuals))) {
+                    const hasPrevMut = prevDay && prevDay.mutuals !== undefined && prevDay.mutuals !== null;
+                    const dayDiffMut = hasPrevMut ? (Number(h.mutuals) - Number(prevDay.mutuals)) : 0;
+                    const intraMut = Number(h.mutuals) - Number(h.startMutuals ?? h.mutuals);
+                    const mutDeltaHtml = UI.formatDeltaPillHtml(dayDiffMut, {
+                        intradayDelta: intraMut,
+                        scansCount: scans,
+                        isBaselineRow: !hasPrevMut
+                    });
+                    mutCellHtml = '<span class="ig-metric-value">' + Utils.formatExactNumber(h.mutuals) + ' ' + mutDeltaHtml + '</span>';
+                }
+
+                const safeDate = Utils.escapeHtml(h.date || '');
+                const scansBadge = scans > 1 ? `<span class="ig-scans-pill" title="${scans} audits recorded on ${safeDate}">${scans}x</span>` : '';
+
                 html += '<tr>';
-                html += '<td><span class="ig-table-date">' + Utils.escapeHtml(h.date || '') + '</span></td>';
-                html += '<td><span class="ig-metric-value">' + Utils.formatNumber(h.followers) + '</span></td>';
-                html += '<td><span class="ig-metric-value">' + Utils.formatNumber(h.following) + '</span></td>';
-                html += '<td><span class="ig-metric-value">' + (h.mutuals !== undefined ? Utils.formatNumber(h.mutuals) : '-') + '</span></td>';
+                html += '<th scope="row"><span class="ig-table-date">' + safeDate + '</span>' + scansBadge + '</th>';
+                html += '<td><span class="ig-metric-value">' + Utils.formatExactNumber(h.followers) + ' ' + fDeltaHtml + '</span></td>';
+                html += '<td><span class="ig-metric-value">' + Utils.formatExactNumber(h.following) + ' ' + ingDeltaHtml + '</span></td>';
+                html += '<td>' + mutCellHtml + '</td>';
                 html += '</tr>';
             });
-            html += '</tbody></table>';
+            html += '</tbody></table></div>';
         }
 
         container.innerHTML = html;
         UI.loadAvatarsProgressively(container);
+
+        const chartMount = container.querySelector('.ig-trend-chart-mount');
+        if (chartMount && typeof UI.bindChartInteractions === 'function') {
+            UI.bindChartInteractions(chartMount, {
+                historyList: safeHistory,
+                scope: 'target',
+                isRestricted
+            });
+        }
+        UI.updateTargetTabCounts(targetData);
     },
 
     renderTargetLists: (targetData) => {
@@ -460,6 +694,7 @@ Object.assign(UI, {
         UI.renderTargetSingleList("ig-target-view-lostfollowers", targetData.lostFollowers || [], "Followers Lost", "No lost followers detected since last scan.", { isLostBadge: true });
         UI.renderTargetSingleList("ig-target-view-followers", targetData.followers || [], "Target Followers", "No followers data available.");
         UI.renderTargetSingleList("ig-target-view-following", targetData.following || [], "Target Following", "No following data available.");
+        UI.updateTargetTabCounts(targetData);
     },
 
     TARGET_CHIPS_DEF: [
@@ -742,35 +977,39 @@ Object.assign(UI, {
         } else {
             pageUsers.forEach((u) => {
                 const safeUsername = Utils.escapeHtml(u.username || '');
+                const safeUserId = Utils.escapeHtml(u.id || '');
                 const safeUrl = Utils.sanitizeUrl(u.username, u.url);
                 const safeFullName = u.fullName ? Utils.escapeHtml(u.fullName) : '';
                 const safeAvatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
                 const safeInitial = safeUsername ? safeUsername.charAt(0).toUpperCase() : '?';
-                const avatarClass = 'ig-user-avatar ig-avatar-monogram';
+                const hasStory = Boolean(u.latestReelMedia && u.latestReelMedia > 0);
+                const avatarClass = 'ig-user-avatar ig-avatar-monogram' + (hasStory ? (u.isBestie ? ' has-bestie-ring' : ' has-story-ring') : '');
                 const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || '') + '" data-username="' + safeUsername + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
-                const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${Utils.escapeHtml(u.id || '')}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
+                const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${safeUserId}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
 
                 let badges = '';
                 if (u.isPrivate) badges += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + '</span>';
                 if (u.isVerified) badges += '<span title="Verified">' + Icons.verified + '</span>';
                 if (options.isNewBadge) badges += '<span class="ig-badge-pill ig-badge-new-mutual">' + Icons.sparkles + ' New</span>';
                 if (options.isLostBadge) badges += '<span class="ig-badge-pill ig-badge-churn">' + Icons.unfollowers + ' Lost</span>';
-                if (options.newMutualsSet && options.newMutualsSet.has(u.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual" style="background: #10b981 !important; color: white !important; font-weight: bold; border: none !important;">' + Icons.sparkles + ' New Mutual</span>';
+                if (options.newMutualsSet && options.newMutualsSet.has(u.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual-solid">' + Icons.sparkles + ' New Mutual</span>';
                 if (u.isViewerMutual) badges += '<span class="ig-badge-pill ig-badge-new-mutual" title="Shared mutual with you!">' + Icons.sparkles + ' Shared Mutual</span>';
 
-                rowsHtml += '<div class="ig-user-row" data-user-id="' + Utils.escapeHtml(u.id || '') + '">';
+                rowsHtml += '<div class="ig-user-row" data-user-id="' + safeUserId + '">';
                 rowsHtml += '  <div class="ig-user-info">' + avatarTriggerHtml;
-                rowsHtml += '    <div style="display:flex; flex-direction:column; margin-left:8px; line-height:1.2; min-width:0;">';
-                rowsHtml += '      <div style="display:flex; align-items:center; min-width:0; flex-wrap:wrap;">';
+                rowsHtml += '    <div class="ig-user-text-col">';
+                rowsHtml += '      <div class="ig-user-title-line">';
                 rowsHtml += '        <span class="ig-username">' + safeUsername + '</span>';
                 rowsHtml += '        <span class="ig-user-badges">' + badges + '</span>';
                 rowsHtml += '      </div>';
-                if (safeFullName) rowsHtml += '<span style="font-size:11px; color:#8e8e8e; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px;">' + safeFullName + '</span>';
+                if (safeFullName) rowsHtml += '<span class="ig-user-fullname">' + safeFullName + '</span>';
                 rowsHtml += '    </div>';
                 rowsHtml += '  </div>';
                 rowsHtml += '  <div class="ig-user-actions">';
-                rowsHtml += '    <button class="ig-btn-inspect-user btn-inspect-user" data-user-id="' + Utils.escapeHtml(u.id || '') + '" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + ' Inspect</button>';
+                rowsHtml += '    <button class="ig-btn-spy-story btn-spy-story" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '" title="Check Story & Highlight Visibility">' + Icons.spy + ' Story</button>';
+                rowsHtml += '    <button class="ig-btn-inspect-user btn-inspect-user" data-user-id="' + safeUserId + '" data-username="' + safeUsername + '" data-container="' + containerId + '" title="Inspect Profile & HD Photo">' + Icons.inspect + ' Inspect</button>';
+                rowsHtml += '    <button class="ig-btn-target-audit btn-target-audit" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '" title="Audit @' + safeUsername + '">' + Icons.target + ' Audit</button>';
                 rowsHtml += '    <a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="ig-view-link">View ' + Icons.link + '</a>';
                 rowsHtml += '  </div>';
                 rowsHtml += '</div>';
@@ -832,42 +1071,58 @@ Object.assign(UI, {
         } else {
             targetEntries.slice().reverse().forEach((t) => {
                 const u = t.user || {};
-                const safeUser = Utils.escapeHtml(t.username || u.username || '');
+                const safeUser = Utils.escapeHtml(u.username || t.username || '');
+                const safeUserId = Utils.escapeHtml(u.id || '');
+                const safePrevUser = u.previousUsername && String(u.previousUsername).toLowerCase() !== String(u.username || t.username || '').toLowerCase()
+                    ? Utils.escapeHtml(u.previousUsername)
+                    : '';
                 const safeName = Utils.escapeHtml(u.fullName || '');
                 const avatarUrl = Utils.sanitizeImageUrl(u.profilePicUrl);
                 const isVerified = Boolean(u.isVerified);
                 const isPrivate = Boolean(u.isPrivate);
-                const fCount = (Array.isArray(t.followers) && t.followers.length > 0) ? t.followers.length : (u.followerCount || 0);
-                const ingCount = (Array.isArray(t.following) && t.following.length > 0) ? t.following.length : (u.followingCount || 0);
+                const fCount = Math.max(Number(u.followerCount) || 0, Array.isArray(t.followers) ? t.followers.length : 0);
+                const ingCount = Math.max(Number(u.followingCount) || 0, Array.isArray(t.following) ? t.following.length : 0);
                 const mutCount = (Array.isArray(t.mutuals) && t.mutuals.length > 0) ? t.mutuals.length : (typeof u.mutualsCount === 'number' ? u.mutualsCount : 0);
                 const newCount = t.newFollowers ? t.newFollowers.length : 0;
                 const lostCount = t.lostFollowers ? t.lostFollowers.length : 0;
-                const netFlow = newCount - lostCount;
+                const tHist = Array.isArray(t.history) ? t.history : [];
+                let netFlow = newCount - lostCount;
+                if (tHist.length > 0 && (t.isRestricted || netFlow === 0)) {
+                    const firstH = tHist[0];
+                    const baseF = Number(firstH?.startFollowers ?? firstH?.followers ?? fCount);
+                    netFlow = Number(fCount) - baseF;
+                }
 
                 let diffBadge = '';
                 if (netFlow > 0) {
-                    diffBadge = '<span class="ig-target-card-diff is-positive">+' + netFlow + '</span>';
+                    diffBadge = '<span class="ig-target-card-diff is-positive">+' + netFlow.toLocaleString() + '</span>';
                 } else if (netFlow < 0) {
-                    diffBadge = '<span class="ig-target-card-diff is-negative">' + netFlow + '</span>';
+                    diffBadge = '<span class="ig-target-card-diff is-negative">' + netFlow.toLocaleString() + '</span>';
                 }
+
+                const sparklineHtml = (typeof UI.renderSparklineSvg === 'function' && tHist.length > 0)
+                    ? '<div class="ig-target-card-sparkline" title="Followers trend">' + UI.renderSparklineSvg(tHist, { metric: 'followers', width: 64, height: 20 }) + '</div>'
+                    : '';
 
                 const safeInitial = safeUser ? safeUser.charAt(0).toUpperCase() : '?';
                 const avatarHtml = '<div class="ig-target-card-avatar ig-avatar-monogram" data-avatar-url="' + (avatarUrl || '') + '" data-username="' + safeUser + '"><span class="ig-monogram-letter">' + safeInitial + '</span></div>';
 
                 const timeStr = t.lastAuditAt ? Utils.formatDate(t.lastAuditAt) : 'Recent';
 
-                html += '<div class="ig-target-card" data-username="' + safeUser + '">';
+                html += '<div class="ig-target-card" data-username="' + safeUser + '" data-user-id="' + safeUserId + '">';
                 html += '  <div class="ig-target-card-top">';
                 html += '    ' + avatarHtml;
                 html += '    <div class="ig-target-card-info">';
                 html += '      <div class="ig-target-card-name-row">';
                 html += '        <span class="ig-target-card-user">@' + safeUser + '</span>';
                 if (isVerified) html += '<span title="Verified">' + Icons.verified + '</span>';
+                if (safePrevUser) html += '<span class="ig-badge-pill ig-badge-formerly" title="Previously @' + safePrevUser + '">Formerly @' + safePrevUser + '</span>';
                 if (isPrivate) html += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + '</span>';
                 html += '      </div>';
                 if (safeName) html += '      <div class="ig-target-card-fullname">' + safeName + '</div>';
                 html += '    </div>';
-                html += '    <button class="ig-btn-target-delete btn-target-card-delete" data-username="' + safeUser + '" title="Remove from tracking">' + Icons.trash + '</button>';
+                html += '    ' + sparklineHtml;
+                html += '    <button class="ig-btn-target-delete btn-target-card-delete" data-username="' + safeUser + '" data-user-id="' + safeUserId + '" title="Remove from tracking">' + Icons.trash + '</button>';
                 html += '  </div>';
                 html += '  <div class="ig-target-card-metrics">';
                 html += '    <div class="ig-target-metric"><span class="ig-target-metric-label">Followers</span><span class="ig-target-metric-val">' + Utils.formatNumber(fCount) + ' ' + diffBadge + '</span></div>';
@@ -877,8 +1132,8 @@ Object.assign(UI, {
                 html += '  <div class="ig-target-card-footer">';
                 html += '    <span class="ig-target-card-time">' + timeStr + '</span>';
                 html += '    <div class="ig-target-card-actions">';
-                html += '      <button class="ig-btn ig-btn-sm ig-btn-secondary btn-target-card-open" data-username="' + safeUser + '">' + Icons.target + ' View Details</button>';
-                html += '      <button class="ig-btn ig-btn-sm ig-btn-primary btn-target-card-refresh" data-username="' + safeUser + '">' + Icons.refresh + ' Re-Audit</button>';
+                html += '      <button class="ig-btn ig-btn-sm ig-btn-secondary btn-target-card-open" data-username="' + safeUser + '" data-user-id="' + safeUserId + '">' + Icons.target + ' View Details</button>';
+                html += '      <button class="ig-btn ig-btn-sm ig-btn-primary btn-target-card-refresh" data-username="' + safeUser + '" data-user-id="' + safeUserId + '">' + Icons.refresh + ' Re-Audit</button>';
                 html += '    </div>';
                 html += '  </div>';
                 html += '</div>';
@@ -888,6 +1143,9 @@ Object.assign(UI, {
         html += '</div>';
         container.innerHTML = html;
         UI.loadAvatarsProgressively(container);
+        if (typeof UI.updateMainTabCounts === 'function') {
+            UI.updateMainTabCounts(userId);
+        }
 
         const searchBtn = container.querySelector("#ig-btn-target-search");
         const searchInput = container.querySelector("#ig-target-search-input");

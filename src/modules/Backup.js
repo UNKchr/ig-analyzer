@@ -1,11 +1,51 @@
 import { CONFIG } from './Config.js';
 import { Utils } from './Utils.js';
 import { Storage } from './Storage.js';
+import { UI } from './ui/UIState.js';
 
 const BACKUP_MAX_DEPTH = 20;
 const BACKUP_UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const BACKUP_TAB_ID = 'ig-tab-backup';
 const BACKUP_POPUP_ID = 'ig-backup-popup';
+
+const ACCOUNT_DATA_KEY_BASES = [
+    CONFIG.STORAGE_KEY,
+    CONFIG.WHITELIST_KEY,
+    CONFIG.HISTORY_KEY,
+    CONFIG.CHURN_KEY,
+    CONFIG.DEACTIVATED_KEY,
+    CONFIG.BLOCKED_KEY,
+    CONFIG.RENAMED_KEY,
+    CONFIG.NEW_FOLLOWERS_KEY,
+    CONFIG.TARGET_TRACKER_KEY,
+    CONFIG.STORY_ANOMALY_KEY,
+    CONFIG.STORY_OBS_KEY
+];
+
+const GLOBAL_UI_KEY_BASES = [
+    CONFIG.POSITION_KEY,
+    CONFIG.TARGET_SUBPANEL_POSITION_KEY,
+    CONFIG.TOUR_KEY
+];
+
+const LEGACY_FLAT_KEYS = [
+    'followers',
+    'following',
+    'followersDetailed',
+    'followingDetailed',
+    'notFollowingBackDetailed',
+    'fansDetailed',
+    'mutualsDetailed',
+    'newFollowers',
+    'newFollowersDetailed',
+    'whitelist',
+    'targetTracker',
+    'unfollowers',
+    'deactivated',
+    'blocked',
+    'renamed',
+    'history'
+];
 
 let backupStatusNode = null;
 let backupFileInputNode = null;
@@ -63,35 +103,9 @@ const isSafeJsonValue = (value, depth = 0) => {
 const isSafeStorageKey = (key) => typeof key === 'string' && key.length > 0 && !BACKUP_UNSAFE_KEYS.has(key);
 
 const ALLOWED_BACKUP_KEY_BASES = [
-    CONFIG.STORAGE_KEY,
-    CONFIG.WHITELIST_KEY,
-    CONFIG.HISTORY_KEY,
-    CONFIG.CHURN_KEY,
-    CONFIG.DEACTIVATED_KEY,
-    CONFIG.BLOCKED_KEY,
-    CONFIG.RENAMED_KEY,
-    CONFIG.NEW_FOLLOWERS_KEY,
-    CONFIG.TARGET_TRACKER_KEY,
-    CONFIG.STORY_ANOMALY_KEY,
-    CONFIG.STORY_OBS_KEY,
-    CONFIG.TOUR_KEY,
-    CONFIG.POSITION_KEY,
-    'followers',
-    'following',
-    'followersDetailed',
-    'followingDetailed',
-    'notFollowingBackDetailed',
-    'fansDetailed',
-    'mutualsDetailed',
-    'newFollowers',
-    'newFollowersDetailed',
-    'whitelist',
-    'targetTracker',
-    'unfollowers',
-    'deactivated',
-    'blocked',
-    'renamed',
-    'history'
+    ...ACCOUNT_DATA_KEY_BASES,
+    ...GLOBAL_UI_KEY_BASES,
+    ...LEGACY_FLAT_KEYS
 ];
 
 const isAuthorizedBackupKey = (key) => {
@@ -337,6 +351,16 @@ const ensureBackupPopup = () => {
 
 export const openBackupPopup = () => {
     const popup = ensureBackupPopup();
+    if (typeof UI.applyCurrentTheme === 'function') {
+        UI.applyCurrentTheme();
+    } else {
+        const panel = document.getElementById('ig-analyzer-panel');
+        if (panel?.classList.contains('ig-light-theme')) {
+            popup.classList.add('ig-light-theme');
+        } else {
+            popup.classList.remove('ig-light-theme');
+        }
+    }
     popup.classList.add('is-open');
     popup.setAttribute('aria-hidden', 'false');
 };
@@ -357,7 +381,7 @@ export const toggleBackupPopup = () => {
 };
 
 /**
- * Validates the structure and compatibility of a JSON backup.
+ * Validates the structure and compatibility of a JSON backup (backward-compatible with schema v1 and v2).
  * @param {unknown} payload
  * @returns {{ valid: true, payload: { meta: Record<string, unknown>, data: Record<string, unknown> } } | { valid: false, reason: string }}
  */
@@ -377,11 +401,16 @@ export const validateBackupSchema = (payload) => {
         return { valid: false, reason: 'The backup data block is missing.' };
     }
 
-    const expectedSchemaVersion = CONFIG.BACKUP_SCHEMA_VERSION;
-    if (meta.schemaVersion !== expectedSchemaVersion) {
+    const maxSupportedSchema = CONFIG.BACKUP_SCHEMA_VERSION;
+    if (
+        typeof meta.schemaVersion !== 'number' ||
+        !Number.isInteger(meta.schemaVersion) ||
+        meta.schemaVersion < 1 ||
+        meta.schemaVersion > maxSupportedSchema
+    ) {
         return {
             valid: false,
-            reason: `The schema version is not compatible. Expected ${expectedSchemaVersion}.`
+            reason: `The schema version is not compatible. Supported versions: 1..${maxSupportedSchema}.`
         };
     }
 
@@ -395,6 +424,14 @@ export const validateBackupSchema = (payload) => {
 
     if (typeof meta.exportedAt !== 'string' || Number.isNaN(Date.parse(meta.exportedAt))) {
         return { valid: false, reason: 'The export timestamp is invalid.' };
+    }
+
+    if (meta.ownerUserId !== undefined && meta.ownerUserId !== null && typeof meta.ownerUserId !== 'string') {
+        return { valid: false, reason: 'The backup ownerUserId field is invalid.' };
+    }
+
+    if (meta.ownerUsername !== undefined && meta.ownerUsername !== null && typeof meta.ownerUsername !== 'string') {
+        return { valid: false, reason: 'The backup ownerUsername field is invalid.' };
     }
 
     const dataEntries = Object.entries(data);
@@ -422,42 +459,38 @@ export const validateBackupSchema = (payload) => {
 };
 
 /**
- * Exports all values stored by Tampermonkey into a JSON file.
+ * Exports all authorized values stored by Tampermonkey into a schema v2 JSON file.
  * @returns {Promise<{ meta: Record<string, unknown>, data: Record<string, unknown> }>}
  */
 export const exportBackup = async () => {
     try {
         const listedKeys = await getCurrentStorageKeys().catch(() => []);
         const currentId = Storage.getCurrentUserId() || Utils.getUserId();
-        const baseKeys = [
-            CONFIG.STORAGE_KEY,
-            CONFIG.WHITELIST_KEY,
-            CONFIG.HISTORY_KEY,
-            CONFIG.CHURN_KEY,
-            CONFIG.DEACTIVATED_KEY,
-            CONFIG.BLOCKED_KEY,
-            CONFIG.RENAMED_KEY,
-            CONFIG.STORY_ANOMALY_KEY,
-            CONFIG.STORY_OBS_KEY,
-            CONFIG.TOUR_KEY,
-            CONFIG.POSITION_KEY
-        ];
+        const currentUsername = Utils.getUsername() || null;
 
-        const allKeys = new Set(listedKeys);
-        baseKeys.forEach((bk) => {
-            allKeys.add(bk);
+        const allKeys = new Set(listedKeys.filter(isAuthorizedBackupKey));
+        GLOBAL_UI_KEY_BASES.forEach((gk) => allKeys.add(gk));
+        ACCOUNT_DATA_KEY_BASES.forEach((bk) => {
             if (currentId) {
                 allKeys.add(`${bk}_${currentId}`);
+            } else {
+                allKeys.add(bk);
             }
         });
 
         const data = Object.create(null);
         for (const key of allKeys) {
-            if (isSafeStorageKey(key)) {
-                const val = await getStoredValue(key);
-                if (val !== undefined && val !== null) {
-                    data[key] = val;
+            if (!isAuthorizedBackupKey(key)) continue;
+            // When an active account ID exists, avoid exporting duplicate unscoped audience keys if scoped key is present
+            if (currentId && ACCOUNT_DATA_KEY_BASES.includes(key)) {
+                const scopedCandidate = await getStoredValue(`${key}_${currentId}`);
+                if (scopedCandidate !== undefined && scopedCandidate !== null) {
+                    continue;
                 }
+            }
+            const val = await getStoredValue(key);
+            if (val !== undefined && val !== null) {
+                data[key] = val;
             }
         }
 
@@ -468,6 +501,8 @@ export const exportBackup = async () => {
                 scriptName: metadata.scriptName,
                 scriptVersion: metadata.scriptVersion,
                 schemaVersion: CONFIG.BACKUP_SCHEMA_VERSION,
+                ownerUserId: currentId ? String(currentId) : null,
+                ownerUsername: currentUsername || null,
                 exportedAt: Utils.now(),
                 keyCount: Object.keys(data).length
             },
@@ -486,19 +521,76 @@ export const exportBackup = async () => {
     }
 };
 
-const clearCurrentStorage = async () => {
+const clearTargetAccountStorage = async (targetUserId = null) => {
     if (typeof GM_deleteValue !== 'function') {
         throw new Error('The GM_deleteValue API is not available in this environment.');
     }
 
     const currentKeys = await getCurrentStorageKeys();
+    const idStr = targetUserId ? String(targetUserId) : null;
+
     for (const key of currentKeys) {
-        GM_deleteValue(key);
+        if (!isAuthorizedBackupKey(key)) continue;
+        if (GLOBAL_UI_KEY_BASES.includes(key) || LEGACY_FLAT_KEYS.includes(key)) {
+            GM_deleteValue(key);
+            continue;
+        }
+        if (ACCOUNT_DATA_KEY_BASES.includes(key)) {
+            // Remove orphan unscoped legacy keys so they cannot pollute multi-account sessions
+            GM_deleteValue(key);
+            continue;
+        }
+        if (idStr && key.endsWith(`_${idStr}`)) {
+            GM_deleteValue(key);
+            continue;
+        }
+        if (!idStr) {
+            GM_deleteValue(key);
+        }
     }
 };
 
+const promptBackupConfirmation = async (meta, currentUserId, isAccountMismatch) => {
+    const safetyModal = typeof document !== 'undefined' ? document.getElementById('ig-safety-modal') : null;
+    if (safetyModal && typeof UI.confirmAction === 'function') {
+        const ownerLine = meta.ownerUsername
+            ? `@${Utils.escapeHtml(String(meta.ownerUsername))}${meta.ownerUserId ? ` (${Utils.escapeHtml(String(meta.ownerUserId))})` : ''}`
+            : (meta.ownerUserId ? `ID ${Utils.escapeHtml(String(meta.ownerUserId))}` : 'Legacy v1 Backup');
+        const mismatchWarning = isAccountMismatch
+            ? `<div style="margin-top:10px; padding:8px 10px; border-radius:8px; background:var(--iga-warning-subtle); border:1px solid var(--iga-border); color:var(--iga-warning); font-size:11.5px; text-align:left;"><b>Account Notice:</b> This backup was exported from <b>${ownerLine}</b>, which differs from your active account (<b>${Utils.escapeHtml(String(currentUserId))}</b>). Importing will restore this data into your active account without deleting other saved accounts.</div>`
+            : '';
+        const htmlMsg = [
+            '<div style="text-align:left; font-size:12.5px; line-height:1.55;">',
+            '  <div style="margin-bottom:8px;">This backup will overwrite the data for your active Instagram session:</div>',
+            `  <div><b>Script:</b> ${Utils.escapeHtml(String(meta.scriptName))} (${Utils.escapeHtml(String(meta.scriptVersion))})</div>`,
+            `  <div><b>Source Account:</b> ${ownerLine}</div>`,
+            `  <div><b>Exported At:</b> ${Utils.escapeHtml(Utils.formatDate(String(meta.exportedAt)))}</div>`,
+            mismatchWarning,
+            '</div>'
+        ].join('\n');
+
+        return UI.confirmAction('Restore Backup', htmlMsg, 'Import Backup', true);
+    }
+
+    const lines = [
+        'This backup will overwrite the current account data.',
+        '',
+        `Script: ${meta.scriptName}`,
+        `Version: ${meta.scriptVersion}`,
+        `Exported at: ${meta.exportedAt}`
+    ];
+    if (isAccountMismatch) {
+        lines.push(`Warning: Backup owner (${meta.ownerUserId}) differs from active account (${currentUserId}).`);
+    }
+    lines.push('', 'Do you want to continue?');
+
+    return typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(lines.join('\n'))
+        : true;
+};
+
 /**
- * Imports a JSON backup, validates it, and overwrites the current storage.
+ * Imports a JSON backup (v1 or v2), validates it, and restores account-scoped state without cross-account pollution.
  * @param {File} file
  * @returns {Promise<boolean>}
  */
@@ -524,45 +616,66 @@ export const importBackup = async (file) => {
         }
 
         const { meta, data } = validation.payload;
-        const confirmationMessage = [
-            'This backup will overwrite all current script data.',
-            '',
-            `Script: ${meta.scriptName}`,
-            `Version: ${meta.scriptVersion}`,
-            `Exported at: ${meta.exportedAt}`,
-            '',
-            'Do you want to continue?'
-        ].join('\n');
+        const currentUserId = Storage.getCurrentUserId() || Utils.getUserId();
+        const backupOwnerId = (typeof meta.ownerUserId === 'string' && meta.ownerUserId.trim())
+            ? meta.ownerUserId.trim()
+            : null;
+        const isAccountMismatch = Boolean(currentUserId && backupOwnerId && String(currentUserId) !== String(backupOwnerId));
 
-        if (!window.confirm(confirmationMessage)) {
+        const confirmed = await promptBackupConfirmation(meta, currentUserId, isAccountMismatch);
+        if (!confirmed) {
             writeBackupStatus('Import canceled by the user.', 'info');
             return false;
         }
 
-        await clearCurrentStorage();
+        await clearTargetAccountStorage(currentUserId);
 
-        // 1. Write all validated keys from backup payload into GM storage
+        // 1. Write global UI keys and (when not remapping across mismatched accounts) explicit scoped keys
         for (const [key, value] of Object.entries(data)) {
-            GM_setValue(key, value);
-        }
-
-        // 2. Resolve target user ID for proper account scoping
-        const currentUserId = Storage.getCurrentUserId() || Utils.getUserId();
-
-        // 3. Locate the snapshot within the backup
-        let restoredSnapshot = null;
-        if (currentUserId && isPlainObject(data[`${CONFIG.STORAGE_KEY}_${currentUserId}`])) {
-            restoredSnapshot = data[`${CONFIG.STORAGE_KEY}_${currentUserId}`];
-        } else if (isPlainObject(data[CONFIG.STORAGE_KEY])) {
-            restoredSnapshot = data[CONFIG.STORAGE_KEY];
-        } else {
-            const anySnapKey = Object.keys(data).find((k) => k.startsWith(`${CONFIG.STORAGE_KEY}_`));
-            if (anySnapKey && isPlainObject(data[anySnapKey])) {
-                restoredSnapshot = data[anySnapKey];
+            if (GLOBAL_UI_KEY_BASES.includes(key)) {
+                GM_setValue(key, value);
+                continue;
+            }
+            if (LEGACY_FLAT_KEYS.includes(key)) {
+                continue;
+            }
+            if (ACCOUNT_DATA_KEY_BASES.includes(key)) {
+                // Only write unscoped audience keys when no currentUserId is available
+                if (!currentUserId) {
+                    GM_setValue(key, value);
+                }
+                continue;
+            }
+            // Key is of form `${base}_${someId}`
+            if (!isAccountMismatch || (currentUserId && key.endsWith(`_${currentUserId}`))) {
+                GM_setValue(key, value);
             }
         }
 
-        // Fallback for legacy flat export formats:
+        // 2. Resolve & sync the snapshot for the active account
+        const pickBackupValueForBase = (baseKey) => {
+            if (currentUserId && data[`${baseKey}_${currentUserId}`] !== undefined) {
+                return data[`${baseKey}_${currentUserId}`];
+            }
+            if (backupOwnerId && data[`${baseKey}_${backupOwnerId}`] !== undefined) {
+                return data[`${baseKey}_${backupOwnerId}`];
+            }
+            if (data[baseKey] !== undefined) {
+                return data[baseKey];
+            }
+            const anyKey = Object.keys(data).find((k) => k.startsWith(`${baseKey}_`));
+            if (anyKey && data[anyKey] !== undefined) {
+                return data[anyKey];
+            }
+            return undefined;
+        };
+
+        let restoredSnapshot = pickBackupValueForBase(CONFIG.STORAGE_KEY);
+        if (!isPlainObject(restoredSnapshot)) {
+            restoredSnapshot = null;
+        }
+
+        // Fallback for legacy flat export formats
         if (!restoredSnapshot && Array.isArray(data.followers)) {
             restoredSnapshot = {
                 version: 4,
@@ -582,44 +695,54 @@ export const importBackup = async (file) => {
             };
         }
 
-        // Save the real restored snapshot into storage (scoped and unscoped)
         if (restoredSnapshot) {
             if (currentUserId) {
                 Storage.save(restoredSnapshot, currentUserId);
+                if (typeof GM_deleteValue === 'function') {
+                    GM_deleteValue(CONFIG.STORAGE_KEY);
+                }
+            } else {
+                GM_setValue(CONFIG.STORAGE_KEY, restoredSnapshot);
             }
-            GM_setValue(CONFIG.STORAGE_KEY, restoredSnapshot);
         }
 
-        // 4. Ensure auxiliary lists are scoped to current user
-        const syncListKey = (baseKey) => {
-            let val = null;
-            if (currentUserId && data[`${baseKey}_${currentUserId}`] !== undefined) {
-                val = data[`${baseKey}_${currentUserId}`];
-            } else if (data[baseKey] !== undefined) {
-                val = data[baseKey];
-            } else {
-                const anyKey = Object.keys(data).find((k) => k.startsWith(`${baseKey}_`));
-                if (anyKey && data[anyKey] !== undefined) {
-                    val = data[anyKey];
-                }
-            }
-
-            if (val !== null && val !== undefined) {
-                if (currentUserId) {
-                    Storage.setScopedValue(baseKey, val, currentUserId);
-                }
-                GM_setValue(baseKey, val);
-            }
+        // 3. Sync all auxiliary account-scoped keys cleanly to currentUserId (never leaving unscoped copies)
+        const legacyFlatFallbackMap = {
+            [CONFIG.HISTORY_KEY]: data.history,
+            [CONFIG.WHITELIST_KEY]: data.whitelist,
+            [CONFIG.CHURN_KEY]: data.unfollowers,
+            [CONFIG.DEACTIVATED_KEY]: data.deactivated,
+            [CONFIG.BLOCKED_KEY]: data.blocked,
+            [CONFIG.RENAMED_KEY]: data.renamed,
+            [CONFIG.NEW_FOLLOWERS_KEY]: data.newFollowersDetailed || data.newFollowers,
+            [CONFIG.TARGET_TRACKER_KEY]: data.targetTracker
         };
 
-        syncListKey(CONFIG.HISTORY_KEY);
-        syncListKey(CONFIG.WHITELIST_KEY);
-        syncListKey(CONFIG.CHURN_KEY);
-        syncListKey(CONFIG.DEACTIVATED_KEY);
-        syncListKey(CONFIG.BLOCKED_KEY);
-        syncListKey(CONFIG.RENAMED_KEY);
-        syncListKey(CONFIG.STORY_OBS_KEY);
-        syncListKey(CONFIG.POSITION_KEY);
+        ACCOUNT_DATA_KEY_BASES.forEach((baseKey) => {
+            if (baseKey === CONFIG.STORAGE_KEY) return;
+            let val = pickBackupValueForBase(baseKey);
+            if (val === undefined && legacyFlatFallbackMap[baseKey] !== undefined) {
+                val = legacyFlatFallbackMap[baseKey];
+            }
+            if (val !== undefined && val !== null) {
+                if (currentUserId) {
+                    Storage.setScopedValue(baseKey, val, currentUserId);
+                } else {
+                    GM_setValue(baseKey, val);
+                }
+            }
+            if (currentUserId && typeof GM_deleteValue === 'function') {
+                GM_deleteValue(baseKey);
+            }
+        });
+
+        // 4. Sync global UI keys
+        GLOBAL_UI_KEY_BASES.forEach((globalKey) => {
+            const val = pickBackupValueForBase(globalKey);
+            if (val !== undefined && val !== null) {
+                GM_setValue(globalKey, val);
+            }
+        });
 
         writeBackupStatus('Backup restored successfully. Reloading the interface...', 'success');
         window.setTimeout(() => window.location.reload(), 400);
@@ -627,7 +750,12 @@ export const importBackup = async (file) => {
     } catch (error) {
         const message = error instanceof Error ? error.message : 'The backup could not be imported.';
         writeBackupStatus(message, 'error');
-        window.alert(`Backup import error:\n\n${message}`);
+        const safetyModal = typeof document !== 'undefined' ? document.getElementById('ig-safety-modal') : null;
+        if (safetyModal && typeof UI.confirmAction === 'function') {
+            await UI.confirmAction('Backup Import Error', Utils.escapeHtml(message), 'Close', false);
+        } else if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+            window.alert(`Backup import error:\n\n${message}`);
+        }
         return false;
     } finally {
         if (backupFileInputNode) {

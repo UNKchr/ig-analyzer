@@ -30,6 +30,9 @@ Object.assign(UI, {
                 btnNo.style.display = showCancel ? 'inline-block' : 'none';
             }
 
+            if (typeof UI.applyCurrentTheme === 'function') {
+                UI.applyCurrentTheme();
+            }
             modal.style.display = 'flex';
 
             const closeAndResolve = (value) => {
@@ -126,6 +129,9 @@ Object.assign(UI, {
         </div>`;
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
+        if (typeof UI.applyCurrentTheme === 'function') {
+            UI.applyCurrentTheme();
+        }
 
         const modal = document.getElementById("ig-hd-modal");
         const closeBtn = document.getElementById("ig-hd-close-btn");
@@ -279,22 +285,93 @@ Object.assign(UI, {
             relPills = '<span class="ig-qc-rel-pill is-negative">Does not follow you</span><span class="ig-qc-rel-pill is-neutral">You follow</span>';
         } else if (u.containerId === 'ig-view-fans') {
             relPills = '<span class="ig-qc-rel-pill is-positive">Follows you</span><span class="ig-qc-rel-pill">You don\'t follow</span>';
+        } else if (u.containerId === 'ig-view-newfollowers') {
+            relPills = '<span class="ig-qc-rel-pill is-positive">New Follower</span>' +
+                (u.followsBack === true
+                    ? '<span class="ig-qc-rel-pill is-neutral">Mutual</span>'
+                    : (u.followsBack === false ? '<span class="ig-qc-rel-pill">Fan</span>' : ''));
+        } else if (u.containerId === 'ig-view-unfollowers') {
+            relPills = '<span class="ig-qc-rel-pill is-negative">Unfollowed you</span>';
+        } else if (u.containerId === 'ig-view-deactivated') {
+            relPills = '<span class="ig-qc-rel-pill is-pending">Deactivated</span>';
+        } else if (u.containerId === 'ig-view-blocked') {
+            relPills = '<span class="ig-qc-rel-pill is-negative">Unavailable / Blocked</span>';
+        } else if (u.containerId === 'ig-view-renamed') {
+            const safeOld = u.oldUsername ? Utils.escapeHtml(u.oldUsername) : '';
+            relPills = safeOld ? `<span class="ig-qc-rel-pill is-neutral">was @${safeOld}</span>` : '<span class="ig-qc-rel-pill is-neutral">Renamed</span>';
+        } else if (u.containerId === 'ig-view-whitelist') {
+            relPills = '<span class="ig-qc-rel-pill is-neutral">Whitelisted</span>';
         }
         relBarEl.innerHTML = relPills;
 
-        pillEl.className = 'ig-hd-res-pill';
-        pillEl.innerHTML = '<span class="ig-hd-spinner"></span> Loading 1080p...';
+        const setResPill = (mode, labelText) => {
+            pillEl.innerHTML = '';
+            pillEl.className = mode === 'hd' ? 'ig-hd-res-pill is-hd' : 'ig-hd-res-pill';
+            if (mode === 'loading') {
+                const spin = document.createElement('span');
+                spin.className = 'ig-hd-spinner';
+                pillEl.appendChild(spin);
+                pillEl.appendChild(document.createTextNode(' ' + labelText));
+            } else if (mode === 'hd') {
+                pillEl.insertAdjacentHTML('afterbegin', Icons.verified);
+                pillEl.appendChild(document.createTextNode(' ' + labelText));
+            } else {
+                pillEl.textContent = labelText;
+            }
+        };
+
+        setResPill('loading', 'Loading 1080p...');
+        if (typeof UI.applyCurrentTheme === 'function') {
+            UI.applyCurrentTheme();
+        }
 
         modal.style.display = 'flex';
         modal.setAttribute('aria-hidden', 'false');
 
-        // 2. Background GraphQL query for true 1080p & complete profile data
+        // 2. Resolve missing numeric ID (e.g. Whitelist or legacy stub rows) and fetch true 1080p profile data
         try {
-            const hdData = await API.fetchUserProfileHd(u.id, safeUsername, { signal });
+            let targetId = (u.id && String(u.id) !== '0' && String(u.id) !== 'null' && String(u.id) !== 'undefined')
+                ? String(u.id).trim()
+                : null;
+
+            if (!targetId && safeUsername) {
+                if (typeof Storage.findKnownUserByUsername === 'function') {
+                    const knownLocal = Storage.findKnownUserByUsername(safeUsername);
+                    if (knownLocal?.id && String(knownLocal.id) !== '0') {
+                        targetId = String(knownLocal.id);
+                    }
+                }
+                if (!targetId && typeof API.resolveUserId === 'function') {
+                    targetId = await API.resolveUserId(safeUsername, { signal });
+                }
+                if (signal.aborted) return;
+
+                if (targetId) {
+                    u.id = targetId;
+                    Storage.updateUserProfile(safeUsername, { id: targetId });
+                    if (typeof document.querySelectorAll === 'function') {
+                        const lowerTarget = safeUsername.toLowerCase();
+                        document.querySelectorAll('.ig-user-avatar-trigger, .btn-inspect-user, .ig-btn-inspect-user, .ig-user-row').forEach((node) => {
+                            const nodeUser = (node.getAttribute('data-username') || node.getAttribute('data-user') || '').toLowerCase();
+                            if (nodeUser === lowerTarget) {
+                                node.setAttribute('data-user-id', targetId);
+                            }
+                        });
+                    }
+                }
+            }
+
+            const hdData = targetId
+                ? await API.fetchUserProfileHd(targetId, safeUsername, { signal })
+                : null;
             if (signal.aborted) return;
 
             if (hdData) {
-                // Update stats
+                // Update user identity & stats
+                if (hdData.fullName) {
+                    fullnameEl.textContent = hdData.fullName;
+                }
+                verifiedEl.style.display = (hdData.isVerified || u.isVerified) ? 'inline-flex' : 'none';
                 followersEl.textContent = Utils.formatNumber(hdData.followerCount);
                 followingEl.textContent = Utils.formatNumber(hdData.followingCount);
                 postsEl.textContent = Utils.formatNumber(hdData.mediaCount);
@@ -331,7 +408,8 @@ Object.assign(UI, {
                     bioLinkEl.style.display = 'none';
                 }
 
-                // Update Mutuals Context
+                // Update Mutuals Context (100% CSP-compliant programmatic DOM construction, zero inline onerror)
+                facepileEl.innerHTML = '';
                 if (typeof hdData.mutualsCount === 'number' && hdData.mutualsCount > 0) {
                     mutualsCardEl.style.display = 'block';
                     if (hdData.mutualUsers && hdData.mutualUsers.length > 0) {
@@ -342,16 +420,46 @@ Object.assign(UI, {
                         mutualsSummaryEl.textContent = `${hdData.mutualsCount} mutual connection${hdData.mutualsCount === 1 ? '' : 's'}`;
                     }
 
-                    if (hdData.facepileUsers && hdData.facepileUsers.length > 0) {
-                        facepileEl.innerHTML = hdData.facepileUsers.slice(0, 5).map((f) => 
-                            `<img class="ig-facepile-avatar" src="${Utils.sanitizeImageUrl(f.profilePicUrl) || ''}" alt="" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-flex';" /><span class="ig-facepile-avatar" style="display:none;">${(f.username || '?').charAt(0).toUpperCase()}</span>`
-                        ).join('');
-                    } else {
-                        facepileEl.innerHTML = '';
+                    if (Array.isArray(hdData.facepileUsers) && hdData.facepileUsers.length > 0) {
+                        hdData.facepileUsers.slice(0, 5).forEach((f) => {
+                            const fName = String(f?.username || f?.fullName || '').trim();
+                            const initial = fName ? fName.charAt(0).toUpperCase() : 'M';
+                            const safePic = Utils.sanitizeImageUrl(f?.profilePicUrl);
+
+                            const fallbackSpan = document.createElement('span');
+                            fallbackSpan.className = 'ig-facepile-avatar ig-facepile-fallback';
+                            fallbackSpan.textContent = initial;
+                            if (f?.username) fallbackSpan.title = '@' + f.username;
+
+                            if (safePic) {
+                                fallbackSpan.style.display = 'none';
+                                const fImg = document.createElement('img');
+                                fImg.className = 'ig-facepile-avatar';
+                                fImg.src = safePic;
+                                fImg.alt = f?.username ? `@${f.username}` : '';
+                                fImg.loading = 'lazy';
+                                if (f?.username) fImg.title = '@' + f.username;
+                                fImg.addEventListener('error', () => {
+                                    fImg.style.display = 'none';
+                                    fallbackSpan.style.display = 'inline-flex';
+                                }, { once: true });
+                                facepileEl.appendChild(fImg);
+                            } else {
+                                fallbackSpan.style.display = 'inline-flex';
+                            }
+                            facepileEl.appendChild(fallbackSpan);
+                        });
                     }
                 } else {
                     mutualsCardEl.style.display = 'none';
                 }
+
+                Storage.updateUserProfile(safeUsername, {
+                    id: hdData.id || targetId || null,
+                    fullName: hdData.fullName || u.fullName || '',
+                    isVerified: Boolean(hdData.isVerified ?? u.isVerified),
+                    isPrivate: Boolean(hdData.isPrivate ?? u.isPrivate)
+                });
 
                 // HD Avatar Image
                 if (hdData.hdUrl) {
@@ -366,8 +474,7 @@ Object.assign(UI, {
                             currentTargetUrl = cleanHdUrl;
                             linkOpenTab.href = cleanHdUrl;
 
-                            pillEl.className = 'ig-hd-res-pill is-hd';
-                            pillEl.innerHTML = `${Icons.verified} 1080p Full HD`;
+                            setResPill('hd', '1080p Full HD');
 
                             UI.updateUserAvatarInDom(safeUsername, cleanHdUrl);
                             Storage.updateUserProfile(safeUsername, {
@@ -381,28 +488,32 @@ Object.assign(UI, {
                         };
                         preload.onerror = () => {
                             if (signal.aborted) return;
-                            pillEl.className = 'ig-hd-res-pill';
-                            pillEl.innerHTML = `Standard Resolution`;
+                            setResPill('standard', 'Standard Resolution');
                         };
                         preload.src = cleanHdUrl;
                     } else {
-                        pillEl.className = 'ig-hd-res-pill';
-                        pillEl.innerHTML = `Standard Resolution`;
+                        setResPill('standard', 'Standard Resolution');
                     }
                 } else {
-                    pillEl.className = 'ig-hd-res-pill';
-                    pillEl.innerHTML = `Standard Resolution`;
+                    setResPill('standard', 'Standard Resolution');
                 }
 
                 if (hdData.isBestie) {
                     frameEl.classList.add('has-bestie-ring');
+                } else if (hdData.latestReelMedia && hdData.latestReelMedia > 0) {
+                    frameEl.classList.add('has-story-ring');
                 }
+            } else {
+                // Explicit fallback when ID cannot be resolved or profile is deactivated/unreachable -> stop spinner!
+                setResPill(
+                    'unavailable',
+                    initialAvatarUrl ? 'Standard Resolution' : 'Profile Unavailable'
+                );
             }
         } catch (err) {
             if (signal.aborted) return;
             console.warn('[IG Analyzer] Quick-Card profile fetch skipped/failed:', err);
-            pillEl.className = 'ig-hd-res-pill';
-            pillEl.innerHTML = `Standard Resolution`;
+            setResPill('standard', initialAvatarUrl ? 'Standard Resolution' : 'Profile Unavailable');
         }
     },
     
@@ -435,9 +546,8 @@ Object.assign(UI, {
 
             const box = document.getElementById("ig-log");
             if (box) {
-                const nowStr = (typeof Utils.now === 'function' ? Utils.now() : new Date().toISOString());
-                const timeParts = nowStr.split("T");
-                const timeStr = (timeParts.length > 1 ? timeParts[1].split(".")[0] : '') || nowStr;
+                const timeStr = (typeof Utils.localTimeStr === 'function' ? Utils.localTimeStr() : '') ||
+                    ((typeof Utils.now === 'function' ? Utils.now() : new Date().toISOString()).split("T")[1]?.split(".")[0] || '');
                 const entry = document.createElement("div");
                 entry.className = "ig-log-entry";
                 

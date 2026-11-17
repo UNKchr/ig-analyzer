@@ -1,12 +1,13 @@
 import { CONFIG } from './Config.js';
 import { Storage } from './Storage.js';
+import { Icons } from '../assets/Icons.js';
 
 /**
  * Single Unified Guided Tour for IG Analyzer.
  * Powered by TamperGuide (loaded via @require into window.tamperGuide).
  */
 
-const TOUR_SEEN_KEY = 'ig_tour_completed_v1';
+const TOUR_SEEN_KEY = CONFIG.TOUR_KEY || 'ig_tour_completed_v1';
 
 /**
  * Safely retrieves the tamperGuide factory from the global scope.
@@ -23,7 +24,7 @@ function getTamperGuide() {
 }
 
 /**
- * Builds steps for the Single Unified IG Analyzer Tour (v3.13.1).
+ * Builds steps for the Single Unified IG Analyzer Tour (v3.13.2).
  * Prompts the user to run an analysis so that results, filters, and row tools are populated in DOM.
  * @returns {Array<Object>}
  */
@@ -34,7 +35,7 @@ function buildUnifiedSteps() {
             popover: {
                 title: 'Welcome to IG Analyzer!',
                 description:
-                    'Welcome to version 3.13.1! This complete guided tour walks you through every feature of ' +
+                    'Welcome to version 3.13.2! This complete guided tour walks you through every feature of ' +
                     'your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>' +
                     'Let\'s get started!',
             },
@@ -79,7 +80,7 @@ function buildUnifiedSteps() {
                     content: 'Click to Run Analysis',
                     theme: 'accent',
                     position: 'bottom',
-                    icon: '🚀',
+                    icon: Icons.play,
                 },
                 dismissOnClick: true,
             },
