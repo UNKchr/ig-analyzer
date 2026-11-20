@@ -257,6 +257,7 @@ export const Utils = {
             if (typeof win?.require === 'function') {
                 const candidateModules = [
                     `${operationName}_instagramRelayOperation`,
+                    `${operationName}.graphql`,
                     `${operationName}$Parameters`,
                     operationName
                 ];
@@ -293,6 +294,39 @@ export const Utils = {
         } catch (e) {}
 
         return fallbackDocId;
+    },
+
+    /**
+     * Resolves a Relay GraphQL doc_id asynchronously, optionally preloading its lazy Polaris chunk
+     * via JSResourceForInteraction with a short defensive timeout before falling back.
+     * @param {string} operationName
+     * @param {string | null} [fallbackDocId=null]
+     * @param {string | null} [lazyResourceName=null]
+     * @returns {Promise<string | null>}
+     */
+    resolveRelayDocIdAsync: async (operationName, fallbackDocId = null, lazyResourceName = null) => {
+        const syncDocId = Utils.getRelayDocId(operationName, null);
+        if (syncDocId) return syncDocId;
+
+        if (lazyResourceName && typeof lazyResourceName === 'string') {
+            try {
+                const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+                if (typeof win?.require === 'function') {
+                    const jsResource = win.require('JSResourceForInteraction');
+                    if (typeof jsResource === 'function') {
+                        const resourceObj = jsResource(lazyResourceName);
+                        if (resourceObj && typeof resourceObj.load === 'function') {
+                            await Promise.race([
+                                Promise.resolve(resourceObj.load()).catch(() => null),
+                                new Promise((resolve) => setTimeout(resolve, 1500))
+                            ]);
+                        }
+                    }
+                }
+            } catch (_e) {}
+        }
+
+        return Utils.getRelayDocId(operationName, fallbackDocId);
     },
 
     getUserId: () => {
@@ -485,6 +519,7 @@ export const Utils = {
                         username: cleanName,
                         fullName: "",
                         isPrivate: false,
+                        isPrivateKnown: false,
                         isVerified: false,
                         profilePicUrl: null,
                         latestReelMedia: 0,
@@ -501,11 +536,16 @@ export const Utils = {
                     const idStr = (u.id && String(u.id) !== "0" && String(u.id) !== "null" && String(u.id) !== "undefined")
                         ? String(u.id)
                         : null;
+                    const rawPriv = u.isPrivate !== undefined ? u.isPrivate : u.is_private;
+                    const isPrivateKnown = typeof u.isPrivateKnown === 'boolean'
+                        ? u.isPrivateKnown
+                        : (typeof rawPriv === 'boolean' || Boolean(rawPriv) === true);
                     normalized = {
                         id: idStr,
                         username: cleanName,
                         fullName: u.fullName || u.full_name || "",
-                        isPrivate: Boolean(u.isPrivate ?? u.is_private),
+                        isPrivate: Boolean(rawPriv),
+                        isPrivateKnown,
                         isVerified: Boolean(u.isVerified ?? u.is_verified),
                         profilePicUrl: pic,
                         latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,

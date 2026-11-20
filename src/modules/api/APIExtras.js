@@ -114,11 +114,11 @@ Object.assign(API, {
             params.append("__user", "0");
             params.append("__a", "1");
             params.append("__req", "1");
-            // Proven doc_id is ALWAYS primary (its variables match exactly). Live runtime doc_id is only a fallback.
-            const PROVEN_PROFILE_DOC_ID = "28036671149327607";
+            // Proven doc_id is ALWAYS primary (its variables match exactly). Live runtime & alt doc_ids are fallbacks.
+            const PROVEN_PROFILE_DOC_ID = CONFIG.RELAY_DOC_IDS?.PROFILE_QUERY || "28036671149327607";
+            const ALT_PROFILE_DOC_ID = CONFIG.RELAY_DOC_IDS?.PROFILE_ALT_QUERY || "40158838120366999";
             const liveProfileDocId = Utils.getRelayDocId("PolarisProfilePageContentQuery", null);
-            const profileDocIds = [PROVEN_PROFILE_DOC_ID];
-            if (liveProfileDocId && liveProfileDocId !== PROVEN_PROFILE_DOC_ID) profileDocIds.push(liveProfileDocId);
+            const profileDocIds = Utils.unique([PROVEN_PROFILE_DOC_ID, liveProfileDocId, ALT_PROFILE_DOC_ID].filter(Boolean));
             params.append("fb_api_caller_class", "RelayModern");
             params.append("fb_api_req_friendly_name", "PolarisProfilePageContentQuery");
             params.append("doc_id", PROVEN_PROFILE_DOC_ID);

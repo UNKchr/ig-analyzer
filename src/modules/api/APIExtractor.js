@@ -3,6 +3,35 @@ import { CONFIG } from '../Config.js';
 import { Utils } from '../Utils.js';
 import { UI } from '../UI.js';
 
+const normalizeUserId = (rawId) => {
+    if (rawId === null || rawId === undefined) return null;
+    const str = String(rawId).trim();
+    if (!str || str === '0' || str === 'null' || str === 'undefined') return null;
+    return str;
+};
+
+let cumulativeBurstPages = 0;
+let lastBurstPageTimestamp = 0;
+
+const recordBurstPageAndGetCount = () => {
+    const now = Date.now();
+    if (lastBurstPageTimestamp > 0 && (now - lastBurstPageTimestamp) > 30000) {
+        cumulativeBurstPages = 0;
+    }
+    cumulativeBurstPages++;
+    lastBurstPageTimestamp = now;
+    return cumulativeBurstPages;
+};
+
+const sleepPaginationDelay = async (burstPageCount, signal) => {
+    const baseDelay = (CONFIG.FRIENDSHIPS_RATE_LIMIT_MS || CONFIG.BASE_RATE_LIMIT_MS || 1400) + Math.random() * 750;
+    const breatherEvery = CONFIG.BREATHER_EVERY_PAGES || 8;
+    const extraBreather = (burstPageCount > 0 && burstPageCount % breatherEvery === 0)
+        ? ((CONFIG.BREATHER_PAUSE_MS || 3200) + Math.random() * 1000)
+        : 0;
+    await Utils.sleep(baseDelay + extraBreather, signal);
+};
+
 Object.assign(API, {
     mergeExtractedUsers: (primaryList = [], secondaryList = []) => {
         const merged = [];
@@ -14,11 +43,19 @@ Object.assign(API, {
             const username = rawUser.username ? String(rawUser.username).trim() : '';
             if (!username) return;
 
-            const rawId = rawUser.id ?? rawUser.pk_id ?? rawUser.strong_id__ ?? rawUser.pk ?? null;
-            const id = (rawId !== null && rawId !== undefined && String(rawId).trim() !== '' && String(rawId) !== '0' && String(rawId) !== 'null' && String(rawId) !== 'undefined')
-                ? String(rawId).trim()
-                : null;
+            const id = normalizeUserId(rawUser.id ?? rawUser.pk_id ?? rawUser.strong_id__ ?? rawUser.pk ?? null);
             const lower = username.toLowerCase();
+
+            const rawPriv = rawUser.isPrivate !== undefined ? rawUser.isPrivate : rawUser.is_private;
+            const hasExplicitPrivate = typeof rawUser.isPrivateKnown === 'boolean'
+                ? rawUser.isPrivateKnown
+                : typeof rawPriv === 'boolean';
+            const isBestie = Boolean(rawUser.isBestie ?? rawUser.is_bestie ?? rawUser.friendship_status?.is_bestie);
+            const outgoingRequest = Boolean(rawUser.outgoingRequest ?? rawUser.outgoing_request ?? rawUser.friendship_status?.outgoing_request);
+            const profilePicUrl = rawUser.hd_profile_pic_url_info?.url || rawUser.profilePicUrl || rawUser.profile_pic_url || null;
+            const latestReelMedia = Number(rawUser.latestReelMedia ?? rawUser.latest_reel_media ?? rawUser.reel?.latest_reel_media ?? 0) || 0;
+            const fullName = rawUser.fullName || rawUser.full_name || "";
+            const isVerified = Boolean(rawUser.isVerified ?? rawUser.is_verified);
 
             const existingIdx = (id && indexById.has(id))
                 ? indexById.get(id)
@@ -30,22 +67,33 @@ Object.assign(API, {
                     existing.id = id;
                     indexById.set(id, existingIdx);
                 }
-                if (!existing.fullName && rawUser.fullName) existing.fullName = rawUser.fullName;
-                if (!existing.profilePicUrl && rawUser.profilePicUrl) existing.profilePicUrl = rawUser.profilePicUrl;
-                if (!existing.isPrivate && rawUser.isPrivate) existing.isPrivate = true;
-                if (!existing.isVerified && rawUser.isVerified) existing.isVerified = true;
-                if (!existing.latestReelMedia && rawUser.latestReelMedia) existing.latestReelMedia = rawUser.latestReelMedia;
+                if (!existing.fullName && fullName) existing.fullName = fullName;
+                if (!existing.profilePicUrl && profilePicUrl) existing.profilePicUrl = profilePicUrl;
+                if ((!existing.isPrivateKnown || existing.isPrivate === null || existing.isPrivate === undefined) && hasExplicitPrivate) {
+                    existing.isPrivate = Boolean(rawPriv);
+                    existing.isPrivateKnown = true;
+                } else if (existing.isPrivate === false && rawPriv === true) {
+                    existing.isPrivate = true;
+                    existing.isPrivateKnown = true;
+                }
+                if (!existing.isVerified && isVerified) existing.isVerified = true;
+                if (!existing.isBestie && isBestie) existing.isBestie = true;
+                if (!existing.outgoingRequest && outgoingRequest) existing.outgoingRequest = true;
+                if (latestReelMedia > (existing.latestReelMedia || 0)) existing.latestReelMedia = latestReelMedia;
                 return;
             }
 
             const entry = {
                 id,
                 username,
-                fullName: rawUser.fullName || rawUser.full_name || "",
-                isPrivate: Boolean(rawUser.isPrivate ?? rawUser.is_private),
-                isVerified: Boolean(rawUser.isVerified ?? rawUser.is_verified),
-                profilePicUrl: rawUser.profilePicUrl || rawUser.profile_pic_url || null,
-                latestReelMedia: rawUser.latestReelMedia ?? rawUser.latest_reel_media ?? 0
+                fullName,
+                isPrivate: hasExplicitPrivate ? Boolean(rawPriv) : null,
+                isPrivateKnown: hasExplicitPrivate,
+                isVerified,
+                profilePicUrl,
+                latestReelMedia,
+                isBestie,
+                outgoingRequest
             };
 
             const nextIdx = merged.length;
@@ -61,125 +109,220 @@ Object.assign(API, {
     },
 
     getAllUsersViaGraphQL: async (userId, hash, label, options = {}, expectedTotal = 0, callbacks = null) => {
-        const candidateHashes = [
-            hash,
-            ...(label === "following" && CONFIG.FOLLOWING_ALT_HASH && CONFIG.FOLLOWING_ALT_HASH !== hash
-                ? [CONFIG.FOLLOWING_ALT_HASH]
-                : [])
-        ].filter(Boolean);
+        if (options.signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+        }
 
-        if (candidateHashes.length === 0) return [];
+        const isNumericDocId = (val) => typeof val === 'string' && /^[0-9]{10,25}$/.test(val.trim());
+        const defaultFollowDocId = CONFIG.RELAY_DOC_IDS?.FOLLOW_LIST_QUERY || "40819242737691319";
+        const hashStr = String(hash || '').trim();
+        const activeDocId = isNumericDocId(hashStr)
+            ? hashStr
+            : await Utils.resolveRelayDocIdAsync(
+                "usePolarisGetFollowListQuery",
+                defaultFollowDocId,
+                "PolarisFollowListModal.next.react"
+            );
+
+        if (options.signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+        }
+
+        const users = [];
+        const seenIds = new Set();
+        const seenUsernames = new Set();
+        const seenCursors = new Set();
+        let cursor = null;
+        let hasNext = true;
+        let totalCount = expectedTotal || 0;
+        let limitedByMeta = false;
+        let pagesFetched = 0;
+        let rawItemsCount = 0;
+        let duplicateItemsCount = 0;
+
+        const isFollowerList = label !== "following";
+        const pageSize = Number(options.pageSize) > 0
+            ? Number(options.pageSize)
+            : (CONFIG.GRAPHQL_FOLLOW_LIST_PAGE_SIZE || 20);
+        const viewerId = Utils.getUserId() || "0";
+        const dtsg = Utils.getDtsg();
+        const jazoest = Utils.calculateJazoest(dtsg);
+        const lsd = Utils.getLsd();
+
+        const endpoints = [
+            "https://www.instagram.com/graphql/query",
+            "https://www.instagram.com/api/graphql"
+        ];
+        let endpointIdx = 0;
 
         const reportProgress = typeof callbacks?.onProgress === 'function'
             ? callbacks.onProgress
             : (curr, total, msg) => UI.setProgress(curr, total, msg);
 
-        let lastErr = null;
+        try {
+            while (hasNext) {
+                if (options.signal?.aborted) {
+                    throw new DOMException("Aborted", "AbortError");
+                }
 
-        for (const activeHash of candidateHashes) {
-            const users = [];
-            const seenIds = new Set();
-            const seenUsernames = new Set();
-            const seenCursors = new Set();
-            let cursor = null;
-            let hasNext = true;
-            let totalCount = expectedTotal || 0;
-            let structureValid = true;
+                const params = new URLSearchParams();
+                params.append("av", viewerId);
+                params.append("__d", "www");
+                params.append("__user", "0");
+                params.append("__a", "1");
+                params.append("__req", String(pagesFetched + 1));
+                params.append("fb_api_caller_class", "RelayModern");
+                params.append("fb_api_req_friendly_name", "usePolarisGetFollowListQuery");
+                params.append("doc_id", activeDocId);
+                params.append("server_timestamps", "true");
+                params.append("variables", JSON.stringify({
+                    after: cursor,
+                    before: null,
+                    first: pageSize,
+                    isFollowerList,
+                    last: null,
+                    query: "",
+                    userID: String(userId)
+                }));
+                if (dtsg) params.append("fb_dtsg", dtsg);
+                if (jazoest) params.append("jazoest", jazoest);
+                if (lsd) params.append("lsd", lsd);
 
-            try {
-                while (hasNext) {
-                    if (options.signal?.aborted) {
-                        throw new DOMException("Aborted", "AbortError");
-                    }
+                const headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-FB-Friendly-Name": "usePolarisGetFollowListQuery",
+                    ...(lsd ? { "X-FB-LSD": lsd } : {}),
+                    ...(options.headers || {})
+                };
 
-                    const vars = encodeURIComponent(JSON.stringify({
-                        id: String(userId),
-                        first: options.pageSize || CONFIG.PAGE_SIZE || 50,
-                        after: cursor
-                    }));
-                    const url = "https://www.instagram.com/graphql/query/?query_hash=" + activeHash + "&variables=" + vars;
-
-                    const json = await API.fetchWithRetry(url, options);
-                    const userNode = json?.data?.user;
-                    const edge = label === "following"
-                        ? (userNode?.edge_follow || userNode?.edge_followed_by)
-                        : (userNode?.edge_followed_by || userNode?.edge_follow);
-
-                    if (!edge || !Array.isArray(edge.edges)) {
-                        structureValid = false;
-                        break;
-                    }
-
-                    if (totalCount === 0 && edge.count) totalCount = edge.count;
-
-                    edge.edges.forEach((e) => {
-                        const node = e?.node;
-                        const username = node?.username ? String(node.username).trim() : '';
-                        if (!username) return;
-
-                        const rawId = node?.id ?? node?.pk_id ?? node?.pk ?? null;
-                        const id = (rawId !== null && rawId !== undefined && String(rawId).trim() !== '' && String(rawId) !== '0')
-                            ? String(rawId).trim()
-                            : null;
-                        const lower = username.toLowerCase();
-
-                        if ((id && seenIds.has(id)) || seenUsernames.has(lower)) return;
-                        if (id) seenIds.add(id);
-                        seenUsernames.add(lower);
-
-                        users.push({
-                            id,
-                            username,
-                            fullName: node?.full_name || "",
-                            isPrivate: Boolean(node?.is_private),
-                            isVerified: Boolean(node?.is_verified),
-                            profilePicUrl: node?.profile_pic_url || null,
-                            latestReelMedia: node?.reel?.latest_reel_media || 0
-                        });
+                let json;
+                let activeConn;
+                try {
+                    json = await API.fetchWithRetry(endpoints[endpointIdx], {
+                        ...options,
+                        method: "POST",
+                        headers,
+                        body: params.toString(),
+                        abortOnRateLimit: true
                     });
 
-                    const nextCursor = (edge.page_info?.has_next_page === true && edge.page_info?.end_cursor)
-                        ? String(edge.page_info.end_cursor)
-                        : null;
+                    const conn = label === "following"
+                        ? (json?.data?.xdt_api__v1__friendships__following__connection || json?.data?.xdt_api__v1__friendships__followers__connection)
+                        : (json?.data?.xdt_api__v1__friendships__followers__connection || json?.data?.xdt_api__v1__friendships__following__connection);
+                    const legacyUserNode = json?.data?.user;
+                    const legacyEdge = label === "following"
+                        ? (legacyUserNode?.edge_follow || legacyUserNode?.edge_followed_by)
+                        : (legacyUserNode?.edge_followed_by || legacyUserNode?.edge_follow);
+                    activeConn = (conn && Array.isArray(conn.edges))
+                        ? conn
+                        : ((legacyEdge && Array.isArray(legacyEdge.edges)) ? legacyEdge : null);
 
-                    if (nextCursor && seenCursors.has(nextCursor)) {
-                        hasNext = false;
-                    } else {
-                        if (nextCursor) seenCursors.add(nextCursor);
-                        cursor = nextCursor;
-                        hasNext = Boolean(nextCursor);
+                    if (!activeConn) {
+                        const gqlErrMsg = Array.isArray(json?.errors) && json.errors[0]?.message
+                            ? ` (${json.errors[0].message})`
+                            : '';
+                        if (!options.silent) {
+                            console.warn(`[IG Analyzer] GraphQL Relay returned invalid ${label} connection:`, json);
+                        }
+                        if (pagesFetched === 0) {
+                            throw new Error(`GraphQL Relay returned invalid ${label} payload${gqlErrMsg}`);
+                        }
+                        break;
                     }
-
-                    const total = totalCount > 0 ? totalCount : 0;
-                    const progressLabel = total > 0
-                        ? `Extracting ${label}... (${users.length}/${total})`
-                        : `Extracting ${label}... (${users.length})`;
-
-                    reportProgress(users.length, total, progressLabel);
-
-                    if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500, options.signal);
-                }
-
-                if (structureValid) {
-                    if (users.length > 0 && !callbacks?.suppressFinalProgress) {
-                        reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
+                } catch (reqErr) {
+                    if (reqErr.name === 'AbortError' || options.signal?.aborted || reqErr.isRateLimited) {
+                        throw reqErr;
                     }
-                    return users;
+                    if (pagesFetched === 0 && endpointIdx + 1 < endpoints.length) {
+                        endpointIdx++;
+                        continue;
+                    }
+                    throw reqErr;
                 }
-            } catch (err) {
-                if (err.name === 'AbortError' || options.signal?.aborted) throw err;
-                if (users.length > 0) {
-                    Object.defineProperty(err, 'partialUsers', { value: users, enumerable: false, configurable: true });
+
+                pagesFetched++;
+                const burstPages = recordBurstPageAndGetCount();
+
+                if (activeConn.should_limit_list_of_followers || activeConn.should_limit_list_of_followings) {
+                    limitedByMeta = true;
                 }
-                lastErr = err;
+                if (totalCount === 0 && activeConn.count) {
+                    totalCount = Number(activeConn.count) || 0;
+                }
+
+                rawItemsCount += activeConn.edges.length;
+
+                activeConn.edges.forEach((e) => {
+                    const node = e?.node || e;
+                    const username = node?.username ? String(node.username).trim() : '';
+                    if (!username) return;
+
+                    const id = normalizeUserId(node?.pk ?? node?.id ?? node?.pk_id ?? node?.strong_id__ ?? null);
+                    const lower = username.toLowerCase();
+
+                    if ((id && seenIds.has(id)) || seenUsernames.has(lower)) {
+                        duplicateItemsCount++;
+                        return;
+                    }
+                    if (id) seenIds.add(id);
+                    seenUsernames.add(lower);
+
+                    users.push({
+                        id,
+                        username,
+                        fullName: node?.full_name || "",
+                        isPrivate: typeof node?.is_private === 'boolean' ? node.is_private : null,
+                        isVerified: Boolean(node?.is_verified),
+                        profilePicUrl: node?.hd_profile_pic_url_info?.url || node?.profile_pic_url || null,
+                        latestReelMedia: Number(node?.latest_reel_media ?? node?.reel?.latest_reel_media ?? 0) || 0,
+                        isBestie: Boolean(node?.friendship_status?.is_bestie ?? node?.is_bestie),
+                        outgoingRequest: Boolean(node?.friendship_status?.outgoing_request ?? node?.outgoing_request)
+                    });
+                });
+
+                const nextCursor = (activeConn.page_info?.has_next_page === true && activeConn.page_info?.end_cursor)
+                    ? String(activeConn.page_info.end_cursor)
+                    : null;
+
+                if (nextCursor && seenCursors.has(nextCursor)) {
+                    console.warn(`[IG Analyzer] Duplicate GraphQL pagination cursor detected for ${label}, stopping loop.`);
+                    hasNext = false;
+                } else {
+                    if (nextCursor) seenCursors.add(nextCursor);
+                    cursor = nextCursor;
+                    hasNext = Boolean(nextCursor);
+                }
+
+                const total = totalCount > 0 ? totalCount : 0;
+                const progressLabel = total > 0
+                    ? `Extracting ${label}... (${users.length}/${total})`
+                    : `Extracting ${label}... (${users.length})`;
+
+                reportProgress(users.length, total, progressLabel);
+
+                if (hasNext) {
+                    await sleepPaginationDelay(burstPages, options.signal);
+                }
             }
+        } catch (err) {
+            if (err.name === 'AbortError' || options.signal?.aborted) throw err;
+            if (users.length > 0) {
+                Object.defineProperty(err, 'partialUsers', { value: users, enumerable: false, configurable: true });
+            }
+            throw err;
         }
 
-        if (lastErr) throw lastErr;
-        if (!options.silent) {
-            console.warn(`[IG Analyzer] Unexpected GraphQL structure for ${label}.`);
+        if (users.length > 0 && !callbacks?.suppressFinalProgress) {
+            reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
         }
-        return [];
+
+        Object.defineProperty(users, '_meta', {
+            value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount, engine: 'graphql' },
+            enumerable: false,
+            configurable: true
+        });
+
+        return users;
     },
 
     getAllUsersViaFriendships: async (userId, label, options = {}, expectedTotal = 0, callbacks = null) => {
@@ -223,6 +366,7 @@ Object.assign(API, {
                 const url = `https://www.instagram.com/api/v1/friendships/${userId}/${endpoint}/?${params.toString()}`;
                 const json = await API.fetchWithRetry(url, { ...options, abortOnRateLimit: true });
                 pagesFetched++;
+                const burstPages = recordBurstPageAndGetCount();
 
                 if (json?.should_limit_list_of_followers || json?.should_limit_list_of_followings) {
                     limitedByMeta = true;
@@ -245,10 +389,7 @@ Object.assign(API, {
                     const username = u?.username ? String(u.username).trim() : '';
                     if (!username) return;
 
-                    const rawId = u?.pk_id ?? u?.strong_id__ ?? u?.pk ?? u?.id ?? null;
-                    const id = (rawId !== null && rawId !== undefined && String(rawId).trim() !== '' && String(rawId) !== '0')
-                        ? String(rawId).trim()
-                        : null;
+                    const id = normalizeUserId(u?.pk_id ?? u?.strong_id__ ?? u?.pk ?? u?.id ?? null);
                     const lower = username.toLowerCase();
 
                     if ((id && seenIds.has(id)) || seenUsernames.has(lower)) {
@@ -265,7 +406,9 @@ Object.assign(API, {
                         isPrivate: Boolean(u?.is_private),
                         isVerified: Boolean(u?.is_verified),
                         profilePicUrl: u?.profile_pic_url || null,
-                        latestReelMedia: u?.latest_reel_media || 0
+                        latestReelMedia: u?.latest_reel_media || 0,
+                        isBestie: Boolean(u?.friendship_status?.is_bestie ?? u?.is_bestie),
+                        outgoingRequest: Boolean(u?.friendship_status?.outgoing_request ?? u?.outgoing_request)
                     });
                 });
 
@@ -290,12 +433,7 @@ Object.assign(API, {
 
                 reportProgress(users.length, total, progressLabel);
                 if (hasNext) {
-                    const baseDelay = (CONFIG.FRIENDSHIPS_RATE_LIMIT_MS || CONFIG.BASE_RATE_LIMIT_MS || 1250) + Math.random() * 650;
-                    const breatherEvery = CONFIG.BREATHER_EVERY_PAGES || 10;
-                    const extraBreather = (pagesFetched > 0 && pagesFetched % breatherEvery === 0)
-                        ? ((CONFIG.BREATHER_PAUSE_MS || 2500) + Math.random() * 800)
-                        : 0;
-                    await Utils.sleep(baseDelay + extraBreather, options.signal);
+                    await sleepPaginationDelay(burstPages, options.signal);
                 }
             }
         } catch (err) {
@@ -311,7 +449,7 @@ Object.assign(API, {
         }
 
         Object.defineProperty(users, '_meta', {
-            value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount },
+            value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount, engine: 'rest' },
             enumerable: false,
             configurable: true
         });
@@ -327,96 +465,143 @@ Object.assign(API, {
             ? callbacks.onProgress
             : (curr, total, msg) => UI.setProgress(curr, total, msg);
 
+        const rawEngine = String(options.engine || CONFIG.DEFAULT_EXTRACTION_ENGINE || "hybrid").toLowerCase();
+        const engine = (rawEngine === "graphql" || rawEngine === "rest" || rawEngine === "hybrid") ? rawEngine : "hybrid";
+
         let users = [];
         let friendshipsSuccess = false;
+        let graphqlSuccess = false;
         let limitedByMeta = false;
         let rateLimited = false;
 
-        // 1. Single Native Pass: Official Instagram Web modal endpoint (?count=12 without search_surface)
-        try {
-            const res = await API.getAllUsersViaFriendships(
-                userId,
-                label,
-                {
-                    ...options,
-                    pageSize: CONFIG.FRIENDSHIPS_PAGE_SIZE || 12,
-                    searchSurface: null,
-                    useRankToken: false,
-                    abortOnRateLimit: true
-                },
-                expectedTotal,
-                {
-                    onProgress: reportProgress,
-                    suppressFinalProgress: true
-                }
-            );
-            users = res;
-            limitedByMeta = Boolean(res?._meta?.limitedByMeta);
-            friendshipsSuccess = true;
-        } catch (e) {
-            if (e.name === 'AbortError' || options.signal?.aborted) throw e;
-            users = Array.isArray(e.partialUsers) ? e.partialUsers : [];
-            friendshipsSuccess = false;
-            if (e.isRateLimited) {
-                rateLimited = true;
-                logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
-            } else {
-                console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e?.message || e);
-            }
-        }
-
-        // 2. Fallback GraphQL ONLY if REST failed (non-429) or was severely truncated (<65%) without Meta flag.
-        // Never runs after normal completion (prevents 1-4 deactivated accounts from triggering extra passes & rate limits).
-        const isSeverelyTruncated = expectedTotal >= 20 && users.length < expectedTotal * 0.65 && !limitedByMeta;
-        const shouldRunGraphQL = Boolean(hash) &&
-            !rateLimited &&
-            (!friendshipsSuccess || isSeverelyTruncated);
-
-        if (shouldRunGraphQL) {
-            if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-
-            if (!friendshipsSuccess) {
-                logMsg(`Friendships API interrupted for '${label}' (${users.length} partial). Completing via GraphQL...`);
-            }
-
-            const beforeGqlCount = users.length;
+        const runRest = async (isFallback = false) => {
             try {
-                if (friendshipsSuccess && users.length > 0) {
-                    await Utils.sleep(800 + Math.random() * 300, options.signal);
-                }
-                const gqlUsers = await API.getAllUsersViaGraphQL(
+                const res = await API.getAllUsersViaFriendships(
                     userId,
-                    hash,
                     label,
-                    friendshipsSuccess
-                        ? { ...options, optional: true, silent: true, abortOnRateLimit: true }
-                        : { ...options, abortOnRateLimit: true },
+                    {
+                        ...options,
+                        pageSize: CONFIG.FRIENDSHIPS_PAGE_SIZE || 12,
+                        searchSurface: null,
+                        useRankToken: false,
+                        abortOnRateLimit: true
+                    },
                     expectedTotal,
                     {
                         onProgress: (curr, total, msg) => {
-                            const mergedEstimate = Math.max(users.length, curr);
-                            reportProgress(mergedEstimate, total, msg);
+                            reportProgress(Math.max(users.length, curr), total, msg);
                         },
                         suppressFinalProgress: true
                     }
                 );
-                if (Array.isArray(gqlUsers) && gqlUsers.length > 0) {
-                    users = API.mergeExtractedUsers(users, gqlUsers);
+                users = users.length > 0 ? API.mergeExtractedUsers(users, res) : res;
+                limitedByMeta = limitedByMeta || Boolean(res?._meta?.limitedByMeta);
+                friendshipsSuccess = true;
+            } catch (e) {
+                if (e.name === 'AbortError' || options.signal?.aborted) throw e;
+                const partial = Array.isArray(e.partialUsers) ? e.partialUsers : [];
+                if (partial.length > 0) {
+                    users = users.length > 0 ? API.mergeExtractedUsers(users, partial) : partial;
                 }
-            } catch (gqlErr) {
-                if (gqlErr.name === 'AbortError' || options.signal?.aborted) throw gqlErr;
-                if (Array.isArray(gqlErr.partialUsers) && gqlErr.partialUsers.length > 0) {
-                    users = API.mergeExtractedUsers(users, gqlErr.partialUsers);
-                }
-                if (gqlErr.isRateLimited) {
+                friendshipsSuccess = false;
+                if (e.isRateLimited) {
                     rateLimited = true;
-                } else if (!friendshipsSuccess) {
-                    Utils.logError(`GraphQL fallback failed for ${label}`, gqlErr);
+                    logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
+                } else if (isFallback) {
+                    Utils.logError(`REST fallback failed for ${label}`, e);
+                } else {
+                    console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e?.message || e);
                 }
             }
+        };
 
-            if (friendshipsSuccess && users.length > beforeGqlCount) {
-                logMsg(`[Reconciled] Recovered +${users.length - beforeGqlCount} '${label}' account(s) via GraphQL.`);
+        const runGraphQL = async (gqlOptions = {}, isReconciliation = false) => {
+            try {
+                const res = await API.getAllUsersViaGraphQL(
+                    userId,
+                    hash,
+                    label,
+                    {
+                        pageSize: options.pageSize || CONFIG.GRAPHQL_FOLLOW_LIST_PAGE_SIZE || 20,
+                        ...options,
+                        ...gqlOptions,
+                        abortOnRateLimit: true
+                    },
+                    expectedTotal,
+                    {
+                        onProgress: (curr, total, msg) => {
+                            reportProgress(Math.max(users.length, curr), total, msg);
+                        },
+                        suppressFinalProgress: true
+                    }
+                );
+                users = users.length > 0 ? API.mergeExtractedUsers(users, res) : res;
+                limitedByMeta = limitedByMeta || Boolean(res?._meta?.limitedByMeta);
+                graphqlSuccess = true;
+            } catch (gqlErr) {
+                if (gqlErr.name === 'AbortError' || options.signal?.aborted) throw gqlErr;
+                const partial = Array.isArray(gqlErr.partialUsers) ? gqlErr.partialUsers : [];
+                if (partial.length > 0) {
+                    users = users.length > 0 ? API.mergeExtractedUsers(users, partial) : partial;
+                }
+                graphqlSuccess = false;
+                if (gqlErr.isRateLimited) {
+                    rateLimited = true;
+                    logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
+                } else if (!isReconciliation) {
+                    Utils.logError(`GraphQL Relay error for ${label}`, gqlErr);
+                } else {
+                    console.warn(`[IG Analyzer] GraphQL Relay reconciliation failed for ${label}:`, gqlErr?.message || gqlErr);
+                }
+            }
+        };
+
+        if (engine === "graphql") {
+            await runGraphQL({ optional: false, silent: false }, false);
+
+            if (!graphqlSuccess && !rateLimited) {
+                if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+                logMsg(`GraphQL Relay interrupted for '${label}' (${users.length} partial). Falling back to REST Friendships API...`);
+                if (users.length > 0) {
+                    await Utils.sleep(800 + Math.random() * 400, options.signal);
+                }
+                await runRest(true);
+            }
+        } else {
+            await runRest(false);
+
+            const reconcileThreshold = Number(CONFIG.HYBRID_RECONCILE_THRESHOLD) || 0.92;
+            const minMissingUsers = Number(CONFIG.HYBRID_MIN_MISSING_USERS) || 6;
+            const missingCount = expectedTotal > 0 ? Math.max(0, expectedTotal - users.length) : 0;
+            const needsHybridReconcile = engine === "hybrid" &&
+                friendshipsSuccess &&
+                !limitedByMeta &&
+                expectedTotal >= 15 &&
+                users.length < expectedTotal * reconcileThreshold &&
+                missingCount >= minMissingUsers;
+
+            const shouldRunGraphQL = !rateLimited && (!friendshipsSuccess || needsHybridReconcile);
+
+            if (shouldRunGraphQL) {
+                if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+                if (!friendshipsSuccess) {
+                    logMsg(`Friendships API interrupted for '${label}' (${users.length} partial). Completing via GraphQL Relay...`);
+                }
+
+                const beforeGqlCount = users.length;
+                if (friendshipsSuccess && users.length > 0) {
+                    await Utils.sleep(1200 + Math.random() * 600, options.signal);
+                }
+
+                await runGraphQL(
+                    friendshipsSuccess ? { optional: true, silent: true } : {},
+                    friendshipsSuccess
+                );
+
+                if (friendshipsSuccess && users.length > beforeGqlCount) {
+                    logMsg(`[Reconciled] Recovered +${users.length - beforeGqlCount} '${label}' account(s) via GraphQL Relay.`);
+                }
             }
         }
 
@@ -433,6 +618,8 @@ Object.assign(API, {
         return {
             users,
             friendshipsSuccess,
+            graphqlSuccess,
+            engineUsed: engine,
             limitedByMeta,
             isPartial,
             rateLimited

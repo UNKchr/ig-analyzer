@@ -115,7 +115,9 @@ Object.assign(UI, {
                     if (clearBtn) clearBtn.style.display = val ? 'inline-flex' : 'none';
                     clearTimeout(searchTimeout);
                     searchTimeout = setTimeout(() => {
-                        state.searchQuery = val;
+                        const currentState = UI.paginationState[containerId];
+                        if (!currentState) return;
+                        currentState.searchQuery = val;
                         UI.applyFilters(containerId);
                     }, 120);
                 });
@@ -125,9 +127,11 @@ Object.assign(UI, {
                         e.stopPropagation();
                         e.stopImmediatePropagation();
                         e.preventDefault();
+                        const currentState = UI.paginationState[containerId];
+                        if (!currentState) return;
                         searchInput.value = '';
                         if (clearBtn) clearBtn.style.display = 'none';
-                        state.searchQuery = '';
+                        currentState.searchQuery = '';
                         UI.applyFilters(containerId);
                     }
                 });
@@ -138,9 +142,11 @@ Object.assign(UI, {
                     e.preventDefault();
                     e.stopPropagation();
                     e.stopImmediatePropagation();
+                    const currentState = UI.paginationState[containerId];
+                    if (!currentState) return;
                     searchInput.value = '';
                     clearBtn.style.display = 'none';
-                    state.searchQuery = '';
+                    currentState.searchQuery = '';
                     searchInput.focus();
                     UI.applyFilters(containerId);
                 });
@@ -156,10 +162,12 @@ Object.assign(UI, {
                     const targetFilter = chipBtn.getAttribute('data-filter');
                     if (!targetFilter) return;
 
-                    if (state.filterType === targetFilter && targetFilter !== 'all') {
-                        state.filterType = 'all';
+                    const currentState = UI.paginationState[containerId];
+                    if (!currentState) return;
+                    if (currentState.filterType === targetFilter && targetFilter !== 'all') {
+                        currentState.filterType = 'all';
                     } else {
-                        state.filterType = targetFilter;
+                        currentState.filterType = targetFilter;
                     }
                     UI.applyFilters(containerId);
                 });
@@ -278,64 +286,119 @@ Object.assign(UI, {
             if (exportBtn) exportBtn.disabled = totalFiltered === 0 && totalRaw === 0;
         }
 
-        // Enrich visible page with batch friendship statuses (show_many) for active audience tabs only
-        const userIdsToFetch = listVariant === 'standard'
-            ? pageUsers
-                .map((u) => u.id)
-                .filter((id) => id && id !== "0" && id !== "null" && id !== "undefined")
-            : [];
-
-        if (userIdsToFetch.length > 0 && typeof API.fetchFriendshipStatusesMany === 'function') {
-            API.fetchFriendshipStatusesMany(userIdsToFetch)
-                .then((statusMap) => {
-                    const currentState = UI.paginationState[containerId];
-                    if (!currentState || currentState.page !== page) return;
-
-                    pageUsers.forEach((u, index) => {
-                        if (!u.id) return;
-                        const status = statusMap[u.id];
-                        if (!status) return;
-
-                        let stateChanged = false;
-                        if (u.isPrivate !== status.isPrivate) {
-                            u.isPrivate = status.isPrivate;
-                            stateChanged = true;
-                        }
-                        if (u.isBestie !== status.isBestie) {
-                            u.isBestie = status.isBestie;
-                            stateChanged = true;
-                        }
-                        if (u.outgoingRequest !== status.outgoingRequest) {
-                            u.outgoingRequest = status.outgoingRequest;
-                            stateChanged = true;
-                        }
-
-                        if (stateChanged) {
-                            const rowId = containerId + "-row-" + (startIndex + index);
-                            const badgeContainer = document.getElementById(rowId + "-badges");
-                            if (badgeContainer) {
-                                badgeContainer.innerHTML = UI.renderUserBadgesHtml(u);
-                            }
-                            if (status.isBestie && u.latestReelMedia > 0) {
-                                const avatarEl = document.querySelector("#" + rowId + " .ig-user-avatar");
-                                if (avatarEl) {
-                                    avatarEl.classList.add("has-bestie-ring");
-                                    avatarEl.style.outlineColor = "#22c55e";
-                                }
-                            }
-                        }
-                    });
-
-                    UI.updateFilterChips(containerId);
-                })
-                .catch((err) => {
-                    console.warn("[IG Analyzer] Error updating friendship statuses batch:", err);
-                });
+        if (typeof UI.hydrateVisibleMainPageFriendships === 'function') {
+            UI.hydrateVisibleMainPageFriendships(containerId);
         }
 
         if (typeof UI.syncMainExportButton === 'function') {
             UI.syncMainExportButton();
         }
+    },
+
+    hydrateVisibleMainPageFriendships: (containerId) => {
+        const state = UI.paginationState[containerId];
+        if (!state || (state.listVariant || 'standard') !== 'standard') return;
+        const container = document.getElementById(containerId);
+        if (!container || !container.classList.contains('active')) return;
+
+        const pageSize = state.pageSize || 50;
+        const page = state.page || 1;
+        const startIndex = (page - 1) * pageSize;
+        const pageUsers = (state.users || []).slice(startIndex, startIndex + pageSize);
+
+        const userIdsToFetch = pageUsers
+            .map((u) => u.id)
+            .filter((id) => id && id !== "0" && id !== "null" && id !== "undefined");
+
+        if (userIdsToFetch.length === 0 || typeof API.fetchFriendshipStatusesMany !== 'function') return;
+
+        API.fetchFriendshipStatusesMany(userIdsToFetch)
+            .then((statusMap) => {
+                const currentState = UI.paginationState[containerId];
+                if (!currentState || currentState.page !== page) return;
+
+                const updatedUsers = [];
+                const updatedById = new Map();
+
+                pageUsers.forEach((u, index) => {
+                    if (!u.id) return;
+                    const status = statusMap[u.id];
+                    if (!status) return;
+
+                    let rowDomChanged = false;
+                    let metaChanged = false;
+
+                    if (!u.isPrivateKnown) {
+                        u.isPrivateKnown = true;
+                        metaChanged = true;
+                    }
+                    if (u.isPrivate !== status.isPrivate) {
+                        u.isPrivate = status.isPrivate;
+                        rowDomChanged = true;
+                        metaChanged = true;
+                    }
+                    if (u.isBestie !== status.isBestie) {
+                        u.isBestie = status.isBestie;
+                        rowDomChanged = true;
+                        metaChanged = true;
+                    }
+                    if (u.outgoingRequest !== status.outgoingRequest) {
+                        u.outgoingRequest = status.outgoingRequest;
+                        rowDomChanged = true;
+                        metaChanged = true;
+                    }
+
+                    if (rowDomChanged) {
+                        const rowId = containerId + "-row-" + (startIndex + index);
+                        const badgeContainer = document.getElementById(rowId + "-badges");
+                        if (badgeContainer) {
+                            badgeContainer.innerHTML = UI.renderUserBadgesHtml(u, { variant: currentState.listVariant || 'standard' });
+                        }
+                        if (status.isBestie && u.latestReelMedia > 0) {
+                            const avatarEl = document.querySelector("#" + rowId + " .ig-user-avatar");
+                            if (avatarEl) {
+                                avatarEl.classList.add("has-bestie-ring");
+                                avatarEl.style.outlineColor = "#22c55e";
+                            }
+                        }
+                    }
+
+                    if (metaChanged) {
+                        updatedUsers.push(u);
+                        updatedById.set(String(u.id), status);
+                    }
+                });
+
+                if (updatedById.size > 0) {
+                    Object.entries(UI.paginationState).forEach(([tabContainerId, tabState]) => {
+                        if (!tabState || !Array.isArray(tabState.rawUsers)) return;
+                        let tabChanged = false;
+                        tabState.rawUsers.forEach((item) => {
+                            if (!item?.id || !updatedById.has(String(item.id))) return;
+                            const st = updatedById.get(String(item.id));
+                            if (item.isPrivate !== st.isPrivate || !item.isPrivateKnown || item.isBestie !== st.isBestie || item.outgoingRequest !== st.outgoingRequest) {
+                                item.isPrivate = st.isPrivate;
+                                item.isPrivateKnown = true;
+                                item.isBestie = st.isBestie;
+                                item.outgoingRequest = st.outgoingRequest;
+                                tabChanged = true;
+                            }
+                        });
+                        if (tabChanged) {
+                            UI.updateFilterChips(tabContainerId);
+                        }
+                    });
+
+                    UI.updateFilterChips(containerId);
+
+                    if (typeof Storage.syncFreshUserData === 'function') {
+                        Storage.syncFreshUserData(updatedUsers);
+                    }
+                }
+            })
+            .catch((err) => {
+                console.warn("[IG Analyzer] Error updating friendship statuses batch:", err);
+            });
     },
 
     renderUserBadgesHtml: (u, options = {}) => {

@@ -1518,6 +1518,160 @@
     transform: translateY(-1px);
 }
 
+/* --- Extraction Engine Selector inside Confirmation Modal --- */
+#ig-safety-modal .ig-modal-content.is-engine-modal {
+    width: 500px;
+    padding: 22px 22px;
+}
+
+#ig-safety-modal .ig-modal-content.is-engine-modal .ig-modal-icon {
+    width: 44px;
+    height: 44px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+#ig-safety-modal .ig-modal-content.is-engine-modal .ig-modal-text {
+    max-height: 64vh;
+    text-align: left;
+    margin-bottom: 18px;
+}
+
+.ig-engine-intro {
+    text-align: center;
+    line-height: 1.5;
+}
+
+.ig-engine-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.ig-engine-selector-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--iga-text-dim);
+    margin-bottom: 2px;
+}
+
+.ig-engine-card {
+    border: 1px solid var(--iga-border);
+    background: var(--iga-surface);
+    border-radius: var(--iga-radius-md);
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: border-color 0.16s var(--iga-ease-default), background 0.16s var(--iga-ease-default), box-shadow 0.16s var(--iga-ease-default);
+    user-select: none;
+}
+
+.ig-engine-card:hover {
+    background: var(--iga-surface-hover);
+    border-color: var(--iga-border-hover);
+}
+
+.ig-engine-card:focus-visible {
+    outline: 2px solid var(--iga-accent);
+    outline-offset: 2px;
+}
+
+.ig-engine-card.is-selected {
+    border-color: var(--iga-accent);
+    background: var(--iga-accent-subtle);
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25);
+}
+
+.ig-engine-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ig-engine-radio {
+    position: relative;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--iga-text-dim);
+    flex-shrink: 0;
+    transition: border-color 0.16s var(--iga-ease-default);
+}
+
+.ig-engine-card.is-selected .ig-engine-radio {
+    border-color: var(--iga-accent);
+}
+
+.ig-engine-card.is-selected .ig-engine-radio::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 50%;
+    background: var(--iga-accent);
+}
+
+.ig-engine-name {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--iga-text-bright);
+}
+
+.ig-engine-badge {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: var(--iga-radius-full);
+    letter-spacing: 0.01em;
+}
+
+.ig-engine-badge.is-recommended {
+    background: var(--iga-success-subtle);
+    color: var(--iga-success);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.ig-engine-badge.is-accent {
+    background: var(--iga-accent-subtle);
+    color: var(--iga-accent);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.ig-engine-badge.is-neutral {
+    background: rgba(148, 163, 184, 0.14);
+    color: var(--iga-text-main);
+    border: 1px solid var(--iga-border);
+}
+
+.ig-engine-desc {
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--iga-text-muted);
+    margin-top: 5px;
+    padding-left: 22px;
+}
+
+.ig-engine-desc b {
+    color: var(--iga-text-bright);
+    font-weight: 600;
+}
+
+.ig-engine-desc code {
+    font-family: var(--iga-font-mono);
+    font-size: 10.5px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--iga-text-bright);
+}
+
+#ig-safety-modal.ig-light-theme .ig-engine-desc code {
+    background: rgba(15, 23, 42, 0.07);
+}
+
 /* ============================================================
    HD Photo Modal (1080p Viewer) & Bestie Ring
    ============================================================ */

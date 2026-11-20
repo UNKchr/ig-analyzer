@@ -231,7 +231,10 @@ Object.assign(API, {
             params.append("__user", "0");
             params.append("__a", "1");
             params.append("__req", "1");
-            const searchDocId = "27706427925724183";
+            const searchDocId = Utils.getRelayDocId(
+                "PolarisSearchBoxRefetchableQuery",
+                CONFIG.RELAY_DOC_IDS?.SEARCH_BOX_QUERY || "27706427925724183"
+            );
             params.append("fb_api_caller_class", "RelayModern");
             params.append("fb_api_req_friendly_name", "PolarisSearchBoxRefetchableQuery");
             params.append("doc_id", searchDocId);
@@ -406,7 +409,10 @@ Object.assign(API, {
         }
 
         // Tier 1: Native Instagram Web RelayModern GraphQL (PolarisProfileStoryHighlightsTrayContentQuery)
-        const relayDocId = Utils.getRelayDocId("PolarisProfileStoryHighlightsTrayContentQuery", null);
+        const relayDocId = Utils.getRelayDocId(
+            "PolarisProfileStoryHighlightsTrayContentQuery",
+            CONFIG.RELAY_DOC_IDS?.HIGHLIGHTS_TRAY_QUERY || "26970053832668570"
+        );
         if (relayDocId) {
             const dtsg = Utils.getDtsg();
             const jazoest = Utils.calculateJazoest(dtsg);
@@ -469,39 +475,7 @@ Object.assign(API, {
             }
         }
 
-        // Tier 2: Instagram Web GraphQL query_hash (edge_highlight_reels)
-        const highlightsHash = CONFIG.HIGHLIGHTS_HASH || "d4d88dc1500312af6f937f7b804c68c3";
-        try {
-            const vars = encodeURIComponent(JSON.stringify({
-                user_id: String(targetId),
-                include_chaining: false,
-                include_reel: true,
-                include_suggested_users: false,
-                include_logged_out_extras: false,
-                include_highlight_reels: true,
-                include_live_status: false
-            }));
-            const gqlJson = await API.fetchWithRetry(`https://www.instagram.com/graphql/query/?query_hash=${highlightsHash}&variables=${vars}`, {
-                optional: true,
-                silent: true,
-                signal: options.signal
-            }, 1);
-
-            const edges = gqlJson?.data?.user?.edge_highlight_reels?.edges;
-            if (Array.isArray(edges)) {
-                const highlights = normalizeItems(edges);
-                return {
-                    available: true,
-                    count: highlights.length,
-                    highlights,
-                    source: 'graphql_hash'
-                };
-            }
-        } catch (gqlErr) {
-            if (gqlErr.name === 'AbortError' || options.signal?.aborted) throw gqlErr;
-        }
-
-        // Tier 3: Legacy REST highlights_tray (quietly handled when Web returns SPA HTML shell)
+        // Tier 2: Legacy REST highlights_tray (quietly handled when Web returns SPA HTML shell)
         try {
             const trayJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
                 optional: true,

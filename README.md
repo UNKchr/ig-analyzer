@@ -1,11 +1,11 @@
 # Instagram Follower Analyzer
 
 [![Userscript](https://img.shields.io/badge/Tampermonkey-Userscript-blue?logo=tampermonkey)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)
-[![Version](https://img.shields.io/badge/version-3.13.2-emerald.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-3.14.0-emerald.svg)](package.json)
 [![License: Custom](https://img.shields.io/badge/License-CSAL--NC-amber.svg)](LICENSE)
 [![Maintenance](https://img.shields.io/badge/maintained%3F-yes-brightgreen.svg)](https://github.com/UNKchr/ig-analyzer)
 
-A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your Instagram followers and following lists. Built directly on top of Instagram's native internal Friendships REST API (with automatic legacy GraphQL fallback), it detects non-followers, tracks new audience gains, uncovers secret unfollowers, distinguishes account blocks from deactivations, maps mutual username changes, provides **Quick-Card 1080p profile inspection**, features an on-demand **Story Spy 2.0** anomaly detection module, and includes an independent **Target Tracker** subpanel for third-party audience audits.
+A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your Instagram followers and following lists. Powered by a **Multi-Engine Extraction Architecture** combining Instagram's native Friendships REST API (`?count=12`) with Meta's modern Relay GraphQL engine (`usePolarisGetFollowListQuery`) and automatic cross-engine failover, it detects non-followers, tracks new audience gains, uncovers secret unfollowers, distinguishes account blocks from deactivations, maps mutual username changes, provides **Quick-Card 1080p profile inspection**, features an on-demand **Story Spy 2.0** anomaly detection module, and includes an independent **Target Tracker** subpanel for third-party audience audits.
 
 ---
 
@@ -17,7 +17,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 >
 > To safeguard your account:
 >
-> - **Paced Execution & Human Jitter:** The analyzer intentionally incorporates extended delays between request batches (`2000ms` base delay + randomized human jitter). Scans take longer to complete by design to simulate natural human browsing patterns and avoid triggering Instagram's automated protection mechanisms.
+> - **Paced Execution & Cumulative Anti-Burst Breathers:** The analyzer intentionally incorporates humanized request delays (`1.4s–2.1s` jittered page cadence on REST), automatic reading breather pauses (`3.2s–4.2s` every 8 cumulative pages across sequential lists), and extended inter-list transition cooldowns (`3.5s–5.0s` between `Following` and `Followers`) to simulate natural browsing patterns and avoid triggering Instagram's rate-limit protections.
 > - **Recommended Frequency:** We strongly recommend running a full analysis **no more than once every 1 to 2 hours**. Avoid running back-to-back analyses, especially on accounts with thousands of followers.
 > - **On-Demand Story Checks:** The Story Spy feature is strictly manual and executes independently per user — it is never executed automatically in bulk.
 > - **Target Audience Audits:** When auditing external accounts with Target Tracker, always respect target audience sizes and allow safe pauses between scans.
@@ -26,6 +26,11 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 ---
 
 ## 🌟 Key Features
+
+### ⚙️ Multi-Engine Extraction Architecture & Cross-Engine History Guard (New in v3.14.0)
+- **3 Selectable Extraction Engines:** Interactive pre-scan selector inside the confirmation modal allowing you to choose between **Smart Hybrid (Recommended)** (`REST ?count=12` + automatic GraphQL Relay rescue on count gaps), **GraphQL Relay (Max Accuracy)** (`usePolarisGetFollowListQuery` via `POST /graphql/query`, 20 users/page with Base64 cursors), and **REST Classic (Rich Metadata)** (`/api/v1/friendships/`). Your choice persists automatically in `ig_extraction_engine_v1`.
+- **Cross-Engine Baseline Conservation & Cumulative Memory:** Switch seamlessly between **REST** and **GraphQL** across consecutive scans without generating false `New Followers`, `New Mutuals`, or `Unfollowers` spikes, powered by official profile header counter conservation math, Smart Cumulative Network Memory, and `isPrivateKnown` metadata protection.
+- **Lazy Active-Tab Batch Hydration (`show_many`):** Automatically resolves missing `Private`/`Public`, `Bestie` (Close Friends), and `Pending` flags via `POST /api/v1/friendships/show_many/` exclusively for the currently active visible tab and persists enriched metadata directly into local storage.
 
 ### 🎯 Target Tracker & Deep Audit Child Subpanel (New in v3.12.0)
 - **Independent Floating Subpanel (`#ig-target-subpanel`):** A secondary floating window operating with high z-index over the main panel, featuring draggable header positioning (`ig_target_position_v1`), native corner resizing (`resize: both`), and full window controls (minimize/expand, close, refresh).
@@ -94,7 +99,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 - **Category Filter Chips:** Instant toggle chips with live counters across result views: **All**, **Private**, **Public**, **Besties** (Close Friends), **With Story**, and **Verified**.
 
 ### 🔒 Core Analytics, Safety & Security
-- **Native Friendships REST API:** Primary extraction using `/api/v1/friendships/` with automatic fallback to legacy GraphQL query hashes.
+- **Multi-Engine Extraction Pipeline:** Supports native `/api/v1/friendships/` REST pagination, modern Relay GraphQL (`usePolarisGetFollowListQuery`) with dynamic lazy-bundle `doc_id` resolution, and automatic cross-engine failover.
 - **Block vs. Deactivation Disentanglement:** Accurately differentiates users who blocked you from deactivated profiles by comparing authenticated responses against anonymous guest checks (`credentials: "omit"`).
 - **Confirmed Username Change Detection (Mutuals):** Matches persistent numeric account IDs (`id` / `pk`) across scans to track username renames without misclassifying accounts as unfollowed.
 - **Client-Side Virtualized Pagination:** Smooth 50-user pagination with `← Prev` and `Next →` navigation, preventing DOM bloat and browser lag.
@@ -115,7 +120,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
 
 1. Install a userscript manager extension in your browser (**[Tampermonkey](https://www.tampermonkey.net/)** is strongly recommended).
 2. Click the installation link below:
-   👉 **[Install Instagram Follower Analyzer (v3.13.2)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)**
+   👉 **[Install Instagram Follower Analyzer (v3.14.0)](https://raw.githubusercontent.com/UNKchr/ig-analyzer/main/dist/instagram-follower-analyzer.user.js)**
 3. Tampermonkey will prompt you to inspect and confirm the script. Click **Install** (or **Update**).
 
 ---
@@ -127,7 +132,7 @@ A sophisticated, privacy-first Tampermonkey userscript that deeply analyzes your
    - **Press `F9`** to toggle panel visibility at any time.
    - **Press `F8`** to reset the panel to its default screen position.
 3. Click **Run Analysis** to begin scanning your account:
-   - Read the safety confirmation prompt and click **Yes, Continue**.
+   - Select your preferred extraction engine (**Smart Hybrid**, **GraphQL Relay**, or **REST Classic**), review the safety confirmation prompt, and click **Yes, Continue**.
    - While the scan is running, the button converts to **Cancel Analysis**, allowing you to safely abort at any time via `AbortController`.
 4. Monitor live progress in the **Logs** tab and observe the proportional percentage progress bar.
 5. Once completed, explore your analysis through the tabs in order:
@@ -183,6 +188,7 @@ Starting in v3.9.0+, data is automatically partitioned by your Instagram user ID
 | `ig_panel_position_v2` | Saved screen coordinates for the main analyzer panel. |
 | `ig_target_position_v1` | Saved screen coordinates for the Target Tracker child subpanel. |
 | `ig_tour_completed_v1` | Flag recording whether the initial onboarding tour has been viewed. |
+| `ig_extraction_engine_v1` | Selected extraction engine mode (`hybrid`, `graphql`, or `rest`). |
 
 ---
 

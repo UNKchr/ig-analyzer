@@ -26,17 +26,28 @@ Object.assign(App, {
             return;
         }
 
-        const userConfirmed = await UI.confirmAction(
-            "Safety Precaution", 
-            "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
-            "Yes, Continue"
-        );
+        const confirmRes = typeof UI.confirmExtractionModal === 'function'
+            ? await UI.confirmExtractionModal({
+                title: "Safety Precaution",
+                message: "Excessive use of automation tools may result in temporary account restrictions.<br>It is recommended to run this analysis <b>only once per hour</b>.",
+                confirmBtnText: "Yes, Continue"
+            })
+            : {
+                confirmed: await UI.confirmAction(
+                    "Safety Precaution",
+                    "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
+                    "Yes, Continue"
+                ),
+                engine: Storage.getExtractionEngine()
+            };
 
-        if (!userConfirmed) {
+        if (!confirmRes || !confirmRes.confirmed) {
             UI.log("Analysis cancelled by user.");
             console.log("Analysis cancelled by user.");
-            return; 
+            return;
         }
+
+        const selectedEngine = confirmRes.engine || Storage.getExtractionEngine();
 
         App.isRunning = true;
         App.abortController = new AbortController();
@@ -47,6 +58,10 @@ Object.assign(App, {
 
         try {
             UI.log("Starting deep analysis...");
+            const engineLabel = typeof UI.getEngineDisplayName === 'function'
+                ? UI.getEngineDisplayName(selectedEngine)
+                : selectedEngine;
+            UI.log(`[Engine] Selected extraction mode: ${engineLabel}`);
             const logTab = document.querySelector('[data-target="ig-log"]');
             if (logTab) logTab.click();
 
@@ -73,19 +88,132 @@ Object.assign(App, {
             const expectedFollowers = userInfo?.followerCount || 0;
 
             UI.log("Fetching 'Following'...");
-            const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following", { signal }, expectedFollowing); 
+            const followingRes = await API.extractCompleteUserList(userId, CONFIG.FOLLOWING_HASH, "following", { signal, engine: selectedEngine }, expectedFollowing);
             if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+            UI.log(`Total following: ${followingRes.users.length} (with IDs: ${followingRes.users.filter((u) => !!u.id).length})`);
+            if (expectedFollowing > 0 && followingRes.users.length < expectedFollowing) {
+                UI.log(`[Info] Profile header counter: ${expectedFollowing} following | Accessible accounts returned by list API: ${followingRes.users.length}.`);
+            }
 
-            // Humanized pause simulating closing 'Following' modal and opening 'Followers' modal (1.8s - 2.8s)
-            await Utils.sleep(1800 + Math.random() * 1000, signal);
+            let followersRes;
+            if (followingRes.rateLimited) {
+                UI.log("[Anti-Ban Guard] Skipping 'Followers' extraction because rate limit (429) was detected during 'Following'.");
+                followersRes = {
+                    users: [],
+                    isPartial: true,
+                    rateLimited: true,
+                    limitedByMeta: false
+                };
+            } else {
+                // Humanized cooldown pause simulating closing 'Following' modal and opening 'Followers' modal (3.5s - 5.0s)
+                await Utils.sleep(3500 + Math.random() * 1500, signal);
 
-            UI.log("Fetching 'Followers'...");
-            const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal }, expectedFollowers); 
-            if (signal.aborted) throw new DOMException("Aborted", "AbortError"); 
+                UI.log("Fetching 'Followers'...");
+                followersRes = await API.extractCompleteUserList(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal, engine: selectedEngine }, expectedFollowers);
+                if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+                UI.log(`Total followers: ${followersRes.users.length} (with IDs: ${followersRes.users.filter((u) => !!u.id).length})`);
+                if (expectedFollowers > 0 && followersRes.users.length < expectedFollowers) {
+                    UI.log(`[Info] Profile header counter: ${expectedFollowers} followers | Accessible accounts returned by list API: ${followersRes.users.length}.`);
+                }
+            }
 
-            
-            const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw);
-            const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw);
+            const prev = Storage.load();
+            let prevFollowersDetailed = [];
+            let prevFollowingDetailed = [];
+            let followerRenames = [];
+            let followingRenames = [];
+            let allRenames = [];
+
+            if (prev) {
+                prevFollowersDetailed = Utils.toDetailedUserArray(
+                    Array.isArray(prev.followersDetailed) ? prev.followersDetailed : (prev.followers || [])
+                );
+                prevFollowingDetailed = Utils.toDetailedUserArray(
+                    Array.isArray(prev.followingDetailed) ? prev.followingDetailed : (prev.following || [])
+                );
+            }
+
+            let followingDetailed = Storage.hydrateUsersFromMemory(followingRes.users || [], prevFollowingDetailed, {
+                friendshipCache: API.friendshipCache,
+                prevScanAt: prev?.lastRun
+            });
+            let followersDetailed = Storage.hydrateUsersFromMemory(followersRes.users || [], prevFollowersDetailed, {
+                friendshipCache: API.friendshipCache,
+                prevScanAt: prev?.lastRun
+            });
+
+            let prevHeaderFollowers = 0;
+            let prevHeaderFollowing = 0;
+            let followersTruncatedGuard = false;
+            let followersCumulativeGuard = false;
+            let followingTruncatedGuard = false;
+            let followingCumulativeGuard = false;
+
+            if (prev) {
+                // Detect username changes independently per list before cumulative merge
+                followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, followersDetailed);
+                followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, followingDetailed);
+
+                prevHeaderFollowers = Number(prev.headerFollowerCount || prevFollowersDetailed.length || 0);
+                prevHeaderFollowing = Number(prev.headerFollowingCount || prevFollowingDetailed.length || 0);
+
+                followersTruncatedGuard = Boolean(followersRes.isPartial && prevFollowersDetailed.length > followersDetailed.length);
+                followersCumulativeGuard = Boolean(
+                    !followersTruncatedGuard &&
+                    expectedFollowers > 0 &&
+                    followersDetailed.length < expectedFollowers &&
+                    prevFollowersDetailed.length > followersDetailed.length &&
+                    (prevHeaderFollowers === 0 || expectedFollowers >= prevHeaderFollowers)
+                );
+
+                if (followersTruncatedGuard || followersCumulativeGuard) {
+                    const beforeLen = followersDetailed.length;
+                    const followerRenamedOldInit = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+                    const unrenamedPrevFollowers = prevFollowersDetailed.filter((u) => !followerRenamedOldInit.has(u.username.toLowerCase()));
+                    let mergedFollowers = Utils.toDetailedUserArray(API.mergeExtractedUsers(followersDetailed, unrenamedPrevFollowers));
+                    if (followersCumulativeGuard && expectedFollowers > 0 && mergedFollowers.length > expectedFollowers) {
+                        mergedFollowers = mergedFollowers.slice(0, expectedFollowers);
+                    }
+                    followersDetailed = mergedFollowers;
+
+                    if (followersRes.rateLimited) {
+                        UI.log(`[Anti-Ban Guard] Rate limit active on 'followers'. Preserved ${followersDetailed.length} known followers from memory & suppressed false Unfollowers.`);
+                    } else if (followersTruncatedGuard) {
+                        UI.log(`[Safety Guard] Meta returned a partial followers subset (${beforeLen}/${expectedFollowers || '?'}). Preserving baseline & suppressing false Unfollowers.`);
+                    } else if (followersDetailed.length > beforeLen) {
+                        UI.log(`[Cumulative Memory] Reconciled +${followersDetailed.length - beforeLen} previously discovered follower(s) (${followersDetailed.length}/${expectedFollowers} total).`);
+                    }
+                }
+
+                followingTruncatedGuard = Boolean(followingRes.isPartial && prevFollowingDetailed.length > followingDetailed.length);
+                followingCumulativeGuard = Boolean(
+                    !followingTruncatedGuard &&
+                    expectedFollowing > 0 &&
+                    followingDetailed.length < expectedFollowing &&
+                    prevFollowingDetailed.length > followingDetailed.length &&
+                    (prevHeaderFollowing === 0 || expectedFollowing >= prevHeaderFollowing)
+                );
+
+                if (followingTruncatedGuard || followingCumulativeGuard) {
+                    const beforeLen = followingDetailed.length;
+                    const followingRenamedOldInit = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+                    const unrenamedPrevFollowing = prevFollowingDetailed.filter((u) => !followingRenamedOldInit.has(u.username.toLowerCase()));
+                    let mergedFollowing = Utils.toDetailedUserArray(API.mergeExtractedUsers(followingDetailed, unrenamedPrevFollowing));
+                    if (followingCumulativeGuard && expectedFollowing > 0 && mergedFollowing.length > expectedFollowing) {
+                        mergedFollowing = mergedFollowing.slice(0, expectedFollowing);
+                    }
+                    followingDetailed = mergedFollowing;
+
+                    if (followingRes.rateLimited) {
+                        UI.log(`[Anti-Ban Guard] Rate limit active on 'following'. Preserved ${followingDetailed.length} known following from memory & suppressed false lost following.`);
+                    } else if (followingTruncatedGuard) {
+                        UI.log(`[Safety Guard] Meta returned a partial following subset (${beforeLen}/${expectedFollowing || '?'}). Preserving baseline & suppressing false lost following.`);
+                    } else if (followingDetailed.length > beforeLen) {
+                        UI.log(`[Cumulative Memory] Reconciled +${followingDetailed.length - beforeLen} previously discovered following account(s) (${followingDetailed.length}/${expectedFollowing} total).`);
+                    }
+                }
+            }
+
             const following = followingDetailed.map((u) => u.username);
             const followers = followersDetailed.map((u) => u.username);
 
@@ -105,7 +233,12 @@ Object.assign(App, {
                         ...u,
                         id: u.id || existing.id || null,
                         fullName: u.fullName || existing.fullName || '',
-                        profilePicUrl: u.profilePicUrl || existing.profilePicUrl || null
+                        profilePicUrl: u.profilePicUrl || existing.profilePicUrl || null,
+                        isPrivate: u.isPrivateKnown ? u.isPrivate : existing.isPrivate,
+                        isPrivateKnown: Boolean(u.isPrivateKnown || existing.isPrivateKnown),
+                        isBestie: Boolean(u.isBestie || existing.isBestie),
+                        outgoingRequest: Boolean(u.outgoingRequest || existing.outgoingRequest),
+                        latestReelMedia: Math.max(Number(u.latestReelMedia || 0), Number(existing.latestReelMedia || 0))
                     });
                 }
             });
@@ -113,25 +246,7 @@ Object.assign(App, {
             UI.hideProgress();
             UI.setStatus("Calculating Metrics...");
 
-            const prev = Storage.load();
-            let prevFollowersDetailed = [];
-            let prevFollowingDetailed = [];
-            let followerRenames = [];
-            let followingRenames = [];
-            let allRenames = [];
-
             if (prev) {
-                prevFollowersDetailed = Utils.toDetailedUserArray(
-                    Array.isArray(prev.followersDetailed) ? prev.followersDetailed : (prev.followers || [])
-                );
-                prevFollowingDetailed = Utils.toDetailedUserArray(
-                    Array.isArray(prev.followingDetailed) ? prev.followingDetailed : (prev.following || [])
-                );
-
-                // Detect username changes independently per list so Rename + Unfollow & Rename + FollowBack are never masked
-                followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, followersDetailed);
-                followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, followingDetailed);
-
                 const renameMapById = new Map();
                 followerRenames.forEach((r) => {
                     const isMutualNow = currFollowingLowerSet.has(r.newUsername.toLowerCase());
@@ -218,10 +333,40 @@ Object.assign(App, {
                 // New Followers: exclude accounts that merely renamed inside followers OR reactivated from Deactivated
                 const followerRenamedNewLowerSet = new Set(followerRenames.map((r) => r.newUsername.toLowerCase()));
                 const rawNewFollowers = followers.filter((u) => !prevFollowersLowerSet.has(u.toLowerCase()));
-                const newFollowers = rawNewFollowers.filter((u) => {
+                let newFollowers = rawNewFollowers.filter((u) => {
                     const lower = u.toLowerCase();
                     return !followerRenamedNewLowerSet.has(lower) && !reactivatedFollowersLowerSet.has(lower);
                 });
+
+                // Lost Followers: exclude ONLY accounts that renamed while staying in followers (catching Rename + Unfollow!)
+                const followerRenamedOldLowerSet = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+                const followingRenamedOldLowerSet = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+                const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
+
+                const rawLostFollowers = prevFollowers.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
+                const lostFollowers = (followersTruncatedGuard || followersCumulativeGuard)
+                    ? []
+                    : rawLostFollowers.filter((u) => !followerRenamedOldLowerSet.has(u.toLowerCase()));
+
+                const rawLostFollowing = prevFollowing.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
+                const lostFollowing = (followingTruncatedGuard || followingCumulativeGuard)
+                    ? []
+                    : rawLostFollowing.filter((u) => !followingRenamedOldLowerSet.has(u.toLowerCase()));
+                const lostFollowingLowerSet = new Set(lostFollowing.map((u) => u.toLowerCase()));
+
+                // Cross-engine conservation guard (prevents false New Followers when jumping from partial REST to complete GraphQL)
+                const prevExtractedF = Number(prev.extractedFollowersCount) || prevFollowersDetailed.length;
+                const prevMissingFollowers = (prevHeaderFollowers > 0 && prevFollowersDetailed.length > 0)
+                    ? Math.max(0, prevHeaderFollowers - Math.min(prevFollowersDetailed.length, prevExtractedF))
+                    : 0;
+                if (prevMissingFollowers >= 4 && expectedFollowers > 0) {
+                    const maxPossibleRealNew = Math.max(0, expectedFollowers - prevHeaderFollowers) + lostFollowers.length;
+                    if (newFollowers.length > maxPossibleRealNew) {
+                        const reconciledCount = newFollowers.length - maxPossibleRealNew;
+                        newFollowers = newFollowers.slice(0, maxPossibleRealNew);
+                        UI.log(`[Baseline Reconciled] Absorbed +${reconciledCount} previously unindexed follower(s) into baseline without false 'New Followers' alert.`);
+                    }
+                }
 
                 UI.log("New followers since last run: " + newFollowers.length);
                 const newFollowersDetailed = mapToDetailed(newFollowers).map((u) => ({
@@ -233,18 +378,6 @@ Object.assign(App, {
                     Storage.addNewFollowersEntries(newFollowersDetailed);
                 }
                 scanSummary.gained = newFollowersDetailed.length;
-
-                // Lost Followers: exclude ONLY accounts that renamed while staying in followers (catching Rename + Unfollow!)
-                const followerRenamedOldLowerSet = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
-                const followingRenamedOldLowerSet = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
-                const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
-
-                const rawLostFollowers = prevFollowers.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
-                const lostFollowers = rawLostFollowers.filter((u) => !followerRenamedOldLowerSet.has(u.toLowerCase()));
-
-                const rawLostFollowing = prevFollowing.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
-                const lostFollowing = rawLostFollowing.filter((u) => !followingRenamedOldLowerSet.has(u.toLowerCase()));
-                const lostFollowingLowerSet = new Set(lostFollowing.map((u) => u.toLowerCase()));
 
                 const missingUsers = lostFollowers.filter((u) => lostFollowingLowerSet.has(u.toLowerCase()));
                 const missingLowerSet = new Set(missingUsers.map((u) => u.toLowerCase()));
@@ -357,7 +490,10 @@ Object.assign(App, {
             }
 
             // Record daily & intra-day history AFTER full reconciliation so summary and KPIs reflect post-scan state
-            Storage.addHistoryEntry(followers.length, following.length, null, {
+            const authoritativeFollowersCount = Math.max(expectedFollowers || 0, followers.length);
+            const authoritativeFollowingCount = Math.max(expectedFollowing || 0, following.length);
+
+            Storage.addHistoryEntry(authoritativeFollowersCount, authoritativeFollowingCount, null, {
                 mutuals: mutualsDetailed.length,
                 fans: fansDetailed.length,
                 notFollowingBack: notFollowingBackDetailed.length,
@@ -369,6 +505,10 @@ Object.assign(App, {
             Storage.save({
                 version: 4,
                 lastRun: Utils.now(),
+                headerFollowerCount: expectedFollowers || authoritativeFollowersCount,
+                headerFollowingCount: expectedFollowing || authoritativeFollowingCount,
+                extractedFollowersCount: (followersRes.users || []).length,
+                extractedFollowingCount: (followingRes.users || []).length,
                 followers,
                 following,
                 followersDetailed,

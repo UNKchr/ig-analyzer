@@ -7,7 +7,7 @@
 // @name:pt-BR          Analisador de seguidores do Instagram
 // @name:pt-PT          Analisador de seguidores do Instagram
 // @namespace           https://github.com/UNKchr/ig-analyzer
-// @version             3.13.2
+// @version             3.14.0
 // @author              UNKchr
 // @description         Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
 // @description:en      Analyze Instagram followers and following lists, detect non-followers, story anomalies, and export your data securely.
@@ -76,16 +76,31 @@ chartState: {
     FOLLOWING_ALT_HASH: "3dec7e2c57367ef3da3d987d89f9dbc8",
     FOLLOWERS_HASH: "c76146de99bb02f6415203be841dd25a",
     HIGHLIGHTS_HASH: "d4d88dc1500312af6f937f7b804c68c3",
+    EXTRACTION_ENGINE_KEY: "ig_extraction_engine_v1",
+    DEFAULT_EXTRACTION_ENGINE: "hybrid",
     PAGE_SIZE: 50,
     FRIENDSHIPS_PAGE_SIZE: 12,
-FRIENDSHIPS_RATE_LIMIT_MS: 1250,
+GRAPHQL_FOLLOW_LIST_PAGE_SIZE: 20,
+HYBRID_RECONCILE_THRESHOLD: 0.92,
+HYBRID_MIN_MISSING_USERS: 6,
+RELAY_DOC_IDS: {
+      FOLLOW_LIST_QUERY: "40819242737691319",
+FOLLOW_LIST_WRAPPER_QUERY: "26750505977951904",
+PROFILE_QUERY: "28036671149327607",
+PROFILE_ALT_QUERY: "40158838120366999",
+HIGHLIGHTS_TRAY_QUERY: "26970053832668570",
+HOVER_CARD_QUERY: "28949219061332276",
+SEARCH_BOX_QUERY: "27706427925724183",
+SEARCH_BOX_NON_PROFILED_QUERY: "27634848489527274"
+    },
+    FRIENDSHIPS_RATE_LIMIT_MS: 1400,
 BASE_RATE_LIMIT_MS: 2e3,
 MAX_RETRIES: 4,
     COOLDOWN_429_MS: 6e4,
 RATE_LIMIT_STATE_KEY: "ig_rate_limit_buckets_v1",
     RATE_LIMIT_CIRCUIT_MS: 3e5,
-    BREATHER_EVERY_PAGES: 10,
-BREATHER_PAUSE_MS: 2500,
+    BREATHER_EVERY_PAGES: 8,
+BREATHER_PAUSE_MS: 3200,
 MAX_AUTO_VERIFY_ACCOUNTS: 5,
 ASBD_ID: "359341",
 DEBUG: false,
@@ -298,6 +313,7 @@ getRelayDocId: (operationName, fallbackDocId = null) => {
         if (typeof win?.require === "function") {
           const candidateModules = [
             `${operationName}_instagramRelayOperation`,
+            `${operationName}.graphql`,
             `${operationName}$Parameters`,
             operationName
           ];
@@ -333,6 +349,29 @@ getRelayDocId: (operationName, fallbackDocId = null) => {
       } catch (e) {
       }
       return fallbackDocId;
+    },
+resolveRelayDocIdAsync: async (operationName, fallbackDocId = null, lazyResourceName = null) => {
+      const syncDocId = Utils.getRelayDocId(operationName, null);
+      if (syncDocId) return syncDocId;
+      if (lazyResourceName && typeof lazyResourceName === "string") {
+        try {
+          const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+          if (typeof win?.require === "function") {
+            const jsResource = win.require("JSResourceForInteraction");
+            if (typeof jsResource === "function") {
+              const resourceObj = jsResource(lazyResourceName);
+              if (resourceObj && typeof resourceObj.load === "function") {
+                await Promise.race([
+                  Promise.resolve(resourceObj.load()).catch(() => null),
+                  new Promise((resolve) => setTimeout(resolve, 1500))
+                ]);
+              }
+            }
+          }
+        } catch (_e) {
+        }
+      }
+      return Utils.getRelayDocId(operationName, fallbackDocId);
     },
     getUserId: () => {
       const matchCookie = document.cookie.match(/(?:^|;\s*)ds_user_id=([1-9][0-9]*)/);
@@ -484,6 +523,7 @@ toDetailedUserArray: (arr) => {
               username: cleanName,
               fullName: "",
               isPrivate: false,
+              isPrivateKnown: false,
               isVerified: false,
               profilePicUrl: null,
               latestReelMedia: 0,
@@ -498,11 +538,14 @@ toDetailedUserArray: (arr) => {
           if (cleanName) {
             const pic = Utils.sanitizeImageUrl(u.profilePicUrl || u.profile_pic_url || null);
             const idStr = u.id && String(u.id) !== "0" && String(u.id) !== "null" && String(u.id) !== "undefined" ? String(u.id) : null;
+            const rawPriv = u.isPrivate !== void 0 ? u.isPrivate : u.is_private;
+            const isPrivateKnown = typeof u.isPrivateKnown === "boolean" ? u.isPrivateKnown : typeof rawPriv === "boolean" || Boolean(rawPriv) === true;
             normalized = {
               id: idStr,
               username: cleanName,
               fullName: u.fullName || u.full_name || "",
-              isPrivate: Boolean(u.isPrivate ?? u.is_private),
+              isPrivate: Boolean(rawPriv),
+              isPrivateKnown,
               isVerified: Boolean(u.isVerified ?? u.is_verified),
               profilePicUrl: pic,
               latestReelMedia: u.latestReelMedia ?? u.latest_reel_media ?? 0,
@@ -777,7 +820,8 @@ detectRenamedUsers: (prevUsers, currentUsers) => {
   const GLOBAL_UI_KEYS = new Set([
     CONFIG.POSITION_KEY,
     CONFIG.TARGET_SUBPANEL_POSITION_KEY,
-    CONFIG.TOUR_KEY
+    CONFIG.TOUR_KEY,
+    CONFIG.EXTRACTION_ENGINE_KEY
   ]);
   const ACCOUNT_SCOPED_KEYS = [
     CONFIG.STORAGE_KEY,
@@ -893,6 +937,19 @@ detectRenamedUsers: (prevUsers, currentUsers) => {
       }
       const legacyVal = GM_getValue(baseKey, void 0);
       return legacyVal !== void 0 && legacyVal !== null;
+    },
+getExtractionEngine: () => {
+      const raw = String(Storage.getScopedValue(CONFIG.EXTRACTION_ENGINE_KEY, CONFIG.DEFAULT_EXTRACTION_ENGINE) || "").toLowerCase().trim();
+      if (raw === "graphql" || raw === "rest" || raw === "hybrid") {
+        return raw;
+      }
+      return CONFIG.DEFAULT_EXTRACTION_ENGINE;
+    },
+setExtractionEngine: (engine) => {
+      const raw = String(engine || "").toLowerCase().trim();
+      const valid = raw === "graphql" || raw === "rest" || raw === "hybrid" ? raw : CONFIG.DEFAULT_EXTRACTION_ENGINE;
+      Storage.setScopedValue(CONFIG.EXTRACTION_ENGINE_KEY, valid);
+      return valid;
     },
     normalizeItemDates: (rawList) => {
       if (!Array.isArray(rawList)) return { list: [], modified: false };
@@ -1419,7 +1476,7 @@ reconcileAudienceState: ({ followersDetailed = [], followingDetailed = [], allRe
         const liveFullName = inFollower.fullName || inFollowing?.fullName || entry.fullName || "";
         const livePic = inFollower.profilePicUrl || inFollowing?.profilePicUrl || entry.profilePicUrl || "";
         const liveVerified = Boolean(inFollower.isVerified ?? entry.isVerified);
-        const livePrivate = Boolean(inFollower.isPrivate ?? entry.isPrivate);
+        const livePrivate = inFollower.isPrivateKnown !== false && inFollower.isPrivate !== void 0 && inFollower.isPrivate !== null ? Boolean(inFollower.isPrivate) : inFollowing?.isPrivateKnown !== false && typeof inFollowing?.isPrivate === "boolean" ? inFollowing.isPrivate : Boolean(entry.isPrivate);
         const liveBestie = Boolean(inFollower.isBestie ?? inFollowing?.isBestie ?? entry.isBestie);
         if (entry.username !== liveUsername || entry.id !== liveId || entry.followsBack !== liveFollowsBack || entry.fullName !== liveFullName || entry.profilePicUrl !== livePic || entry.isVerified !== liveVerified || entry.isPrivate !== livePrivate || entry.isBestie !== liveBestie) {
           nfChanged = true;
@@ -1808,6 +1865,94 @@ reconcileAudienceState: ({ followersDetailed = [], followingDetailed = [], allRe
     deleteTargetData: (username, userId = null, targetId = null) => {
       return Storage.removeTargetData(username, userId, targetId);
     },
+    hydrateUsersFromMemory: (currentUsers = [], prevUsers = [], options = {}) => {
+      const normalized = Utils.toDetailedUserArray(currentUsers);
+      if (normalized.length === 0) return [];
+      const knownById = new Map();
+      const knownByLower = new Map();
+      const indexKnown = (candidate) => {
+        if (!candidate || typeof candidate !== "object" || !candidate.username) return;
+        const idStr = candidate.id && String(candidate.id) !== "0" && String(candidate.id) !== "null" && String(candidate.id) !== "undefined" ? String(candidate.id).trim() : null;
+        const lower = String(candidate.username).toLowerCase().trim();
+        if (!lower) return;
+        const existing = idStr && knownById.get(idStr) || knownByLower.get(lower) || null;
+        const incPrivKnown = candidate.isPrivateKnown !== false && typeof candidate.isPrivate === "boolean";
+        const extPrivKnown = Boolean(existing && existing.isPrivateKnown !== false && typeof existing.isPrivate === "boolean");
+        const merged = existing ? {
+          ...existing,
+          ...candidate,
+          id: idStr || existing.id || null,
+          isPrivate: incPrivKnown ? candidate.isPrivate : extPrivKnown ? existing.isPrivate : Boolean(candidate.isPrivate ?? existing.isPrivate),
+          isPrivateKnown: Boolean(incPrivKnown || extPrivKnown),
+          isBestie: Boolean(candidate.isBestie || existing.isBestie),
+          outgoingRequest: Boolean(candidate.outgoingRequest || existing.outgoingRequest),
+          latestReelMedia: Number(candidate.latestReelMedia) > 0 ? Number(candidate.latestReelMedia) : Number(existing.latestReelMedia) || 0,
+          isBusiness: candidate.isBusiness !== void 0 ? candidate.isBusiness : existing.isBusiness,
+          isCreator: candidate.isCreator !== void 0 ? candidate.isCreator : existing.isCreator,
+          category: candidate.category || existing.category
+        } : candidate;
+        if (idStr) knownById.set(idStr, merged);
+        knownByLower.set(lower, merged);
+      };
+      const snap = Storage.load(options.userId || null);
+      if (snap && typeof snap === "object") {
+        [
+          snap.followersDetailed,
+          snap.followingDetailed,
+          snap.mutualsDetailed,
+          snap.fansDetailed,
+          snap.notFollowingBackDetailed,
+          snap.newFollowersDetailed
+        ].forEach((pool) => {
+          if (Array.isArray(pool)) pool.forEach(indexKnown);
+        });
+      }
+      if (Array.isArray(prevUsers)) {
+        Utils.toDetailedUserArray(prevUsers).forEach(indexKnown);
+      }
+      let preserveRecentStories = false;
+      if (options.prevScanAt) {
+        const prevMs = new Date(options.prevScanAt).getTime();
+        if (!Number.isNaN(prevMs) && prevMs > 0) {
+          const ageMs = Date.now() - prevMs;
+          preserveRecentStories = ageMs >= 0 && ageMs < 6 * 3600 * 1e3;
+        }
+      }
+      const friendshipCache = options.friendshipCache instanceof Map ? options.friendshipCache : null;
+      return normalized.map((u) => {
+        const idStr = u.id && String(u.id) !== "0" ? String(u.id) : null;
+        const prev = idStr && knownById.get(idStr) || knownByLower.get(u.username.toLowerCase()) || null;
+        const cachedStatus = idStr && friendshipCache ? friendshipCache.get(idStr) : null;
+        if (!u.isPrivateKnown) {
+          if (cachedStatus && typeof cachedStatus.isPrivate === "boolean") {
+            u.isPrivate = cachedStatus.isPrivate;
+            u.isPrivateKnown = true;
+          } else if (prev && prev.isPrivateKnown !== false && typeof prev.isPrivate === "boolean") {
+            u.isPrivate = prev.isPrivate;
+            u.isPrivateKnown = true;
+          }
+        }
+        if (!u.isBestie && (cachedStatus?.isBestie || prev?.isBestie)) {
+          u.isBestie = true;
+        }
+        if (!u.outgoingRequest && (cachedStatus?.outgoingRequest || prev?.outgoingRequest)) {
+          u.outgoingRequest = true;
+        }
+        if ((!u.latestReelMedia || u.latestReelMedia === 0) && preserveRecentStories && Number(prev?.latestReelMedia) > 0) {
+          u.latestReelMedia = Number(prev.latestReelMedia);
+        }
+        if (u.isBusiness === void 0 && (cachedStatus?.isBusiness !== void 0 || prev?.isBusiness !== void 0)) {
+          u.isBusiness = Boolean(cachedStatus?.isBusiness ?? prev?.isBusiness);
+        }
+        if (u.isCreator === void 0 && (cachedStatus?.isCreator !== void 0 || prev?.isCreator !== void 0)) {
+          u.isCreator = Boolean(cachedStatus?.isCreator ?? prev?.isCreator);
+        }
+        if (!u.category && prev?.category) {
+          u.category = String(prev.category);
+        }
+        return u;
+      });
+    },
     syncFreshUserData: (freshUsersArray, userId = null) => {
       if (!Array.isArray(freshUsersArray) || freshUsersArray.length === 0) return;
       const freshMap = new Map();
@@ -1836,7 +1981,8 @@ reconcileAudienceState: ({ followersDetailed = [], followingDetailed = [], allRe
               entry.isVerified = Boolean(fresh.isVerified);
               newFollowersChanged = true;
             }
-            if (fresh.isPrivate !== void 0 && entry.isPrivate !== Boolean(fresh.isPrivate)) {
+            const hasFreshPrivate = fresh.isPrivateKnown !== false && fresh.isPrivate !== void 0 && fresh.isPrivate !== null || fresh.isPrivate === true;
+            if (hasFreshPrivate && entry.isPrivate !== Boolean(fresh.isPrivate)) {
               entry.isPrivate = Boolean(fresh.isPrivate);
               newFollowersChanged = true;
             }
@@ -1872,6 +2018,19 @@ reconcileAudienceState: ({ followersDetailed = [], followingDetailed = [], allRe
                 item.fullName = fresh.fullName;
                 snapChanged = true;
               }
+              if (fresh.isPrivateKnown !== false && fresh.isPrivate !== void 0 && fresh.isPrivate !== null && item.isPrivate !== Boolean(fresh.isPrivate)) {
+                item.isPrivate = Boolean(fresh.isPrivate);
+                item.isPrivateKnown = true;
+                snapChanged = true;
+              }
+              if (fresh.isBestie && !item.isBestie) {
+                item.isBestie = true;
+                snapChanged = true;
+              }
+              if (fresh.outgoingRequest && !item.outgoingRequest) {
+                item.outgoingRequest = true;
+                snapChanged = true;
+              }
             }
           });
         };
@@ -1884,6 +2043,67 @@ reconcileAudienceState: ({ followersDetailed = [], followingDetailed = [], allRe
         if (snapChanged) {
           Storage.save(snap, userId);
         }
+      }
+    },
+    syncTargetUsersData: (targetUsername, freshUsersArray = [], userId = null) => {
+      if (!Array.isArray(freshUsersArray) || freshUsersArray.length === 0) return;
+      Storage.syncFreshUserData(freshUsersArray, userId);
+      const cleanTarget = String(targetUsername || "").replace(/^@+\s*/, "").toLowerCase().trim();
+      if (!cleanTarget) return;
+      const targetMap = Storage.getTargetTrackerMap(userId);
+      if (!targetMap || typeof targetMap !== "object") return;
+      let matchedKey = targetMap[cleanTarget] ? cleanTarget : null;
+      if (!matchedKey) {
+        matchedKey = Object.keys(targetMap).find((k) => {
+          const entry = targetMap[k];
+          if (!entry) return false;
+          if (String(entry.username || "").toLowerCase().trim() === cleanTarget) return true;
+          if (String(entry.user?.username || "").toLowerCase().trim() === cleanTarget) return true;
+          return false;
+        }) || null;
+      }
+      const tData = matchedKey ? targetMap[matchedKey] : null;
+      if (!tData || typeof tData !== "object") return;
+      const freshById = new Map();
+      const freshByLower = new Map();
+      freshUsersArray.forEach((u) => {
+        if (!u || typeof u !== "object") return;
+        if (u.id && String(u.id) !== "0") freshById.set(String(u.id), u);
+        if (u.username) freshByLower.set(String(u.username).toLowerCase(), u);
+      });
+      let targetChanged = false;
+      const syncTargetList = (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach((item) => {
+          if (!item || typeof item !== "object") return;
+          const match = item.id && freshById.get(String(item.id)) || (item.username ? freshByLower.get(String(item.username).toLowerCase()) : null);
+          if (!match) return;
+          if (match.isPrivateKnown !== false && typeof match.isPrivate === "boolean") {
+            if (item.isPrivate !== match.isPrivate || item.isPrivateKnown !== true) {
+              item.isPrivate = match.isPrivate;
+              item.isPrivateKnown = true;
+              targetChanged = true;
+            }
+          }
+          if (typeof match.isBestie === "boolean" && item.isBestie !== match.isBestie) {
+            item.isBestie = match.isBestie;
+            targetChanged = true;
+          }
+          if (typeof match.outgoingRequest === "boolean" && item.outgoingRequest !== match.outgoingRequest) {
+            item.outgoingRequest = match.outgoingRequest;
+            targetChanged = true;
+          }
+        });
+      };
+      syncTargetList(tData.followers);
+      syncTargetList(tData.following);
+      syncTargetList(tData.mutuals);
+      syncTargetList(tData.newFollowers);
+      syncTargetList(tData.lostFollowers);
+      syncTargetList(tData.newMutuals);
+      if (targetChanged) {
+        targetMap[matchedKey] = tData;
+        Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, targetMap, userId);
       }
     },
     updateUserProfile: (username, updates = {}, userId = null) => {
@@ -2281,6 +2501,29 @@ findKnownUserByUsername: (username, userId = null) => {
       throw new Error("Maximum retries achieved.");
     }
   });
+  const normalizeUserId = (rawId) => {
+    if (rawId === null || rawId === void 0) return null;
+    const str = String(rawId).trim();
+    if (!str || str === "0" || str === "null" || str === "undefined") return null;
+    return str;
+  };
+  let cumulativeBurstPages = 0;
+  let lastBurstPageTimestamp = 0;
+  const recordBurstPageAndGetCount = () => {
+    const now = Date.now();
+    if (lastBurstPageTimestamp > 0 && now - lastBurstPageTimestamp > 3e4) {
+      cumulativeBurstPages = 0;
+    }
+    cumulativeBurstPages++;
+    lastBurstPageTimestamp = now;
+    return cumulativeBurstPages;
+  };
+  const sleepPaginationDelay = async (burstPageCount, signal) => {
+    const baseDelay = CONFIG.FRIENDSHIPS_RATE_LIMIT_MS + Math.random() * 750;
+    const breatherEvery = CONFIG.BREATHER_EVERY_PAGES;
+    const extraBreather = burstPageCount > 0 && burstPageCount % breatherEvery === 0 ? CONFIG.BREATHER_PAUSE_MS + Math.random() * 1e3 : 0;
+    await Utils.sleep(baseDelay + extraBreather, signal);
+  };
   Object.assign(API, {
     mergeExtractedUsers: (primaryList = [], secondaryList = []) => {
       const merged = [];
@@ -2290,9 +2533,16 @@ findKnownUserByUsername: (username, userId = null) => {
         if (!rawUser || typeof rawUser !== "object") return;
         const username = rawUser.username ? String(rawUser.username).trim() : "";
         if (!username) return;
-        const rawId = rawUser.id ?? rawUser.pk_id ?? rawUser.strong_id__ ?? rawUser.pk ?? null;
-        const id = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" && String(rawId) !== "null" && String(rawId) !== "undefined" ? String(rawId).trim() : null;
+        const id = normalizeUserId(rawUser.id ?? rawUser.pk_id ?? rawUser.strong_id__ ?? rawUser.pk ?? null);
         const lower = username.toLowerCase();
+        const rawPriv = rawUser.isPrivate !== void 0 ? rawUser.isPrivate : rawUser.is_private;
+        const hasExplicitPrivate = typeof rawUser.isPrivateKnown === "boolean" ? rawUser.isPrivateKnown : typeof rawPriv === "boolean";
+        const isBestie = Boolean(rawUser.isBestie ?? rawUser.is_bestie ?? rawUser.friendship_status?.is_bestie);
+        const outgoingRequest = Boolean(rawUser.outgoingRequest ?? rawUser.outgoing_request ?? rawUser.friendship_status?.outgoing_request);
+        const profilePicUrl = rawUser.hd_profile_pic_url_info?.url || rawUser.profilePicUrl || rawUser.profile_pic_url || null;
+        const latestReelMedia = Number(rawUser.latestReelMedia ?? rawUser.latest_reel_media ?? rawUser.reel?.latest_reel_media ?? 0) || 0;
+        const fullName = rawUser.fullName || rawUser.full_name || "";
+        const isVerified = Boolean(rawUser.isVerified ?? rawUser.is_verified);
         const existingIdx = id && indexById.has(id) ? indexById.get(id) : indexByLower.has(lower) ? indexByLower.get(lower) : -1;
         if (existingIdx !== -1 && existingIdx !== void 0) {
           const existing = merged[existingIdx];
@@ -2300,21 +2550,32 @@ findKnownUserByUsername: (username, userId = null) => {
             existing.id = id;
             indexById.set(id, existingIdx);
           }
-          if (!existing.fullName && rawUser.fullName) existing.fullName = rawUser.fullName;
-          if (!existing.profilePicUrl && rawUser.profilePicUrl) existing.profilePicUrl = rawUser.profilePicUrl;
-          if (!existing.isPrivate && rawUser.isPrivate) existing.isPrivate = true;
-          if (!existing.isVerified && rawUser.isVerified) existing.isVerified = true;
-          if (!existing.latestReelMedia && rawUser.latestReelMedia) existing.latestReelMedia = rawUser.latestReelMedia;
+          if (!existing.fullName && fullName) existing.fullName = fullName;
+          if (!existing.profilePicUrl && profilePicUrl) existing.profilePicUrl = profilePicUrl;
+          if ((!existing.isPrivateKnown || existing.isPrivate === null || existing.isPrivate === void 0) && hasExplicitPrivate) {
+            existing.isPrivate = Boolean(rawPriv);
+            existing.isPrivateKnown = true;
+          } else if (existing.isPrivate === false && rawPriv === true) {
+            existing.isPrivate = true;
+            existing.isPrivateKnown = true;
+          }
+          if (!existing.isVerified && isVerified) existing.isVerified = true;
+          if (!existing.isBestie && isBestie) existing.isBestie = true;
+          if (!existing.outgoingRequest && outgoingRequest) existing.outgoingRequest = true;
+          if (latestReelMedia > (existing.latestReelMedia || 0)) existing.latestReelMedia = latestReelMedia;
           return;
         }
         const entry = {
           id,
           username,
-          fullName: rawUser.fullName || rawUser.full_name || "",
-          isPrivate: Boolean(rawUser.isPrivate ?? rawUser.is_private),
-          isVerified: Boolean(rawUser.isVerified ?? rawUser.is_verified),
-          profilePicUrl: rawUser.profilePicUrl || rawUser.profile_pic_url || null,
-          latestReelMedia: rawUser.latestReelMedia ?? rawUser.latest_reel_media ?? 0
+          fullName,
+          isPrivate: hasExplicitPrivate ? Boolean(rawPriv) : null,
+          isPrivateKnown: hasExplicitPrivate,
+          isVerified,
+          profilePicUrl,
+          latestReelMedia,
+          isBestie,
+          outgoingRequest
         };
         const nextIdx = merged.length;
         merged.push(entry);
@@ -2326,93 +2587,175 @@ findKnownUserByUsername: (username, userId = null) => {
       return merged;
     },
     getAllUsersViaGraphQL: async (userId, hash, label, options = {}, expectedTotal = 0, callbacks = null) => {
-      const candidateHashes = [
-        hash,
-        ...label === "following" && CONFIG.FOLLOWING_ALT_HASH && CONFIG.FOLLOWING_ALT_HASH !== hash ? [CONFIG.FOLLOWING_ALT_HASH] : []
-      ].filter(Boolean);
-      if (candidateHashes.length === 0) return [];
+      if (options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const isNumericDocId = (val) => typeof val === "string" && /^[0-9]{10,25}$/.test(val.trim());
+      const defaultFollowDocId = CONFIG.RELAY_DOC_IDS?.FOLLOW_LIST_QUERY;
+      const hashStr = String(hash || "").trim();
+      const activeDocId = isNumericDocId(hashStr) ? hashStr : await Utils.resolveRelayDocIdAsync(
+        "usePolarisGetFollowListQuery",
+        defaultFollowDocId,
+        "PolarisFollowListModal.next.react"
+      );
+      if (options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const users = [];
+      const seenIds = new Set();
+      const seenUsernames = new Set();
+      const seenCursors = new Set();
+      let cursor = null;
+      let hasNext = true;
+      let totalCount = expectedTotal || 0;
+      let limitedByMeta = false;
+      let pagesFetched = 0;
+      let rawItemsCount = 0;
+      let duplicateItemsCount = 0;
+      const isFollowerList = label !== "following";
+      const pageSize = Number(options.pageSize) > 0 ? Number(options.pageSize) : CONFIG.GRAPHQL_FOLLOW_LIST_PAGE_SIZE;
+      const viewerId = Utils.getUserId() || "0";
+      const dtsg = Utils.getDtsg();
+      const jazoest = Utils.calculateJazoest(dtsg);
+      const lsd = Utils.getLsd();
+      const endpoints = [
+        "https://www.instagram.com/graphql/query",
+        "https://www.instagram.com/api/graphql"
+      ];
+      let endpointIdx = 0;
       const reportProgress = typeof callbacks?.onProgress === "function" ? callbacks.onProgress : (curr, total, msg) => UI.setProgress(curr, total, msg);
-      let lastErr = null;
-      for (const activeHash of candidateHashes) {
-        const users = [];
-        const seenIds = new Set();
-        const seenUsernames = new Set();
-        const seenCursors = new Set();
-        let cursor = null;
-        let hasNext = true;
-        let totalCount = expectedTotal || 0;
-        let structureValid = true;
-        try {
-          while (hasNext) {
-            if (options.signal?.aborted) {
-              throw new DOMException("Aborted", "AbortError");
-            }
-            const vars = encodeURIComponent(JSON.stringify({
-              id: String(userId),
-              first: options.pageSize || CONFIG.PAGE_SIZE || 50,
-              after: cursor
-            }));
-            const url = "https://www.instagram.com/graphql/query/?query_hash=" + activeHash + "&variables=" + vars;
-            const json = await API.fetchWithRetry(url, options);
-            const userNode = json?.data?.user;
-            const edge = label === "following" ? userNode?.edge_follow || userNode?.edge_followed_by : userNode?.edge_followed_by || userNode?.edge_follow;
-            if (!edge || !Array.isArray(edge.edges)) {
-              structureValid = false;
+      try {
+        while (hasNext) {
+          if (options.signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+          }
+          const params = new URLSearchParams();
+          params.append("av", viewerId);
+          params.append("__d", "www");
+          params.append("__user", "0");
+          params.append("__a", "1");
+          params.append("__req", String(pagesFetched + 1));
+          params.append("fb_api_caller_class", "RelayModern");
+          params.append("fb_api_req_friendly_name", "usePolarisGetFollowListQuery");
+          params.append("doc_id", activeDocId);
+          params.append("server_timestamps", "true");
+          params.append("variables", JSON.stringify({
+            after: cursor,
+            before: null,
+            first: pageSize,
+            isFollowerList,
+            last: null,
+            query: "",
+            userID: String(userId)
+          }));
+          if (dtsg) params.append("fb_dtsg", dtsg);
+          if (jazoest) params.append("jazoest", jazoest);
+          if (lsd) params.append("lsd", lsd);
+          const headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-FB-Friendly-Name": "usePolarisGetFollowListQuery",
+            ...lsd ? { "X-FB-LSD": lsd } : {},
+            ...options.headers || {}
+          };
+          let json;
+          let activeConn;
+          try {
+            json = await API.fetchWithRetry(endpoints[endpointIdx], {
+              ...options,
+              method: "POST",
+              headers,
+              body: params.toString(),
+              abortOnRateLimit: true
+            });
+            const conn = label === "following" ? json?.data?.xdt_api__v1__friendships__following__connection || json?.data?.xdt_api__v1__friendships__followers__connection : json?.data?.xdt_api__v1__friendships__followers__connection || json?.data?.xdt_api__v1__friendships__following__connection;
+            const legacyUserNode = json?.data?.user;
+            const legacyEdge = label === "following" ? legacyUserNode?.edge_follow || legacyUserNode?.edge_followed_by : legacyUserNode?.edge_followed_by || legacyUserNode?.edge_follow;
+            activeConn = conn && Array.isArray(conn.edges) ? conn : legacyEdge && Array.isArray(legacyEdge.edges) ? legacyEdge : null;
+            if (!activeConn) {
+              const gqlErrMsg = Array.isArray(json?.errors) && json.errors[0]?.message ? ` (${json.errors[0].message})` : "";
+              if (!options.silent) {
+                console.warn(`[IG Analyzer] GraphQL Relay returned invalid ${label} connection:`, json);
+              }
+              if (pagesFetched === 0) {
+                throw new Error(`GraphQL Relay returned invalid ${label} payload${gqlErrMsg}`);
+              }
               break;
             }
-            if (totalCount === 0 && edge.count) totalCount = edge.count;
-            edge.edges.forEach((e) => {
-              const node = e?.node;
-              const username = node?.username ? String(node.username).trim() : "";
-              if (!username) return;
-              const rawId = node?.id ?? node?.pk_id ?? node?.pk ?? null;
-              const id = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" ? String(rawId).trim() : null;
-              const lower = username.toLowerCase();
-              if (id && seenIds.has(id) || seenUsernames.has(lower)) return;
-              if (id) seenIds.add(id);
-              seenUsernames.add(lower);
-              users.push({
-                id,
-                username,
-                fullName: node?.full_name || "",
-                isPrivate: Boolean(node?.is_private),
-                isVerified: Boolean(node?.is_verified),
-                profilePicUrl: node?.profile_pic_url || null,
-                latestReelMedia: node?.reel?.latest_reel_media || 0
-              });
+          } catch (reqErr) {
+            if (reqErr.name === "AbortError" || options.signal?.aborted || reqErr.isRateLimited) {
+              throw reqErr;
+            }
+            if (pagesFetched === 0 && endpointIdx + 1 < endpoints.length) {
+              endpointIdx++;
+              continue;
+            }
+            throw reqErr;
+          }
+          pagesFetched++;
+          const burstPages = recordBurstPageAndGetCount();
+          if (activeConn.should_limit_list_of_followers || activeConn.should_limit_list_of_followings) {
+            limitedByMeta = true;
+          }
+          if (totalCount === 0 && activeConn.count) {
+            totalCount = Number(activeConn.count) || 0;
+          }
+          rawItemsCount += activeConn.edges.length;
+          activeConn.edges.forEach((e) => {
+            const node = e?.node || e;
+            const username = node?.username ? String(node.username).trim() : "";
+            if (!username) return;
+            const id = normalizeUserId(node?.pk ?? node?.id ?? node?.pk_id ?? node?.strong_id__ ?? null);
+            const lower = username.toLowerCase();
+            if (id && seenIds.has(id) || seenUsernames.has(lower)) {
+              duplicateItemsCount++;
+              return;
+            }
+            if (id) seenIds.add(id);
+            seenUsernames.add(lower);
+            users.push({
+              id,
+              username,
+              fullName: node?.full_name || "",
+              isPrivate: typeof node?.is_private === "boolean" ? node.is_private : null,
+              isVerified: Boolean(node?.is_verified),
+              profilePicUrl: node?.hd_profile_pic_url_info?.url || node?.profile_pic_url || null,
+              latestReelMedia: Number(node?.latest_reel_media ?? node?.reel?.latest_reel_media ?? 0) || 0,
+              isBestie: Boolean(node?.friendship_status?.is_bestie ?? node?.is_bestie),
+              outgoingRequest: Boolean(node?.friendship_status?.outgoing_request ?? node?.outgoing_request)
             });
-            const nextCursor = edge.page_info?.has_next_page === true && edge.page_info?.end_cursor ? String(edge.page_info.end_cursor) : null;
-            if (nextCursor && seenCursors.has(nextCursor)) {
-              hasNext = false;
-            } else {
-              if (nextCursor) seenCursors.add(nextCursor);
-              cursor = nextCursor;
-              hasNext = Boolean(nextCursor);
-            }
-            const total = totalCount > 0 ? totalCount : 0;
-            const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
-            reportProgress(users.length, total, progressLabel);
-            if (hasNext) await Utils.sleep(CONFIG.BASE_RATE_LIMIT_MS + Math.random() * 500, options.signal);
+          });
+          const nextCursor = activeConn.page_info?.has_next_page === true && activeConn.page_info?.end_cursor ? String(activeConn.page_info.end_cursor) : null;
+          if (nextCursor && seenCursors.has(nextCursor)) {
+            console.warn(`[IG Analyzer] Duplicate GraphQL pagination cursor detected for ${label}, stopping loop.`);
+            hasNext = false;
+          } else {
+            if (nextCursor) seenCursors.add(nextCursor);
+            cursor = nextCursor;
+            hasNext = Boolean(nextCursor);
           }
-          if (structureValid) {
-            if (users.length > 0 && !callbacks?.suppressFinalProgress) {
-              reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
-            }
-            return users;
+          const total = totalCount > 0 ? totalCount : 0;
+          const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
+          reportProgress(users.length, total, progressLabel);
+          if (hasNext) {
+            await sleepPaginationDelay(burstPages, options.signal);
           }
-        } catch (err) {
-          if (err.name === "AbortError" || options.signal?.aborted) throw err;
-          if (users.length > 0) {
-            Object.defineProperty(err, "partialUsers", { value: users, enumerable: false, configurable: true });
-          }
-          lastErr = err;
         }
+      } catch (err) {
+        if (err.name === "AbortError" || options.signal?.aborted) throw err;
+        if (users.length > 0) {
+          Object.defineProperty(err, "partialUsers", { value: users, enumerable: false, configurable: true });
+        }
+        throw err;
       }
-      if (lastErr) throw lastErr;
-      if (!options.silent) {
-        console.warn(`[IG Analyzer] Unexpected GraphQL structure for ${label}.`);
+      if (users.length > 0 && !callbacks?.suppressFinalProgress) {
+        reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
       }
-      return [];
+      Object.defineProperty(users, "_meta", {
+        value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount, engine: "graphql" },
+        enumerable: false,
+        configurable: true
+      });
+      return users;
     },
     getAllUsersViaFriendships: async (userId, label, options = {}, expectedTotal = 0, callbacks = null) => {
       const users = [];
@@ -2449,6 +2792,7 @@ findKnownUserByUsername: (username, userId = null) => {
           const url = `https://www.instagram.com/api/v1/friendships/${userId}/${endpoint}/?${params.toString()}`;
           const json = await API.fetchWithRetry(url, { ...options, abortOnRateLimit: true });
           pagesFetched++;
+          const burstPages = recordBurstPageAndGetCount();
           if (json?.should_limit_list_of_followers || json?.should_limit_list_of_followings) {
             limitedByMeta = true;
           }
@@ -2466,8 +2810,7 @@ findKnownUserByUsername: (username, userId = null) => {
           list.forEach((u) => {
             const username = u?.username ? String(u.username).trim() : "";
             if (!username) return;
-            const rawId = u?.pk_id ?? u?.strong_id__ ?? u?.pk ?? u?.id ?? null;
-            const id = rawId !== null && rawId !== void 0 && String(rawId).trim() !== "" && String(rawId) !== "0" ? String(rawId).trim() : null;
+            const id = normalizeUserId(u?.pk_id ?? u?.strong_id__ ?? u?.pk ?? u?.id ?? null);
             const lower = username.toLowerCase();
             if (id && seenIds.has(id) || seenUsernames.has(lower)) {
               duplicateItemsCount++;
@@ -2482,7 +2825,9 @@ findKnownUserByUsername: (username, userId = null) => {
               isPrivate: Boolean(u?.is_private),
               isVerified: Boolean(u?.is_verified),
               profilePicUrl: u?.profile_pic_url || null,
-              latestReelMedia: u?.latest_reel_media || 0
+              latestReelMedia: u?.latest_reel_media || 0,
+              isBestie: Boolean(u?.friendship_status?.is_bestie ?? u?.is_bestie),
+              outgoingRequest: Boolean(u?.friendship_status?.outgoing_request ?? u?.outgoing_request)
             });
           });
           const rawNext = json?.next_max_id;
@@ -2499,10 +2844,7 @@ findKnownUserByUsername: (username, userId = null) => {
           const progressLabel = total > 0 ? `Extracting ${label}... (${users.length}/${total})` : `Extracting ${label}... (${users.length})`;
           reportProgress(users.length, total, progressLabel);
           if (hasNext) {
-            const baseDelay = (CONFIG.FRIENDSHIPS_RATE_LIMIT_MS || CONFIG.BASE_RATE_LIMIT_MS || 1250) + Math.random() * 650;
-            const breatherEvery = CONFIG.BREATHER_EVERY_PAGES || 10;
-            const extraBreather = pagesFetched > 0 && pagesFetched % breatherEvery === 0 ? (CONFIG.BREATHER_PAUSE_MS || 2500) + Math.random() * 800 : 0;
-            await Utils.sleep(baseDelay + extraBreather, options.signal);
+            await sleepPaginationDelay(burstPages, options.signal);
           }
         }
       } catch (err) {
@@ -2516,7 +2858,7 @@ findKnownUserByUsername: (username, userId = null) => {
         reportProgress(users.length, users.length, `Extracted ${label} (${users.length})`);
       }
       Object.defineProperty(users, "_meta", {
-        value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount },
+        value: { limitedByMeta, pagesFetched, rawItemsCount, duplicateItemsCount, engine: "rest" },
         enumerable: false,
         configurable: true
       });
@@ -2525,83 +2867,126 @@ findKnownUserByUsername: (username, userId = null) => {
     extractCompleteUserList: async (userId, hash, label, options = {}, expectedTotal = 0, callbacks = null) => {
       const logMsg = typeof callbacks?.onLog === "function" ? callbacks.onLog : (msg) => UI.log(msg);
       const reportProgress = typeof callbacks?.onProgress === "function" ? callbacks.onProgress : (curr, total, msg) => UI.setProgress(curr, total, msg);
+      const rawEngine = String(options.engine || CONFIG.DEFAULT_EXTRACTION_ENGINE).toLowerCase();
+      const engine = rawEngine === "graphql" || rawEngine === "rest" || rawEngine === "hybrid" ? rawEngine : "hybrid";
       let users = [];
       let friendshipsSuccess = false;
+      let graphqlSuccess = false;
       let limitedByMeta = false;
       let rateLimited = false;
-      try {
-        const res = await API.getAllUsersViaFriendships(
-          userId,
-          label,
-          {
-            ...options,
-            pageSize: CONFIG.FRIENDSHIPS_PAGE_SIZE || 12,
-            searchSurface: null,
-            useRankToken: false,
-            abortOnRateLimit: true
-          },
-          expectedTotal,
-          {
-            onProgress: reportProgress,
-            suppressFinalProgress: true
-          }
-        );
-        users = res;
-        limitedByMeta = Boolean(res?._meta?.limitedByMeta);
-        friendshipsSuccess = true;
-      } catch (e) {
-        if (e.name === "AbortError" || options.signal?.aborted) throw e;
-        users = Array.isArray(e.partialUsers) ? e.partialUsers : [];
-        friendshipsSuccess = false;
-        if (e.isRateLimited) {
-          rateLimited = true;
-          logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
-        } else {
-          console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e?.message || e);
-        }
-      }
-      const isSeverelyTruncated = expectedTotal >= 20 && users.length < expectedTotal * 0.65 && !limitedByMeta;
-      const shouldRunGraphQL = Boolean(hash) && !rateLimited && (!friendshipsSuccess || isSeverelyTruncated);
-      if (shouldRunGraphQL) {
-        if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        if (!friendshipsSuccess) {
-          logMsg(`Friendships API interrupted for '${label}' (${users.length} partial). Completing via GraphQL...`);
-        }
-        const beforeGqlCount = users.length;
+      const runRest = async (isFallback = false) => {
         try {
-          if (friendshipsSuccess && users.length > 0) {
-            await Utils.sleep(800 + Math.random() * 300, options.signal);
-          }
-          const gqlUsers = await API.getAllUsersViaGraphQL(
+          const res = await API.getAllUsersViaFriendships(
             userId,
-            hash,
             label,
-            friendshipsSuccess ? { ...options, optional: true, silent: true, abortOnRateLimit: true } : { ...options, abortOnRateLimit: true },
+            {
+              ...options,
+              pageSize: CONFIG.FRIENDSHIPS_PAGE_SIZE || 12,
+              searchSurface: null,
+              useRankToken: false,
+              abortOnRateLimit: true
+            },
             expectedTotal,
             {
               onProgress: (curr, total, msg) => {
-                const mergedEstimate = Math.max(users.length, curr);
-                reportProgress(mergedEstimate, total, msg);
+                reportProgress(Math.max(users.length, curr), total, msg);
               },
               suppressFinalProgress: true
             }
           );
-          if (Array.isArray(gqlUsers) && gqlUsers.length > 0) {
-            users = API.mergeExtractedUsers(users, gqlUsers);
+          users = users.length > 0 ? API.mergeExtractedUsers(users, res) : res;
+          limitedByMeta = limitedByMeta || Boolean(res?._meta?.limitedByMeta);
+          friendshipsSuccess = true;
+        } catch (e) {
+          if (e.name === "AbortError" || options.signal?.aborted) throw e;
+          const partial = Array.isArray(e.partialUsers) ? e.partialUsers : [];
+          if (partial.length > 0) {
+            users = users.length > 0 ? API.mergeExtractedUsers(users, partial) : partial;
           }
-        } catch (gqlErr) {
-          if (gqlErr.name === "AbortError" || options.signal?.aborted) throw gqlErr;
-          if (Array.isArray(gqlErr.partialUsers) && gqlErr.partialUsers.length > 0) {
-            users = API.mergeExtractedUsers(users, gqlErr.partialUsers);
-          }
-          if (gqlErr.isRateLimited) {
+          friendshipsSuccess = false;
+          if (e.isRateLimited) {
             rateLimited = true;
-          } else if (!friendshipsSuccess) {
-            Utils.logError(`GraphQL fallback failed for ${label}`, gqlErr);
+            logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
+          } else if (isFallback) {
+            Utils.logError(`REST fallback failed for ${label}`, e);
+          } else {
+            console.warn(`[IG Analyzer] Friendships API error for ${label}:`, e?.message || e);
           }
         }
-        if (friendshipsSuccess && users.length > beforeGqlCount) {
-          logMsg(`[Reconciled] Recovered +${users.length - beforeGqlCount} '${label}' account(s) via GraphQL.`);
+      };
+      const runGraphQL = async (gqlOptions = {}, isReconciliation = false) => {
+        try {
+          const res = await API.getAllUsersViaGraphQL(
+            userId,
+            hash,
+            label,
+            {
+              pageSize: options.pageSize || CONFIG.GRAPHQL_FOLLOW_LIST_PAGE_SIZE || 20,
+              ...options,
+              ...gqlOptions,
+              abortOnRateLimit: true
+            },
+            expectedTotal,
+            {
+              onProgress: (curr, total, msg) => {
+                reportProgress(Math.max(users.length, curr), total, msg);
+              },
+              suppressFinalProgress: true
+            }
+          );
+          users = users.length > 0 ? API.mergeExtractedUsers(users, res) : res;
+          limitedByMeta = limitedByMeta || Boolean(res?._meta?.limitedByMeta);
+          graphqlSuccess = true;
+        } catch (gqlErr) {
+          if (gqlErr.name === "AbortError" || options.signal?.aborted) throw gqlErr;
+          const partial = Array.isArray(gqlErr.partialUsers) ? gqlErr.partialUsers : [];
+          if (partial.length > 0) {
+            users = users.length > 0 ? API.mergeExtractedUsers(users, partial) : partial;
+          }
+          graphqlSuccess = false;
+          if (gqlErr.isRateLimited) {
+            rateLimited = true;
+            logMsg(`[Anti-Ban Guard] Instagram rate limit (429) detected on '${label}' (${users.length} collected). Halting extraction immediately to protect your account.`);
+          } else if (!isReconciliation) {
+            Utils.logError(`GraphQL Relay error for ${label}`, gqlErr);
+          } else {
+            console.warn(`[IG Analyzer] GraphQL Relay reconciliation failed for ${label}:`, gqlErr?.message || gqlErr);
+          }
+        }
+      };
+      if (engine === "graphql") {
+        await runGraphQL({ optional: false, silent: false }, false);
+        if (!graphqlSuccess && !rateLimited) {
+          if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          logMsg(`GraphQL Relay interrupted for '${label}' (${users.length} partial). Falling back to REST Friendships API...`);
+          if (users.length > 0) {
+            await Utils.sleep(800 + Math.random() * 400, options.signal);
+          }
+          await runRest(true);
+        }
+      } else {
+        await runRest(false);
+        const reconcileThreshold = Number(CONFIG.HYBRID_RECONCILE_THRESHOLD) || 0.92;
+        const minMissingUsers = Number(CONFIG.HYBRID_MIN_MISSING_USERS) || 6;
+        const missingCount = expectedTotal > 0 ? Math.max(0, expectedTotal - users.length) : 0;
+        const needsHybridReconcile = engine === "hybrid" && friendshipsSuccess && !limitedByMeta && expectedTotal >= 15 && users.length < expectedTotal * reconcileThreshold && missingCount >= minMissingUsers;
+        const shouldRunGraphQL = !rateLimited && (!friendshipsSuccess || needsHybridReconcile);
+        if (shouldRunGraphQL) {
+          if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          if (!friendshipsSuccess) {
+            logMsg(`Friendships API interrupted for '${label}' (${users.length} partial). Completing via GraphQL Relay...`);
+          }
+          const beforeGqlCount = users.length;
+          if (friendshipsSuccess && users.length > 0) {
+            await Utils.sleep(1200 + Math.random() * 600, options.signal);
+          }
+          await runGraphQL(
+            friendshipsSuccess ? { optional: true, silent: true } : {},
+            friendshipsSuccess
+          );
+          if (friendshipsSuccess && users.length > beforeGqlCount) {
+            logMsg(`[Reconciled] Recovered +${users.length - beforeGqlCount} '${label}' account(s) via GraphQL Relay.`);
+          }
         }
       }
       if (users.length > 0) {
@@ -2613,6 +2998,8 @@ findKnownUserByUsername: (username, userId = null) => {
       return {
         users,
         friendshipsSuccess,
+        graphqlSuccess,
+        engineUsed: engine,
         limitedByMeta,
         isPartial,
         rateLimited
@@ -2806,7 +3193,10 @@ findKnownUserByUsername: (username, userId = null) => {
         params.append("__user", "0");
         params.append("__a", "1");
         params.append("__req", "1");
-        const searchDocId = "27706427925724183";
+        const searchDocId = Utils.getRelayDocId(
+          "PolarisSearchBoxRefetchableQuery",
+          CONFIG.RELAY_DOC_IDS?.SEARCH_BOX_QUERY || "27706427925724183"
+        );
         params.append("fb_api_caller_class", "RelayModern");
         params.append("fb_api_req_friendly_name", "PolarisSearchBoxRefetchableQuery");
         params.append("doc_id", searchDocId);
@@ -2954,7 +3344,10 @@ findKnownUserByUsername: (username, userId = null) => {
         const count = typeof rawUser.highlight_reel_count === "number" ? Math.max(highlights.length, rawUser.highlight_reel_count) : highlights.length;
         return { available: true, count, highlights, source: "profile_raw" };
       }
-      const relayDocId = Utils.getRelayDocId("PolarisProfileStoryHighlightsTrayContentQuery", null);
+      const relayDocId = Utils.getRelayDocId(
+        "PolarisProfileStoryHighlightsTrayContentQuery",
+        CONFIG.RELAY_DOC_IDS?.HIGHLIGHTS_TRAY_QUERY
+      );
       if (relayDocId) {
         const dtsg = Utils.getDtsg();
         const jazoest = Utils.calculateJazoest(dtsg);
@@ -3007,35 +3400,6 @@ findKnownUserByUsername: (username, userId = null) => {
             if (relayErr.name === "AbortError" || options.signal?.aborted) throw relayErr;
           }
         }
-      }
-      const highlightsHash = CONFIG.HIGHLIGHTS_HASH;
-      try {
-        const vars = encodeURIComponent(JSON.stringify({
-          user_id: String(targetId),
-          include_chaining: false,
-          include_reel: true,
-          include_suggested_users: false,
-          include_logged_out_extras: false,
-          include_highlight_reels: true,
-          include_live_status: false
-        }));
-        const gqlJson = await API.fetchWithRetry(`https://www.instagram.com/graphql/query/?query_hash=${highlightsHash}&variables=${vars}`, {
-          optional: true,
-          silent: true,
-          signal: options.signal
-        }, 1);
-        const edges = gqlJson?.data?.user?.edge_highlight_reels?.edges;
-        if (Array.isArray(edges)) {
-          const highlights = normalizeItems(edges);
-          return {
-            available: true,
-            count: highlights.length,
-            highlights,
-            source: "graphql_hash"
-          };
-        }
-      } catch (gqlErr) {
-        if (gqlErr.name === "AbortError" || options.signal?.aborted) throw gqlErr;
       }
       try {
         const trayJson = await API.fetchWithRetry(`https://www.instagram.com/api/v1/highlights/${targetId}/highlights_tray/`, {
@@ -3331,10 +3695,10 @@ findKnownUserByUsername: (username, userId = null) => {
         params.append("__user", "0");
         params.append("__a", "1");
         params.append("__req", "1");
-        const PROVEN_PROFILE_DOC_ID = "28036671149327607";
+        const PROVEN_PROFILE_DOC_ID = CONFIG.RELAY_DOC_IDS?.PROFILE_QUERY || "28036671149327607";
+        const ALT_PROFILE_DOC_ID = CONFIG.RELAY_DOC_IDS?.PROFILE_ALT_QUERY || "40158838120366999";
         const liveProfileDocId = Utils.getRelayDocId("PolarisProfilePageContentQuery", null);
-        const profileDocIds = [PROVEN_PROFILE_DOC_ID];
-        if (liveProfileDocId && liveProfileDocId !== PROVEN_PROFILE_DOC_ID) profileDocIds.push(liveProfileDocId);
+        const profileDocIds = Utils.unique([PROVEN_PROFILE_DOC_ID, liveProfileDocId, ALT_PROFILE_DOC_ID].filter(Boolean));
         params.append("fb_api_caller_class", "RelayModern");
         params.append("fb_api_req_friendly_name", "PolarisProfilePageContentQuery");
         params.append("doc_id", PROVEN_PROFILE_DOC_ID);
@@ -3706,7 +4070,7 @@ findKnownUserByUsername: (username, userId = null) => {
           limitedByMeta: false
         };
       } else {
-        await Utils.sleep(2e3 + Math.random() * 1200, options.signal);
+        await Utils.sleep(3500 + Math.random() * 1500, options.signal);
         log(`Extracting following for @${targetUser.username} (expected: ~${expectedFollowing})...`);
         followingRes = await API.extractCompleteUserList(
           targetUser.id,
@@ -4511,7 +4875,7 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         '    <span class="ig-bmc-icon">' + Icons.coffee + "</span>",
         '    <span class="ig-bmc-text">Buy me a coffee</span>',
         "  </a>",
-        '  <span class="ig-footer-meta">v3.13.2</span>',
+        '  <span class="ig-footer-meta">v3.14.0</span>',
         "</div>"
       ].join("\n");
       document.body.appendChild(panel);
@@ -4679,6 +5043,9 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
             targetView.classList.add("active");
             if (typeof UI.loadAvatarsProgressively === "function") {
               UI.loadAvatarsProgressively(targetView);
+            }
+            if (typeof UI.hydrateVisibleMainPageFriendships === "function") {
+              UI.hydrateVisibleMainPageFriendships(targetId);
             }
           }
           updateIndicator(target, true);
@@ -4977,6 +5344,8 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
         const btnNo = document.getElementById("ig-modal-cancel");
         const iconEl = modal ? modal.querySelector(".ig-modal-icon") : null;
         if (!modal) return resolve(true);
+        const contentEl = modal.querySelector(".ig-modal-content");
+        if (contentEl) contentEl.classList.remove("is-engine-modal");
         titleEl.textContent = title;
         bodyEl.innerHTML = message;
         btnYes.textContent = confirmBtnText;
@@ -4997,6 +5366,116 @@ play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="curre
           btnYes.onclick = null;
           if (btnNo) btnNo.onclick = null;
           resolve(value);
+        };
+        btnYes.onclick = () => closeAndResolve(true);
+        if (btnNo) btnNo.onclick = () => closeAndResolve(false);
+      });
+    },
+getEngineDisplayName: (engine) => {
+      const mode = String(engine || "").toLowerCase();
+      if (mode === "graphql") return "GraphQL Relay (usePolarisGetFollowListQuery · batch 20)";
+      if (mode === "rest") return "REST Classic (Friendships API · batch 12)";
+      return "Smart Hybrid (REST + Auto GraphQL Rescue)";
+    },
+confirmExtractionModal: ({ title, message, confirmBtnText = "Yes, Continue", customIcon = null } = {}) => {
+      return new Promise((resolve) => {
+        const modal = document.getElementById("ig-safety-modal");
+        const contentEl = modal ? modal.querySelector(".ig-modal-content") : null;
+        const titleEl = document.getElementById("ig-modal-title-text");
+        const bodyEl = document.getElementById("ig-modal-body-text");
+        const btnYes = document.getElementById("ig-modal-confirm");
+        const btnNo = document.getElementById("ig-modal-cancel");
+        const iconEl = modal ? modal.querySelector(".ig-modal-icon") : null;
+        let selectedEngine = typeof Storage.getExtractionEngine === "function" ? Storage.getExtractionEngine() : CONFIG.DEFAULT_EXTRACTION_ENGINE;
+        if (!modal) {
+          return resolve({ confirmed: true, engine: selectedEngine });
+        }
+        const engineOptions = [
+          {
+            id: "hybrid",
+            name: "Smart Hybrid",
+            badge: "Recommended",
+            badgeClass: "is-recommended",
+            desc: "<b>Gain:</b> 100% live 24h Story rings (<i>With Story</i>) &amp; instant <i>Private/Public</i> locks via REST, plus automatic GraphQL Relay rescue if REST truncates the list (&lt;92%).<br><b>Note:</b> Runs a second pass only when REST drops 6+ border accounts."
+          },
+          {
+            id: "graphql",
+            name: "GraphQL Relay",
+            badge: "-40% Requests · Max Accuracy",
+            badgeClass: "is-accent",
+            desc: "<b>Gain:</b> Batch size 20 with opaque Base64 cursors (zero dropped border accounts), native <i>Besties</i> &amp; <i>Pending</i> flags, and page-level <i>Private</i> locks via <code>show_many</code>.<br><b>Lose:</b> Bulk 24h <i>With Story</i> filter in toolbar (row <i>Story</i> button still works). Auto-falls back to REST on error."
+          },
+          {
+            id: "rest",
+            name: "REST Classic",
+            badge: "100% Live Stories",
+            badgeClass: "is-neutral",
+            desc: "<b>Gain:</b> Single-pass native modal endpoint (<code>?count=12</code>) with live <i>With Story</i> rings and <i>Private/Public</i> status in every page.<br><b>Lose:</b> Numeric <code>max_id</code> cursor may omit 5%–15% of accounts on some third-party profiles. Auto-falls back to GraphQL on error."
+          }
+        ];
+        const cardsHtml = engineOptions.map((opt) => {
+          const isSelected = opt.id === selectedEngine;
+          return [
+            `<div class="ig-engine-card${isSelected ? " is-selected" : ""}" data-engine="${opt.id}" role="radio" tabindex="0" aria-checked="${isSelected ? "true" : "false"}">`,
+            '  <div class="ig-engine-card-header">',
+            '    <span class="ig-engine-radio" aria-hidden="true"></span>',
+            `    <span class="ig-engine-name">${opt.name}</span>`,
+            `    <span class="ig-engine-badge ${opt.badgeClass}">${opt.badge}</span>`,
+            "  </div>",
+            `  <div class="ig-engine-desc">${opt.desc}</div>`,
+            "</div>"
+          ].join("\n");
+        }).join("\n");
+        if (contentEl) contentEl.classList.add("is-engine-modal");
+        titleEl.textContent = title || "Confirm Extraction";
+        bodyEl.innerHTML = [
+          `<div class="ig-engine-intro">${message || ""}</div>`,
+          '<div class="ig-engine-selector" role="radiogroup" aria-label="Extraction Engine">',
+          '  <div class="ig-engine-selector-label">Extraction Engine</div>',
+          cardsHtml,
+          "</div>"
+        ].join("\n");
+        btnYes.textContent = confirmBtnText;
+        if (iconEl) {
+          iconEl.innerHTML = customIcon || Icons.warning;
+        }
+        if (btnNo) {
+          btnNo.style.display = "inline-block";
+        }
+        if (typeof UI.applyCurrentTheme === "function") {
+          UI.applyCurrentTheme();
+        }
+        const cards = Array.from(bodyEl.querySelectorAll(".ig-engine-card[data-engine]"));
+        const selectEngine = (nextEngine) => {
+          if (!nextEngine) return;
+          selectedEngine = typeof Storage.setExtractionEngine === "function" ? Storage.setExtractionEngine(nextEngine) : nextEngine;
+          cards.forEach((card) => {
+            const active = card.getAttribute("data-engine") === selectedEngine;
+            card.classList.toggle("is-selected", active);
+            card.setAttribute("aria-checked", active ? "true" : "false");
+          });
+        };
+        cards.forEach((card) => {
+          card.addEventListener("click", () => {
+            selectEngine(card.getAttribute("data-engine"));
+          });
+          card.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              selectEngine(card.getAttribute("data-engine"));
+            }
+          });
+        });
+        modal.style.display = "flex";
+        const closeAndResolve = (confirmed) => {
+          modal.style.display = "none";
+          if (contentEl) contentEl.classList.remove("is-engine-modal");
+          if (btnNo) btnNo.style.display = "inline-block";
+          if (iconEl) iconEl.innerHTML = Icons.warning;
+          bodyEl.innerHTML = "";
+          btnYes.onclick = null;
+          if (btnNo) btnNo.onclick = null;
+          resolve({ confirmed, engine: confirmed ? selectedEngine : null });
         };
         btnYes.onclick = () => closeAndResolve(true);
         if (btnNo) btnNo.onclick = () => closeAndResolve(false);
@@ -6218,7 +6697,9 @@ renderSparklineSvg: (historyList, { metric = "followers", width = 68, height = 2
             if (clearBtn) clearBtn.style.display = val ? "inline-flex" : "none";
             clearTimeout(searchTimeout);
             searchTimeout = setTimeout(() => {
-              state.searchQuery = val;
+              const currentState = UI.paginationState[containerId];
+              if (!currentState) return;
+              currentState.searchQuery = val;
               UI.applyFilters(containerId);
             }, 120);
           });
@@ -6227,9 +6708,11 @@ renderSparklineSvg: (historyList, { metric = "followers", width = 68, height = 2
               e.stopPropagation();
               e.stopImmediatePropagation();
               e.preventDefault();
+              const currentState = UI.paginationState[containerId];
+              if (!currentState) return;
               searchInput.value = "";
               if (clearBtn) clearBtn.style.display = "none";
-              state.searchQuery = "";
+              currentState.searchQuery = "";
               UI.applyFilters(containerId);
             }
           });
@@ -6239,9 +6722,11 @@ renderSparklineSvg: (historyList, { metric = "followers", width = 68, height = 2
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
+            const currentState = UI.paginationState[containerId];
+            if (!currentState) return;
             searchInput.value = "";
             clearBtn.style.display = "none";
-            state.searchQuery = "";
+            currentState.searchQuery = "";
             searchInput.focus();
             UI.applyFilters(containerId);
           });
@@ -6254,10 +6739,12 @@ renderSparklineSvg: (historyList, { metric = "followers", width = 68, height = 2
             e.preventDefault();
             const targetFilter = chipBtn.getAttribute("data-filter");
             if (!targetFilter) return;
-            if (state.filterType === targetFilter && targetFilter !== "all") {
-              state.filterType = "all";
+            const currentState = UI.paginationState[containerId];
+            if (!currentState) return;
+            if (currentState.filterType === targetFilter && targetFilter !== "all") {
+              currentState.filterType = "all";
             } else {
-              state.filterType = targetFilter;
+              currentState.filterType = targetFilter;
             }
             UI.applyFilters(containerId);
           });
@@ -6356,51 +6843,100 @@ renderSparklineSvg: (historyList, { metric = "followers", width = 68, height = 2
         const exportBtn = document.getElementById("ig-export-csv");
         if (exportBtn) exportBtn.disabled = totalFiltered === 0 && totalRaw === 0;
       }
-      const userIdsToFetch = listVariant === "standard" ? pageUsers.map((u) => u.id).filter((id) => id && id !== "0" && id !== "null" && id !== "undefined") : [];
-      if (userIdsToFetch.length > 0 && typeof API.fetchFriendshipStatusesMany === "function") {
-        API.fetchFriendshipStatusesMany(userIdsToFetch).then((statusMap) => {
-          const currentState = UI.paginationState[containerId];
-          if (!currentState || currentState.page !== page) return;
-          pageUsers.forEach((u, index) => {
-            if (!u.id) return;
-            const status = statusMap[u.id];
-            if (!status) return;
-            let stateChanged = false;
-            if (u.isPrivate !== status.isPrivate) {
-              u.isPrivate = status.isPrivate;
-              stateChanged = true;
-            }
-            if (u.isBestie !== status.isBestie) {
-              u.isBestie = status.isBestie;
-              stateChanged = true;
-            }
-            if (u.outgoingRequest !== status.outgoingRequest) {
-              u.outgoingRequest = status.outgoingRequest;
-              stateChanged = true;
-            }
-            if (stateChanged) {
-              const rowId = containerId + "-row-" + (startIndex + index);
-              const badgeContainer = document.getElementById(rowId + "-badges");
-              if (badgeContainer) {
-                badgeContainer.innerHTML = UI.renderUserBadgesHtml(u);
-              }
-              if (status.isBestie && u.latestReelMedia > 0) {
-                const avatarEl = document.querySelector("#" + rowId + " .ig-user-avatar");
-                if (avatarEl) {
-                  avatarEl.classList.add("has-bestie-ring");
-                  avatarEl.style.outlineColor = "#22c55e";
-                }
-              }
-            }
-          });
-          UI.updateFilterChips(containerId);
-        }).catch((err) => {
-          console.warn("[IG Analyzer] Error updating friendship statuses batch:", err);
-        });
+      if (typeof UI.hydrateVisibleMainPageFriendships === "function") {
+        UI.hydrateVisibleMainPageFriendships(containerId);
       }
       if (typeof UI.syncMainExportButton === "function") {
         UI.syncMainExportButton();
       }
+    },
+    hydrateVisibleMainPageFriendships: (containerId) => {
+      const state = UI.paginationState[containerId];
+      if (!state || (state.listVariant || "standard") !== "standard") return;
+      const container = document.getElementById(containerId);
+      if (!container || !container.classList.contains("active")) return;
+      const pageSize = state.pageSize || 50;
+      const page = state.page || 1;
+      const startIndex = (page - 1) * pageSize;
+      const pageUsers = (state.users || []).slice(startIndex, startIndex + pageSize);
+      const userIdsToFetch = pageUsers.map((u) => u.id).filter((id) => id && id !== "0" && id !== "null" && id !== "undefined");
+      if (userIdsToFetch.length === 0 || typeof API.fetchFriendshipStatusesMany !== "function") return;
+      API.fetchFriendshipStatusesMany(userIdsToFetch).then((statusMap) => {
+        const currentState = UI.paginationState[containerId];
+        if (!currentState || currentState.page !== page) return;
+        const updatedUsers = [];
+        const updatedById = new Map();
+        pageUsers.forEach((u, index) => {
+          if (!u.id) return;
+          const status = statusMap[u.id];
+          if (!status) return;
+          let rowDomChanged = false;
+          let metaChanged = false;
+          if (!u.isPrivateKnown) {
+            u.isPrivateKnown = true;
+            metaChanged = true;
+          }
+          if (u.isPrivate !== status.isPrivate) {
+            u.isPrivate = status.isPrivate;
+            rowDomChanged = true;
+            metaChanged = true;
+          }
+          if (u.isBestie !== status.isBestie) {
+            u.isBestie = status.isBestie;
+            rowDomChanged = true;
+            metaChanged = true;
+          }
+          if (u.outgoingRequest !== status.outgoingRequest) {
+            u.outgoingRequest = status.outgoingRequest;
+            rowDomChanged = true;
+            metaChanged = true;
+          }
+          if (rowDomChanged) {
+            const rowId = containerId + "-row-" + (startIndex + index);
+            const badgeContainer = document.getElementById(rowId + "-badges");
+            if (badgeContainer) {
+              badgeContainer.innerHTML = UI.renderUserBadgesHtml(u, { variant: currentState.listVariant || "standard" });
+            }
+            if (status.isBestie && u.latestReelMedia > 0) {
+              const avatarEl = document.querySelector("#" + rowId + " .ig-user-avatar");
+              if (avatarEl) {
+                avatarEl.classList.add("has-bestie-ring");
+                avatarEl.style.outlineColor = "#22c55e";
+              }
+            }
+          }
+          if (metaChanged) {
+            updatedUsers.push(u);
+            updatedById.set(String(u.id), status);
+          }
+        });
+        if (updatedById.size > 0) {
+          Object.entries(UI.paginationState).forEach(([tabContainerId, tabState]) => {
+            if (!tabState || !Array.isArray(tabState.rawUsers)) return;
+            let tabChanged = false;
+            tabState.rawUsers.forEach((item) => {
+              if (!item?.id || !updatedById.has(String(item.id))) return;
+              const st = updatedById.get(String(item.id));
+              if (item.isPrivate !== st.isPrivate || !item.isPrivateKnown || item.isBestie !== st.isBestie || item.outgoingRequest !== st.outgoingRequest) {
+                item.isPrivate = st.isPrivate;
+                item.isPrivateKnown = true;
+                item.isBestie = st.isBestie;
+                item.outgoingRequest = st.outgoingRequest;
+                tabChanged = true;
+              }
+            });
+            if (tabChanged) {
+              UI.updateFilterChips(tabContainerId);
+            }
+          });
+          UI.updateFilterChips(containerId);
+          if (typeof Storage.syncFreshUserData === "function") {
+            Storage.syncFreshUserData(updatedUsers);
+          }
+        }
+      }).catch((err) => {
+        console.warn("[IG Analyzer] Error updating friendship statuses batch:", err);
+      });
     },
     renderUserBadgesHtml: (u, options = {}) => {
       const variant = options.variant || "standard";
@@ -7300,6 +7836,9 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
             if (typeof UI.loadAvatarsProgressively === "function") {
               UI.loadAvatarsProgressively(targetView);
             }
+            if (typeof UI.hydrateVisibleTargetPageFriendships === "function") {
+              UI.hydrateVisibleTargetPageFriendships(targetId);
+            }
           }
           updateIndicator(target, true);
           const expBtn = subpanel.querySelector("#ig-target-export-csv");
@@ -7886,6 +8425,10 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
     },
     renderTargetSingleList: (containerId, rawList, title, emptyMsg, options = {}) => {
       const safeList = Utils.toDetailedUserArray(rawList);
+      const container = document.getElementById(containerId);
+      if (container) {
+        container.innerHTML = "";
+      }
       UI.targetPaginationState[containerId] = {
         rawUsers: safeList,
         users: safeList,
@@ -7898,6 +8441,106 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
         options
       };
       UI.renderTargetSingleListPage(containerId);
+    },
+    renderTargetRowBadgesHtml: (u, options = {}) => {
+      let badges = "";
+      if (u?.isPrivate) badges += '<span class="ig-badge-pill ig-badge-private" title="Private Account">' + Icons.lock + "</span>";
+      if (u?.isVerified) badges += '<span title="Verified">' + Icons.verified + "</span>";
+      if (u?.isBestie) badges += '<span class="ig-badge-pill ig-badge-bestie" title="Close Friends">' + Icons.star + " Bestie</span>";
+      if (u?.outgoingRequest) badges += '<span class="ig-badge-pill ig-badge-pending" title="Follow Request Pending">' + Icons.clock + " Pending</span>";
+      if (options?.isNewBadge) badges += '<span class="ig-badge-pill ig-badge-new-mutual">' + Icons.sparkles + " New</span>";
+      if (options?.isLostBadge) badges += '<span class="ig-badge-pill ig-badge-churn">' + Icons.unfollowers + " Lost</span>";
+      if (options?.newMutualsSet && options.newMutualsSet.has(u?.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual-solid">' + Icons.sparkles + " New Mutual</span>";
+      if (u?.isViewerMutual) badges += '<span class="ig-badge-pill ig-badge-new-mutual" title="Shared mutual with you!">' + Icons.sparkles + " Shared Mutual</span>";
+      return badges;
+    },
+    hydrateVisibleTargetPageFriendships: (containerId) => {
+      const state = UI.targetPaginationState[containerId];
+      if (!state) return;
+      const container = document.getElementById(containerId);
+      if (!container || !container.classList.contains("active")) return;
+      const pageSize = state.pageSize || 50;
+      const page = state.page || 1;
+      const startIndex = (page - 1) * pageSize;
+      const pageUsers = (state.users || []).slice(startIndex, startIndex + pageSize);
+      const userIdsToFetch = pageUsers.map((u) => u.id).filter((id) => id && id !== "0" && id !== "null" && id !== "undefined");
+      if (userIdsToFetch.length === 0 || typeof API.fetchFriendshipStatusesMany !== "function") return;
+      API.fetchFriendshipStatusesMany(userIdsToFetch).then((statusMap) => {
+        const currentState = UI.targetPaginationState[containerId];
+        if (!currentState || currentState.page !== page) return;
+        const updatedUsers = [];
+        const updatedById = new Map();
+        pageUsers.forEach((u, index) => {
+          if (!u.id) return;
+          const status = statusMap[u.id];
+          if (!status) return;
+          let rowDomChanged = false;
+          let metaChanged = false;
+          if (!u.isPrivateKnown) {
+            u.isPrivateKnown = true;
+            metaChanged = true;
+          }
+          if (u.isPrivate !== status.isPrivate) {
+            u.isPrivate = status.isPrivate;
+            rowDomChanged = true;
+            metaChanged = true;
+          }
+          if (u.isBestie !== status.isBestie) {
+            u.isBestie = status.isBestie;
+            rowDomChanged = true;
+            metaChanged = true;
+          }
+          if (u.outgoingRequest !== status.outgoingRequest) {
+            u.outgoingRequest = status.outgoingRequest;
+            rowDomChanged = true;
+            metaChanged = true;
+          }
+          if (rowDomChanged) {
+            const rowId = containerId + "-row-" + (startIndex + index);
+            const badgeContainer = document.getElementById(rowId + "-badges");
+            if (badgeContainer) {
+              badgeContainer.innerHTML = UI.renderTargetRowBadgesHtml(u, currentState.options);
+            }
+            if (status.isBestie && u.latestReelMedia > 0) {
+              const avatarEl = document.querySelector("#" + rowId + " .ig-user-avatar");
+              if (avatarEl) {
+                avatarEl.classList.add("has-bestie-ring");
+                avatarEl.style.outlineColor = "#22c55e";
+              }
+            }
+          }
+          if (metaChanged) {
+            updatedUsers.push(u);
+            updatedById.set(String(u.id), status);
+          }
+        });
+        if (updatedById.size > 0) {
+          Object.entries(UI.targetPaginationState).forEach(([tabContainerId, tabState]) => {
+            if (!tabState || !Array.isArray(tabState.rawUsers)) return;
+            let tabChanged = false;
+            tabState.rawUsers.forEach((item) => {
+              if (!item?.id || !updatedById.has(String(item.id))) return;
+              const st = updatedById.get(String(item.id));
+              if (item.isPrivate !== st.isPrivate || !item.isPrivateKnown || item.isBestie !== st.isBestie || item.outgoingRequest !== st.outgoingRequest) {
+                item.isPrivate = st.isPrivate;
+                item.isPrivateKnown = true;
+                item.isBestie = st.isBestie;
+                item.outgoingRequest = st.outgoingRequest;
+                tabChanged = true;
+              }
+            });
+            if (tabChanged) {
+              UI.updateTargetFilterChips(tabContainerId);
+            }
+          });
+          UI.updateTargetFilterChips(containerId);
+          if (typeof Storage.syncTargetUsersData === "function") {
+            Storage.syncTargetUsersData(UI.currentTargetUser?.username, updatedUsers);
+          }
+        }
+      }).catch((err) => {
+        console.warn("[IG Analyzer] Error updating target friendship statuses batch:", err);
+      });
     },
     renderTargetSingleListPage: (containerId) => {
       const state = UI.targetPaginationState[containerId];
@@ -7964,7 +8607,9 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
             if (clearBtn) clearBtn.style.display = val ? "inline-flex" : "none";
             clearTimeout(searchTimeout);
             searchTimeout = setTimeout(() => {
-              state.searchQuery = val;
+              const currentState = UI.targetPaginationState[containerId];
+              if (!currentState) return;
+              currentState.searchQuery = val;
               UI.applyTargetFilters(containerId);
             }, 120);
           });
@@ -7973,10 +8618,12 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
               e.preventDefault();
               e.stopPropagation();
               e.stopImmediatePropagation();
-              if (searchInput.value || state.searchQuery) {
+              const currentState = UI.targetPaginationState[containerId];
+              if (!currentState) return;
+              if (searchInput.value || currentState.searchQuery) {
                 searchInput.value = "";
                 if (clearBtn) clearBtn.style.display = "none";
-                state.searchQuery = "";
+                currentState.searchQuery = "";
                 UI.applyTargetFilters(containerId);
               }
             }
@@ -7987,9 +8634,11 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
+            const currentState = UI.targetPaginationState[containerId];
+            if (!currentState) return;
             searchInput.value = "";
             clearBtn.style.display = "none";
-            state.searchQuery = "";
+            currentState.searchQuery = "";
             searchInput.focus();
             UI.applyTargetFilters(containerId);
           });
@@ -8002,10 +8651,12 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
             e.preventDefault();
             const targetFilter = chipBtn.getAttribute("data-filter");
             if (!targetFilter) return;
-            if (state.filterType === targetFilter && targetFilter !== "all") {
-              state.filterType = "all";
+            const currentState = UI.targetPaginationState[containerId];
+            if (!currentState) return;
+            if (currentState.filterType === targetFilter && targetFilter !== "all") {
+              currentState.filterType = "all";
             } else {
-              state.filterType = targetFilter;
+              currentState.filterType = targetFilter;
             }
             UI.applyTargetFilters(containerId);
           });
@@ -8028,7 +8679,8 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
       if (totalFiltered === 0) {
         rowsHtml = '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.search + "</span>No accounts match your search or filter criteria.</div>";
       } else {
-        pageUsers.forEach((u) => {
+        pageUsers.forEach((u, index) => {
+          const uniqueId = containerId + "-row-" + (startIndex + index);
           const safeUsername = Utils.escapeHtml(u.username || "");
           const safeUserId = Utils.escapeHtml(u.id || "");
           const safeUrl = Utils.sanitizeUrl(u.username, u.url);
@@ -8039,19 +8691,13 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
           const avatarClass = "ig-user-avatar ig-avatar-monogram" + (hasStory ? u.isBestie ? " has-bestie-ring" : " has-story-ring" : "");
           const avatarHtml = '<div class="' + avatarClass + '" data-avatar-url="' + (safeAvatarUrl || "") + '" data-username="' + safeUsername + '"><span class="ig-monogram-letter">' + safeInitial + "</span></div>";
           const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${safeUserId}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
-          let badges = "";
-          if (u.isPrivate) badges += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + "</span>";
-          if (u.isVerified) badges += '<span title="Verified">' + Icons.verified + "</span>";
-          if (options.isNewBadge) badges += '<span class="ig-badge-pill ig-badge-new-mutual">' + Icons.sparkles + " New</span>";
-          if (options.isLostBadge) badges += '<span class="ig-badge-pill ig-badge-churn">' + Icons.unfollowers + " Lost</span>";
-          if (options.newMutualsSet && options.newMutualsSet.has(u.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual-solid">' + Icons.sparkles + " New Mutual</span>";
-          if (u.isViewerMutual) badges += '<span class="ig-badge-pill ig-badge-new-mutual" title="Shared mutual with you!">' + Icons.sparkles + " Shared Mutual</span>";
-          rowsHtml += '<div class="ig-user-row" data-user-id="' + safeUserId + '">';
+          const badges = UI.renderTargetRowBadgesHtml(u, options);
+          rowsHtml += '<div class="ig-user-row" id="' + uniqueId + '" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '">';
           rowsHtml += '  <div class="ig-user-info">' + avatarTriggerHtml;
           rowsHtml += '    <div class="ig-user-text-col">';
           rowsHtml += '      <div class="ig-user-title-line">';
           rowsHtml += '        <span class="ig-username">' + safeUsername + "</span>";
-          rowsHtml += '        <span class="ig-user-badges">' + badges + "</span>";
+          rowsHtml += '        <span class="ig-user-badges" id="' + uniqueId + '-badges">' + badges + "</span>";
           rowsHtml += "      </div>";
           if (safeFullName) rowsHtml += '<span class="ig-user-fullname">' + safeFullName + "</span>";
           rowsHtml += "    </div>";
@@ -8078,6 +8724,7 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
         paginationHtml += "</div>";
       }
       if (paginationEl) paginationEl.innerHTML = paginationHtml;
+      UI.hydrateVisibleTargetPageFriendships(containerId);
     },
     getTargetActiveList: () => {
       const activeTab = document.querySelector("#ig-target-tabs .ig-tab-btn.active");
@@ -8197,7 +8844,7 @@ enrichNominalItems: (rawList, { variant = "nominal", userId = null } = {}) => {
       }
     }
   });
-  const mainCss = '#ig-analyzer-panel,#ig-target-subpanel,#ig-safety-modal,#ig-hd-modal,.ig-backup-overlay{--iga-bg-primary: rgba(15, 23, 42, .92);--iga-bg-secondary: rgba(30, 41, 59, .7);--iga-surface: rgba(30, 41, 59, .55);--iga-surface-hover: rgba(51, 65, 85, .6);--iga-surface-active: rgba(51, 65, 85, .85);--iga-border: rgba(255, 255, 255, .08);--iga-border-hover: rgba(255, 255, 255, .16);--iga-border-focus: rgba(59, 130, 246, .5);--iga-text-bright: #f8fafc;--iga-text-main: #cbd5e1;--iga-text-muted: #94a3b8;--iga-text-dim: #64748b;--iga-accent: #3b82f6;--iga-accent-hover: #2563eb;--iga-accent-active: #1d4ed8;--iga-accent-subtle: rgba(59, 130, 246, .14);--iga-accent-glow: 0 0 16px rgba(59, 130, 246, .35);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .14);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #ef4444;--iga-danger-hover: #dc2626;--iga-danger-subtle: rgba(239, 68, 68, .14);--iga-warning: #f59e0b;--iga-warning-subtle: rgba(245, 158, 11, .14);--iga-shadow-sm: 0 1px 3px rgba(0, 0, 0, .35);--iga-shadow-md: 0 6px 16px -2px rgba(0, 0, 0, .4);--iga-shadow-lg: 0 24px 64px -12px rgba(0, 0, 0, .65), 0 0 0 1px rgba(255, 255, 255, .08);--iga-radius-sm: 6px;--iga-radius-md: 10px;--iga-radius-lg: 14px;--iga-radius-xl: 18px;--iga-radius-full: 9999px;--iga-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;--iga-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Monaco, Consolas, monospace;--iga-ease-spring: cubic-bezier(.16, 1, .3, 1);--iga-ease-default: cubic-bezier(.4, 0, .2, 1);--ig-panel-bg: var(--iga-bg-primary);--ig-panel-border: var(--iga-border);--ig-text-main: var(--iga-text-main);--ig-text-muted: var(--iga-text-muted);--ig-text-bright: var(--iga-text-bright);--ig-bg-input: var(--iga-surface);--ig-bg-hover: var(--iga-surface-hover);--ig-bg-active: var(--iga-surface-active);--ig-scrollbar-thumb: rgba(255, 255, 255, .15);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .25);--ig-shadow: var(--iga-shadow-lg);--ig-shadow-sm: var(--iga-shadow-sm);--ig-accent: var(--iga-accent);--ig-accent-hover: var(--iga-accent-hover);--ig-accent-soft: var(--iga-accent-subtle);--ig-success: var(--iga-success);--ig-success-hover: var(--iga-success-hover);--ig-danger: var(--iga-danger);--ig-danger-hover: var(--iga-danger-hover);--ig-warning: var(--iga-warning);--ig-btn-bg: var(--iga-surface);--ig-btn-border: var(--iga-border);--ig-btn-text: var(--iga-text-bright);--ig-btn-disabled-bg: rgba(255, 255, 255, .03);--ig-btn-disabled-border: rgba(255, 255, 255, .05);--ig-btn-disabled-text: rgba(255, 255, 255, .25);--ig-radius-sm: var(--iga-radius-sm);--ig-radius-md: var(--iga-radius-md);--ig-radius-lg: var(--iga-radius-lg);--ig-radius-full: var(--iga-radius-full)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,#ig-safety-modal.ig-light-theme,#ig-hd-modal.ig-light-theme,.ig-backup-overlay.ig-light-theme{--iga-bg-primary: rgba(255, 255, 255, .96);--iga-bg-secondary: #f8fafc;--iga-surface: #f1f5f9;--iga-surface-hover: #e2e8f0;--iga-surface-active: #cbd5e1;--iga-border: #e2e8f0;--iga-border-hover: #cbd5e1;--iga-border-focus: rgba(37, 99, 235, .4);--iga-text-bright: #0f172a;--iga-text-main: #334155;--iga-text-muted: #64748b;--iga-text-dim: #94a3b8;--iga-accent: #2563eb;--iga-accent-hover: #1d4ed8;--iga-accent-active: #1e40af;--iga-accent-subtle: rgba(37, 99, 235, .08);--iga-accent-glow: 0 0 16px rgba(37, 99, 235, .2);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .1);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #dc2626;--iga-danger-hover: #b91c1c;--iga-danger-subtle: rgba(220, 38, 38, .08);--iga-warning: #d97706;--iga-warning-subtle: rgba(217, 119, 6, .08);--iga-shadow-sm: 0 1px 3px rgba(15, 23, 42, .08);--iga-shadow-md: 0 6px 16px -2px rgba(15, 23, 42, .1);--iga-shadow-lg: 0 24px 64px -12px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .06);--ig-scrollbar-thumb: rgba(15, 23, 42, .15);--ig-scrollbar-thumb-hover: rgba(15, 23, 42, .25);--ig-btn-disabled-bg: rgba(15, 23, 42, .03);--ig-btn-disabled-border: rgba(15, 23, 42, .06);--ig-btn-disabled-text: rgba(15, 23, 42, .3)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:717px;min-width:440px;max-width:calc(100vw - 40px);height:560px;min-height:260px;max-height:calc(100vh - 40px);background:var(--iga-bg-primary);border:1px solid var(--iga-border);color:var(--iga-text-main);box-shadow:var(--iga-shadow-lg);-webkit-backdrop-filter:blur(28px) saturate(190%);backdrop-filter:blur(28px) saturate(190%);font-family:var(--iga-font-sans);font-size:13px;line-height:1.5;padding:16px;z-index:999999;border-radius:var(--iga-radius-xl);display:flex;flex-direction:column;resize:both;overflow:hidden;transform-origin:center center;transition:background .3s var(--iga-ease-default),border-color .3s var(--iga-ease-default),box-shadow .28s cubic-bezier(.34,1.56,.64,1),transform .28s cubic-bezier(.34,1.56,.64,1),height .25s var(--iga-ease-spring);box-sizing:border-box}#ig-analyzer-panel.is-dragging{transform:scale(.985);box-shadow:0 35px 80px -15px #000c,0 0 0 1px #ffffff1f;-webkit-backdrop-filter:blur(36px) saturate(210%);backdrop-filter:blur(36px) saturate(210%);transition:transform .18s cubic-bezier(.16,1,.3,1),box-shadow .18s cubic-bezier(.16,1,.3,1);cursor:grabbing!important}#ig-analyzer-panel.ig-light-theme.is-dragging{box-shadow:0 35px 80px -15px #0f172a40,0 0 0 1px #0f172a14}#ig-analyzer-panel *{box-sizing:border-box}#ig-analyzer-panel.is-minimized{height:64px!important;min-height:64px!important;resize:none!important;padding-bottom:0;overflow:hidden}#ig-analyzer-panel.is-minimized>*:not(#ig-header){display:none!important}#ig-analyzer-panel.is-minimized #ig-header{margin-bottom:0;padding-bottom:0;border-bottom:none}#ig-analyzer-panel #ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--iga-border);cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-analyzer-panel #ig-header:active{cursor:grabbing}#ig-analyzer-panel .ig-header-left{display:flex;align-items:center;gap:10px}#ig-analyzer-panel .ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--iga-accent-subtle);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);color:var(--iga-accent);box-shadow:var(--iga-shadow-sm);transition:transform .2s var(--iga-ease-spring)}#ig-analyzer-panel .ig-logo:hover{transform:scale(1.06)}#ig-analyzer-panel .ig-title{font-size:14px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px;line-height:1}#ig-analyzer-panel .ig-header-right{display:flex;align-items:center;gap:8px}#ig-analyzer-panel #ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;background:var(--iga-surface);padding:4px 10px;border-radius:var(--iga-radius-full);color:var(--iga-text-muted);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default)}#ig-analyzer-panel .ig-status-dot{width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);display:inline-block;flex-shrink:0;position:relative}#ig-analyzer-panel #ig-status.is-active .ig-status-dot,#ig-analyzer-panel #ig-status:not(:empty) .ig-status-dot{background:var(--iga-success);box-shadow:0 0 8px var(--iga-success);animation:iga-pulse 2s cubic-bezier(.4,0,.6,1) infinite}@keyframes iga-pulse{0%,to{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(1.15)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-actions{display:flex;align-items:center;gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:var(--iga-radius-sm);background:transparent;border:1px solid transparent;color:var(--iga-text-muted);cursor:pointer;transition:all .15s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:active{transform:scale(.94)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn-close:hover{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-actions-bar{display:flex;gap:8px;margin-bottom:12px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-bright);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default);flex:1;white-space:nowrap;line-height:1;position:relative;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-sm{padding:6px 12px;font-size:11px;flex:initial}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon svg{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--iga-shadow-md);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:active:not(:disabled){transform:translateY(0);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:disabled{opacity:.45;cursor:not-allowed;background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;transform:none!important;box-shadow:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary){background:linear-gradient(90deg,#1d4ed8,#3b82f6 28%,#60a5fa,#3b82f6 72%,#1d4ed8);background-size:200% 100%;background-position:0% 50%;border-color:#ffffff2e;color:#fff;box-shadow:0 4px 12px #2563eb4d;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background-position .3s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary):hover:not(:disabled){animation:iga-gradient-move 2s linear infinite;box-shadow:0 6px 20px #2563eb73;transform:translateY(-1px)}@keyframes iga-gradient-move{0%{background-position:200% 50%}to{background-position:0% 50%}}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled){background:var(--iga-success-gradient)!important;border-color:#ffffff26!important;color:#fff!important;box-shadow:0 4px 12px #10b98140}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled):hover{background:linear-gradient(135deg,#059669,#047857)!important;box-shadow:0 6px 18px #10b98166}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger{background:transparent;border-color:#ef444459;color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--iga-danger-subtle);border-color:var(--iga-danger);color:var(--iga-danger-hover);box-shadow:0 4px 12px #ef444433}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-container,#ig-target-progress-container,.ig-progress-container){width:100%;background:var(--iga-surface);border-radius:var(--iga-radius-full);height:5px;margin-bottom:12px;overflow:hidden;display:none;border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar){width:0%;background:linear-gradient(90deg,var(--iga-accent),#a855f7);height:100%;border-radius:var(--iga-radius-full);transition:width .35s var(--iga-ease-default);position:relative}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar):after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);animation:iga-shimmer 1.5s infinite}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar).is-indeterminate{width:35%!important;animation:iga-indeterminate 1.5s cubic-bezier(.4,0,.2,1) infinite}@keyframes iga-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}@keyframes iga-indeterminate{0%{transform:translate(-100%)}50%{transform:translate(180%)}to{transform:translate(350%)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-wrapper{position:relative;margin-bottom:8px;flex-shrink:0;display:flex;align-items:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container{position:relative;display:flex;flex-wrap:nowrap;gap:4px;padding:4px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;scrollbar-width:none;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-indicator{position:absolute;top:0;left:0;height:0;width:0;opacity:0;border-radius:var(--iga-radius-md);background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm);pointer-events:none;z-index:1;transition:transform .3s cubic-bezier(.16,1,.3,1),width .3s cubic-bezier(.16,1,.3,1),height .3s cubic-bezier(.16,1,.3,1),opacity .2s ease;transform:translateZ(0)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-indicator{background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn{position:relative!important;z-index:2!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;padding:6px 12px!important;flex:0 0 auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--iga-text-muted)!important;font-size:11px!important;font-weight:600!important;border-radius:var(--iga-radius-md)!important;cursor:pointer!important;transition:color .2s var(--iga-ease-default),background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default)!important;white-space:nowrap!important;line-height:1!important;-webkit-user-select:none!important;user-select:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important;background:var(--iga-surface-hover)!important;border-color:var(--iga-border)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--iga-accent)!important;font-weight:600!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-btn.active{color:var(--iga-accent)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:14px;height:14px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-label{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn{color:var(--iga-text-muted)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view){display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view).active{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;container-type:inline-size;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:14px;font-size:12px;color:var(--iga-text-main);box-shadow:inset 0 1px 3px #0000001a}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar{width:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-track{background:transparent}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-log,#ig-target-view-logs){font-family:var(--iga-font-mono);font-size:11px;line-height:1.6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry{display:flex;align-items:baseline;gap:8px;padding:4px 6px;color:var(--iga-text-main);border-bottom:1px solid rgba(255,255,255,.03);border-radius:var(--iga-radius-sm);transition:background .15s ease;word-break:break-word}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-log-entry{border-bottom:1px solid rgba(0,0,0,.03)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:last-child{border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-time{color:var(--iga-accent);font-weight:600;font-size:10px;background:var(--iga-accent-subtle);padding:1px 6px;border-radius:var(--iga-radius-sm);flex-shrink:0;font-variant-numeric:tabular-nums;letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--iga-text-bright);letter-spacing:-.2px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--iga-accent-subtle);color:var(--iga-accent);padding:0 8px;border-radius:var(--iga-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:1px solid rgba(59,130,246,.2)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-toolbar{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-box{position:relative;display:flex;align-items:center;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-icon{position:absolute;left:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--iga-text-dim);pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input{width:100%;height:32px;padding:0 30px 0 32px;font-size:11px;font-family:var(--iga-font-sans);color:var(--iga-text-bright);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);outline:none;box-sizing:border-box;transition:border-color .18s var(--iga-ease-default),box-shadow .18s var(--iga-ease-default),background .18s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input:focus{border-color:var(--iga-border-focus);background:var(--iga-surface-hover);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input::placeholder{color:var(--iga-text-dim);font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear{position:absolute;right:6px;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--iga-text-dim);cursor:pointer;border-radius:50%;padding:0;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear svg,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:3px 2px;scrollbar-width:none;-ms-overflow-style:none;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:600;font-family:var(--iga-font-sans);color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);cursor:pointer;transition:all .15s var(--iga-ease-default);-webkit-user-select:none;user-select:none;white-space:nowrap;line-height:1.2;box-sizing:border-box}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active{background:#3b82f62e;color:var(--iga-accent);border-color:var(--iga-accent);font-weight:700;box-shadow:0 1px 4px #3b82f640}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-count{font-size:9px;padding:0 4px;border-radius:6px;background:#ffffff14;color:var(--iga-text-dim);margin-left:2px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-chip-count{background:#0000000f}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-icon{display:inline-flex;align-items:center;justify-content:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-list{display:flex;flex-direction:column;flex:1;min-height:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--iga-text-muted);font-size:12px;padding:40px 16px;text-align:center;margin:auto 0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon{display:flex;align-items:center;justify-content:center;width:44px;height:44px;color:var(--iga-text-dim);background:var(--iga-surface-hover);border-radius:var(--iga-radius-full);padding:10px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin-bottom:6px;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-surface);min-height:48px;flex-shrink:0;box-sizing:border-box;content-visibility:auto;contain-intrinsic-size:auto 300px auto 52px;transition:background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default),transform .28s cubic-bezier(.4,0,.2,1),opacity .25s ease,max-height .28s ease,min-height .28s ease,margin .28s ease,padding .28s ease}@supports not (content-visibility: auto){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{contain:layout style paint}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row.ig-row-slide-out{content-visibility:visible;contain-intrinsic-size:none;transform:translate(100%);opacity:0;max-height:0;min-height:0;padding-top:0;padding-bottom:0;margin-bottom:0;border-color:transparent;pointer-events:none;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:12px;font-weight:700;flex-shrink:0;border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram{position:relative;overflow:hidden;user-select:none;-webkit-user-select:none;background:linear-gradient(135deg,#2a2a2a,#1a1a1a);color:#e4e4e7}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram .ig-monogram-letter{display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:.5px;color:#f4f4f5;transition:opacity .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-img-loaded{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;opacity:0;transition:opacity .22s cubic-bezier(.4,0,.2,1)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram.is-loaded .ig-avatar-img-loaded{opacity:1}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-username{color:var(--iga-text-bright);font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-badges{display:inline-flex;align-items:center;gap:4px;margin-left:6px;flex-wrap:wrap;vertical-align:middle}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;border-radius:var(--iga-radius-sm);font-size:10px;font-weight:600;line-height:1.3;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-private{background:#94a3b81f;color:var(--iga-text-muted);border:1px solid rgba(148,163,184,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-bestie{background:#22c55e26;color:#22c55e;border:1px solid rgba(34,197,94,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pending{background:#f59e0b26;color:#f59e0b;border:1px solid rgba(245,158,11,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-bestie-ring{outline:2px solid #22c55e!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-story-ring{outline:2px solid #e1306c!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600;font-size:11px;padding:4px 8px;border-radius:var(--iga-radius-sm);background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.2);transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link:hover{background:var(--iga-accent);color:#fff;text-decoration:none}#ig-analyzer-panel .btn-whitelist,#ig-analyzer-panel .ig-btn-whitelist{background:var(--iga-surface)!important;border:1px solid var(--iga-border)!important;color:var(--iga-text-muted)!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .15s ease!important}#ig-analyzer-panel .btn-whitelist:hover,#ig-analyzer-panel .ig-btn-whitelist:hover{background:var(--iga-surface-active)!important;border-color:var(--iga-border-hover)!important;color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#a855f71f!important;border:1px solid rgba(168,85,247,.3)!important;color:#c084fc!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .2s var(--iga-ease-default)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story:hover:not(:disabled){background:#a855f740!important;border-color:#c084fc!important;color:#fff!important;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table thead th{color:var(--iga-text-muted);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.6px;padding:8px 10px;border-bottom:1px solid var(--iga-border);position:sticky;top:0;background:var(--iga-surface);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table td{padding:8px 10px;border-bottom:1px solid var(--iga-border);color:var(--iga-text-main)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr{transition:background .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-user{font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-date{color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link:hover{text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-pagination{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 0;margin-top:8px;border-top:1px solid var(--iga-border);font-size:11px;color:var(--iga-text-muted);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn{display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:var(--iga-radius-sm);font-size:11px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);transition:all .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:hover:not(:disabled){background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-accent)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:disabled{opacity:.35;cursor:not-allowed}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-info{font-weight:600;letter-spacing:.02em}.ig-modal-overlay{position:fixed;inset:0;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:iga-fade-in .2s var(--iga-ease-default);padding:20px;box-sizing:border-box}.ig-modal-overlay *{box-sizing:border-box}@keyframes iga-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:var(--iga-bg-primary);border:1px solid var(--iga-border);padding:28px 24px;border-radius:var(--iga-radius-xl);width:440px;max-width:92vw;max-height:85vh;text-align:center;color:var(--iga-text-bright);box-shadow:var(--iga-shadow-lg);display:flex;flex-direction:column;align-items:center;animation:iga-modal-slide .25s var(--iga-ease-spring)}@keyframes iga-modal-slide{0%{opacity:0;transform:scale(.95) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:52px;height:52px;color:var(--iga-warning);margin-bottom:16px;padding:12px;background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.25);border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:17px;font-weight:700;margin-bottom:8px;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-modal-text{font-size:13px;line-height:1.6;color:var(--iga-text-muted);margin-bottom:24px;width:100%;max-height:58vh;overflow-y:auto;padding-right:2px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:10px 16px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-btn-cancel-modal{background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted)}.ig-btn-cancel-modal:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-btn-confirm-modal{background:var(--iga-accent-gradient);border:1px solid rgba(255,255,255,.15);color:#fff;box-shadow:0 4px 12px #2563eb59}.ig-btn-confirm-modal:hover{box-shadow:0 6px 18px #2563eb80;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger{position:relative;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;transition:transform .18s var(--iga-ease-default);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:hover{transform:scale(1.08)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:active{transform:scale(.96)}.ig-hd-modal-overlay{display:none;position:fixed;inset:0;background:#000000d1;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:20000000;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:ig-hd-fade-in .2s ease forwards}@keyframes ig-hd-fade-in{0%{opacity:0}to{opacity:1}}.ig-hd-modal-card{background:var(--iga-bg-primary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-xl);padding:24px 20px 20px;width:100%;max-width:360px;display:flex;flex-direction:column;align-items:center;position:relative;box-shadow:0 24px 64px -12px #000000bf;color:var(--iga-text-bright);animation:iga-modal-slide .25s var(--iga-ease-spring);box-sizing:border-box}.ig-hd-modal-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-dim);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease;padding:0}.ig-hd-modal-close:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright)}.ig-hd-avatar-frame{position:relative;width:190px;height:190px;border-radius:50%;margin:8px 0 14px;display:flex;align-items:center;justify-content:center;background:var(--iga-surface);box-shadow:0 8px 32px #00000073;flex-shrink:0;border:2px solid var(--iga-border);box-sizing:border-box}.ig-hd-avatar-frame.has-bestie-ring{outline:4px solid #22c55e!important;outline-offset:3px;box-shadow:0 0 28px #22c55e73,0 8px 32px #00000073}.ig-hd-avatar-frame.has-story-ring{outline:4px solid #e1306c!important;outline-offset:3px;box-shadow:0 0 28px #e1306c73,0 8px 32px #00000073}.ig-hd-avatar-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;background:var(--iga-surface);transition:filter .25s ease,opacity .25s ease}.ig-hd-avatar-fallback{width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:700;background:var(--iga-accent-subtle);color:var(--iga-accent)}.ig-hd-res-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;letter-spacing:.3px;background:#94a3b826;color:var(--iga-text-muted);border:1px solid var(--iga-border);margin-bottom:12px}.ig-hd-res-pill.is-hd{background:#2563eb29;color:#3b82f6;border-color:#3b82f666;box-shadow:0 0 12px #3b82f633}.ig-hd-spinner{width:10px;height:10px;border:2px solid rgba(148,163,184,.3);border-top-color:var(--iga-accent);border-radius:50%;animation:ig-hd-spin .7s linear infinite;display:inline-block}@keyframes ig-hd-spin{to{transform:rotate(360deg)}}.ig-hd-user-details{display:flex;flex-direction:column;align-items:center;text-align:center;width:100%;margin-bottom:18px}.ig-hd-username-row{display:flex;align-items:center;justify-content:center;gap:5px;flex-wrap:wrap;margin-bottom:2px}.ig-hd-username{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}.ig-hd-fullname{font-size:12px;color:var(--iga-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px}.ig-hd-badges{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}.ig-hd-actions{display:flex;flex-direction:column;gap:8px;width:100%}.ig-hd-actions-row{display:flex;gap:8px;width:100%}.ig-btn-download-hd{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px 16px;border-radius:var(--iga-radius-md);background:var(--iga-accent-gradient);color:#fff;font-size:12px;font-weight:700;border:none;cursor:pointer;transition:all .18s var(--iga-ease-default);box-shadow:0 2px 10px #3b82f659}.ig-btn-download-hd:hover{transform:translateY(-1px);box-shadow:0 4px 16px #3b82f673}.ig-btn-open-tab,.ig-btn-view-profile{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:1;padding:8px 12px;border-radius:var(--iga-radius-md);background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);font-size:11px;font-weight:600;text-decoration:none!important;cursor:pointer;transition:all .15s ease}.ig-btn-open-tab:hover,.ig-btn-view-profile:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:15000000;box-sizing:border-box}.ig-backup-overlay *{box-sizing:border-box}.ig-backup-overlay.is-open{display:flex;animation:iga-fade-in .2s var(--iga-ease-default)}.ig-backup-dialog{width:min(480px,100%);border-radius:var(--iga-radius-xl);background:var(--iga-bg-primary);border:1px solid var(--iga-border);box-shadow:var(--iga-shadow-lg);padding:20px;display:flex;flex-direction:column;gap:14px;color:var(--iga-text-main);animation:iga-modal-slide .25s var(--iga-ease-spring)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-backup-close-btn{border:none;background:transparent;color:var(--iga-text-muted);border-radius:var(--iga-radius-sm);padding:4px;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease}.ig-backup-close-btn:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--iga-text-muted)}.ig-backup-dialog-actions{display:flex;gap:10px}.ig-backup-dialog .ig-backup-btn{flex:1;padding:10px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-backup-btn-export{background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.35);color:var(--iga-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:var(--iga-accent);color:#fff;border-color:var(--iga-accent);box-shadow:0 4px 12px #3b82f659}.ig-backup-btn-import{background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.35);color:var(--iga-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:var(--iga-warning);color:#fff;border-color:var(--iga-warning);box-shadow:0 4px 12px #f59e0b59}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--iga-text-muted);min-height:16px;padding:6px 10px;background:var(--iga-surface);border-radius:var(--iga-radius-sm);border:1px solid var(--iga-border)}.ig-backup-status[data-state=success]{color:var(--iga-success);border-color:#10b9814d;background:var(--iga-success-subtle)}.ig-backup-status[data-state=error]{color:var(--iga-danger);border-color:#ef44444d;background:var(--iga-danger-subtle)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}#ig-analyzer-panel #ig-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid var(--iga-border);flex-shrink:0}#ig-analyzer-panel .ig-bmc-btn{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:var(--iga-radius-full);background:#fd0;color:#000!important;font-family:var(--iga-font-sans);font-size:11px;font-weight:700;text-decoration:none!important;letter-spacing:-.2px;border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px #ffdd0040;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background .2s var(--iga-ease-default);line-height:1;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-bmc-btn:hover{background:#ffea47;transform:translateY(-1px);box-shadow:0 4px 14px #fd06;text-decoration:none!important;color:#000!important}#ig-analyzer-panel .ig-bmc-btn:active{transform:translateY(0);box-shadow:0 2px 6px #fd03}#ig-analyzer-panel .ig-bmc-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#000}#ig-analyzer-panel .ig-bmc-icon svg{display:block}#ig-analyzer-panel .ig-bmc-text{font-weight:700;color:#000}#ig-analyzer-panel .ig-footer-meta{font-size:11px;color:var(--iga-text-dim);font-weight:500;display:inline-flex;align-items:center;gap:4px;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-footer-dot{opacity:.5}.ig-quick-card{max-width:390px!important;max-height:88vh;overflow-y:auto;padding:22px 18px 18px!important;scrollbar-width:thin;scrollbar-color:var(--ig-scrollbar-thumb) transparent}@supports not (scrollbar-color: auto){.ig-quick-card::-webkit-scrollbar{width:5px}.ig-quick-card::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:4px}}.ig-qc-header{display:flex;flex-direction:column;align-items:center;width:100%}.ig-qc-rel-bar{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:12px;width:100%}.ig-qc-rel-pill{font-size:11px;font-weight:600;padding:3px 10px;border-radius:var(--iga-radius-full);display:inline-flex;align-items:center;gap:4px;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}.ig-qc-rel-pill.is-positive{background:#10b98124;color:#10b981;border-color:#10b9814d}.ig-qc-rel-pill.is-neutral{background:#3b82f624;color:#3b82f6;border-color:#3b82f64d}.ig-qc-rel-pill.is-negative{background:#ef44441f;color:#f87171;border-color:#ef444440}.ig-qc-rel-pill.is-pending{background:#f59e0b24;color:#f59e0b;border-color:#f59e0b4d}.ig-qc-stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;margin-bottom:12px}.ig-qc-stat-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 6px;text-align:center;display:flex;flex-direction:column;align-items:center}.ig-qc-stat-value{font-size:15px;font-weight:700;color:var(--iga-text-bright);line-height:1.2}.ig-qc-stat-label{font-size:10px;color:var(--iga-text-muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px}.ig-qc-bio-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-bio-text{font-size:12px;line-height:1.45;color:var(--iga-text-main);white-space:pre-wrap;word-break:break-word;max-height:75px;overflow-y:auto}.ig-qc-bio-link{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--iga-accent);margin-top:6px;text-decoration:none;word-break:break-all}.ig-qc-bio-link:hover{text-decoration:underline;color:var(--iga-accent-hover)}.ig-qc-mutuals-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-mutuals-header{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--iga-text-main);margin-bottom:6px}.ig-qc-facepile-container{display:flex;align-items:center}.ig-facepile-avatar{width:22px;height:22px;border-radius:50%;object-fit:cover;border:2px solid var(--iga-bg-primary);margin-left:-6px;box-shadow:0 1px 3px #0000004d}.ig-facepile-avatar.ig-facepile-fallback{display:inline-flex;align-items:center;justify-content:center;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:10px;font-weight:700;-webkit-user-select:none;user-select:none}.ig-facepile-avatar:first-child{margin-left:0}.ig-badge-business{background:#9333ea26!important;color:#a855f7!important;border:1px solid rgba(147,51,234,.3)!important}.ig-badge-creator{background:#ec489926!important;color:#ec4899!important;border:1px solid rgba(236,72,153,.3)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user{padding:4px 8px;font-size:11px;font-weight:500;color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user:hover,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;box-shadow:var(--iga-shadow-sm);transition:transform .15s ease,border-color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card:hover{border-color:var(--iga-border-hover);transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-label{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--iga-text-muted);margin-bottom:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value{font-size:18px;font-weight:700;color:var(--iga-text-bright);line-height:1.2;margin-bottom:4px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-negative{color:#ef4444}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub{font-size:10px;color:var(--iga-text-muted);display:inline-flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:3px;line-height:1.25;text-align:center;white-space:normal}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-negative{color:#ef4444}#ig-analyzer-panel .btn-unwhitelist,#ig-analyzer-panel .ig-btn-unwhitelist{padding:4px 8px;font-size:11px;font-weight:600;color:#3b82f6;background:#3b82f614;border:1px solid rgba(59,130,246,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-unwhitelist:hover,#ig-analyzer-panel .ig-btn-unwhitelist:hover{color:#fff;background:#3b82f6;border-color:#3b82f6;box-shadow:0 2px 6px #3b82f659}#ig-analyzer-panel .btn-clear-whitelist,#ig-analyzer-panel .ig-btn-clear-whitelist{padding:3px 8px;font-size:10.5px;font-weight:600;color:#ef4444;background:#ef444414;border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-clear-whitelist:hover,#ig-analyzer-panel .ig-btn-clear-whitelist:hover{color:#fff;background:#ef4444;border-color:#ef4444;box-shadow:0 2px 6px #ef44444d}.ig-badge-mutual{background:#22c55e1f!important;color:#22c55e!important;border:1px solid rgba(34,197,94,.25)!important}.ig-badge-fan{background:#f59e0b1f!important;color:#f59e0b!important;border:1px solid rgba(245,158,11,.25)!important}.ig-badge-date{background:#94a3b81f!important;color:#94a3b8!important;border:1px solid rgba(148,163,184,.2)!important}.ig-btn-target-audit,.btn-target-audit{display:inline-flex;align-items:center;gap:4px;padding:3.5px 8px;font-size:11px;font-weight:600;border-radius:var(--iga-radius-sm, 6px);background:#6366f11f;color:#818cf8;border:1px solid rgba(99,102,241,.25);cursor:pointer;transition:all .15s ease}.ig-btn-target-audit:hover,.btn-target-audit:hover{background:#6366f1;color:#fff;border-color:#6366f1;box-shadow:0 2px 8px #6366f159}.ig-badge-new-mutual{background:#10b98126!important;color:#10b981!important;border:1px solid rgba(16,185,129,.3)!important;box-shadow:0 0 8px #10b98126}.ig-target-search-card{background:#ffffff08;border:1px solid var(--iga-border, rgba(255, 255, 255, .08));border-radius:var(--iga-radius-lg, 12px);padding:16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px}.ig-target-search-title{font-size:13.5px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:6px}.ig-target-search-desc{font-size:11.5px;line-height:1.45;color:var(--iga-text-muted, #94a3b8)}.ig-target-search-input-group{display:flex;align-items:center;gap:8px;background:#0f172a99;border:1px solid var(--iga-border, rgba(255, 255, 255, .1));border-radius:var(--iga-radius-md, 8px);padding:3px 6px 3px 12px;transition:border-color .15s ease}.ig-target-search-input-group:focus-within{border-color:#6366f1;box-shadow:0 0 0 2px #6366f133}.ig-input-prefix{font-size:13px;font-weight:600;color:var(--iga-text-muted, #94a3b8)}.ig-target-input{flex:1;background:transparent;border:none;outline:none;color:var(--iga-text-bright, #f8fafc);font-size:12.5px;padding:6px 0}.ig-target-input::placeholder{color:#94a3b899}.ig-target-feedback{font-size:11.5px;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);margin-top:4px}.ig-target-feedback.is-error{background:#ef44441f;color:#ef4444;border:1px solid rgba(239,68,68,.25)}.ig-target-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:12px}.ig-target-card{background:#ffffff06;border:1px solid var(--iga-border, rgba(255, 255, 255, .07));border-radius:var(--iga-radius-md, 10px);padding:12px 14px;display:flex;flex-direction:column;gap:10px;transition:all .18s ease;cursor:pointer}.ig-target-card:hover{border-color:#6366f14d;background:#ffffff0a;transform:translateY(-1px)}.ig-target-card-top{display:flex;align-items:center;gap:10px}.ig-target-card-avatar{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#ffffff14;display:flex;align-items:center;justify-content:center;font-weight:700;color:#cbd5e1;flex-shrink:0}.ig-target-card-info{flex:1;min-width:0}.ig-target-card-name-row{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ig-target-card-user{font-weight:700;font-size:13px;color:var(--iga-text-bright, #f8fafc)}.ig-target-card-fullname{font-size:11px;color:var(--iga-text-muted, #94a3b8);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-btn-target-delete{background:transparent;border:none;color:var(--iga-text-muted, #94a3b8);cursor:pointer;padding:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all .15s ease}.ig-btn-target-delete:hover{color:#ef4444;background:#ef44441a}.ig-target-card-metrics{display:flex;align-items:center;justify-content:space-between;background:#0003;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);border:1px solid rgba(255,255,255,.04)}.ig-target-metric{display:flex;flex-direction:column;align-items:center;gap:2px}.ig-target-metric-label{font-size:10px;color:var(--iga-text-muted, #94a3b8);text-transform:uppercase;letter-spacing:.4px}.ig-target-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:4px}.ig-target-card-diff{font-size:10.5px;font-weight:700;padding:1px 4px;border-radius:4px}.ig-target-card-diff.is-positive{background:#22c55e26;color:#22c55e}.ig-target-card-diff.is-negative{background:#ef444426;color:#ef4444}.ig-target-card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:2px}.ig-target-card-time{font-size:10.5px;color:var(--iga-text-muted, #94a3b8)}.ig-target-card-actions{display:flex;align-items:center;gap:6px}#ig-target-subpanel{position:fixed;z-index:10000000;width:580px;min-width:440px;max-width:95vw;height:700px;min-height:420px;max-height:95vh;display:flex;flex-direction:column;resize:both;overflow:hidden;background:#0f172af0;border:1px solid rgba(255,255,255,.12);border-radius:var(--iga-radius-lg, 12px);box-shadow:0 20px 50px #000000a6,0 0 0 1px #6366f126;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);color:var(--iga-text-bright, #f8fafc);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;transition:height .2s cubic-bezier(.16,1,.3,1),box-shadow .2s ease}#ig-target-subpanel.is-minimized{height:48px!important;min-height:48px!important;resize:none!important;overflow:hidden!important}#ig-target-subpanel.is-minimized .ig-target-actions-bar,#ig-target-subpanel.is-minimized .ig-progress-container,#ig-target-subpanel.is-minimized .ig-target-tabs-wrapper,#ig-target-subpanel.is-minimized .ig-target-view,#ig-target-subpanel.is-minimized .ig-target-resize-grip{display:none!important}#ig-target-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#ffffff08;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .08));cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-target-subpanel.is-dragging #ig-target-header{cursor:grabbing}.ig-target-header-left{display:flex;align-items:center;gap:8px;min-width:0}.ig-target-header-icon{display:inline-flex;align-items:center;color:#818cf8}.ig-target-header-title{font-weight:700;font-size:13.5px;color:var(--iga-text-bright, #f8fafc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-target-header-right{display:flex;align-items:center;gap:10px;flex-shrink:0}#ig-target-status{font-size:11px;color:var(--iga-text-muted, #94a3b8);display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:12px;background:#ffffff0a}#ig-target-status.is-active{color:#60a5fa}#ig-target-status.is-active .ig-status-dot{background:#60a5fa;box-shadow:0 0 6px #60a5fa}.ig-target-header-actions{display:flex;align-items:center;gap:4px}.ig-target-actions-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:#0003;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0;gap:8px}.ig-target-meta-summary{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.ig-target-meta-user{font-weight:700;font-size:12.5px;color:var(--iga-text-bright, #f8fafc)}.ig-target-meta-name{font-size:11px;color:var(--iga-text-muted, #94a3b8)}.ig-target-meta-pill{font-size:10.5px;padding:1.5px 6px;border-radius:4px;background:#ffffff0f;color:var(--iga-text-muted, #94a3b8)}.ig-target-actions-buttons{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-target-tabs-wrapper{background:transparent;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0}.ig-target-view{flex:1;overflow-y:auto;overflow-x:hidden;container-type:inline-size;padding:14px;display:none}.ig-target-view.active{display:block}.ig-target-ready-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 20px;gap:12px}.ig-target-ready-icon{color:#818cf8;transform:scale(1.6);margin-bottom:8px}.ig-target-ready-title{font-size:16px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-ready-desc{font-size:12px;line-height:1.5;color:var(--iga-text-muted, #94a3b8);max-width:380px}.ig-target-overview-header{display:flex;align-items:center;gap:14px;padding:14px;background:#ffffff08;border-radius:var(--iga-radius-lg, 12px);border:1px solid var(--iga-border, rgba(255, 255, 255, .08))}.ig-target-overview-avatar-wrap .ig-user-avatar{width:52px;height:52px;font-size:18px}.ig-target-overview-meta{flex:1;min-width:0}.ig-target-overview-title-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ig-target-overview-username{font-size:15px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-overview-fullname{font-size:12px;color:var(--iga-text-muted, #94a3b8);margin-top:2px}.ig-target-overview-timestamps{font-size:10.5px;color:var(--iga-text-muted, #94a3b8);margin-top:4px}.ig-target-restricted-alert{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--iga-radius-md, 8px);background:#f59e0b1a;border:1px solid rgba(245,158,11,.3);color:#fbbf24;margin-top:12px;line-height:1.45;font-size:12px}.ig-target-alert-icon{color:#fbbf24;flex-shrink:0;margin-top:1px}.ig-target-resize-grip{position:absolute;bottom:2px;right:2px;width:14px;height:14px;cursor:se-resize;pointer-events:none}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme #ig-target-subpanel){background:#fffffff5;border-color:#0000001f;box-shadow:0 20px 50px #0003;color:#0f172a}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) #ig-target-header{background:#00000005;border-bottom-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-actions-bar{background:#00000008;border-bottom-color:#0000000f}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-overview-header,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-card,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card{background:#f8fafc;border-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-input-group{background:#fff;border-color:#00000026}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card-metrics{background:#f1f5f9;border-color:#0000000d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-count{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:15px;padding:0 5px;border-radius:var(--iga-radius-full);font-size:9.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;background:#94a3b829;color:var(--iga-text-muted);pointer-events:none;transition:background .2s var(--iga-ease-default),color .2s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-count{background:#0f172a14}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active .ig-tab-count{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.25)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-count.is-empty{display:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-neutral,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-neutral{color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub-split{gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sep{color:var(--iga-text-dim);font-weight:500;-webkit-user-select:none;user-select:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn{appearance:none;-webkit-appearance:none;background:transparent;border:1px solid transparent;padding:1px 5px;border-radius:5px;font-family:var(--iga-font-sans);font-size:10px;font-weight:700;line-height:1.25;color:var(--iga-text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:3px;font-variant-numeric:tabular-nums;transition:background .15s ease,border-color .15s ease,transform .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-positive{color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-negative{color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover);text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-positive:hover{background:var(--iga-success-subtle);border-color:#10b9814d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-negative:hover{background:var(--iga-danger-subtle);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn:focus-visible{outline:2px solid var(--iga-border-focus);outline-offset:1px}@media(max-width:560px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@supports (container-type: inline-size){@media(max-width:560px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}}@container (max-width: 480px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid>.ig-kpi-card:nth-child(3):last-child{grid-column:1 / -1}}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-chart-mount{margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-chart-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:12px 14px;box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-title-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill.is-positive{background:var(--iga-success-subtle);color:var(--iga-success);border-color:#10b9814d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-group{display:inline-flex;align-items:center;gap:2px;padding:2px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn{appearance:none;-webkit-appearance:none;background:transparent;border:none;padding:3px 7px;border-radius:4px;font-family:var(--iga-font-sans);font-size:10px;font-weight:600;line-height:1.2;color:var(--iga-text-muted);cursor:pointer;transition:background .15s ease,color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn:hover:not(.is-active){color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn.is-active{background:var(--iga-accent);color:#fff;box-shadow:0 1px 3px #2563eb4d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:22px;padding:4px 8px;margin-bottom:6px;border-radius:var(--iga-radius-sm);background:var(--iga-surface);border:1px solid var(--iga-border);font-size:11px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-date{font-family:var(--iga-font-mono);font-size:10.5px;font-weight:600;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-val{font-weight:700;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-unit{font-weight:500;font-size:10px;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta{display:inline-flex;align-items:center;padding:1px 6px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;background:#94a3b824;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta.is-positive{background:var(--iga-success-subtle);color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-intra{font-size:10px;color:var(--iga-text-dim);margin-left:auto}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-stage{position:relative;width:100%;height:158px;user-select:none;-webkit-user-select:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-svg{width:100%;height:100%;display:block;overflow:visible}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-grid-line{stroke:var(--iga-border);stroke-width:1;vector-effect:non-scaling-stroke}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-grid-line.is-mid{stroke-dasharray:3 3}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-axis-text{fill:var(--iga-text-dim);font-size:9.5px;font-family:var(--iga-font-mono);font-variant-numeric:tabular-nums;pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-area,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-dot{pointer-events:none;stroke:var(--iga-bg-primary);stroke-width:1.5}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-active-dot{pointer-events:none;stroke:var(--iga-text-bright);stroke-width:2;transition:opacity .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-crosshair{stroke:var(--iga-text-dim);stroke-width:1;stroke-dasharray:3 3;pointer-events:none;transition:opacity .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-hit{fill:transparent;cursor:crosshair;outline:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-hit:focus-visible{fill:#3b82f614}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tooltip{position:absolute;top:6px;transform:translate(-14%);pointer-events:none;z-index:6;background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);border-radius:var(--iga-radius-sm);padding:5px 8px;box-shadow:var(--iga-shadow-md);font-size:10.5px;line-height:1.3;white-space:nowrap;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tooltip.is-right{transform:translate(-86%)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-date{font-size:9.5px;font-family:var(--iga-font-mono);color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-val{font-size:12px;font-weight:700;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta{font-size:10px;font-weight:600;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta.is-positive{color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta.is-negative{color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-composition-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:12px 14px;margin-bottom:12px;box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-ratio-pill{font-size:10.5px;padding:2px 8px;border-radius:var(--iga-radius-full);background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-ratio-pill strong{color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-bar{display:flex;width:100%;height:9px;border-radius:var(--iga-radius-full);overflow:hidden;background:var(--iga-surface);gap:2px;margin:9px 0 8px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg{height:100%;min-width:4px;transition:width .35s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-mutuals,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-mutuals{background:#10b981}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-fans,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-fans{background:#3b82f6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-notback,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-notback{background:#f59e0b}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:10.5px;color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend-item{display:inline-flex;align-items:center;gap:5px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend-item strong{color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-box{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);padding:6px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-target-card-sparkline{display:inline-flex;align-items:center;justify-content:center;padding:2px 6px;border-radius:var(--iga-radius-sm);background:var(--iga-surface);border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-sparkline-svg{display:block;overflow:visible}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region{overflow:auto;max-inline-size:100%;max-block-size:min(340px,55vh);container-type:inline-size;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-bg-secondary);outline:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region:focus-visible{border-color:var(--iga-border-focus);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar{width:6px;height:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table{margin-top:0;border-collapse:separate;border-spacing:0;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead{position:sticky;inset-block-start:0;z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead th{position:sticky;inset-block-start:0;z-index:2;background:var(--iga-bg-secondary)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody th{position:sticky;inset-inline-start:0;z-index:1;background:var(--iga-bg-secondary);padding:8px 10px;border-bottom:1px solid var(--iga-border);font-weight:600;text-align:left;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:hover th{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:last-child th,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:last-child td{border-bottom:none}@container (width < 380px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tr,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table th,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tr{border-bottom:1px solid var(--iga-border);padding-block-end:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody th{position:sticky;inset-block-start:0;z-index:2;background:var(--iga-surface);border-bottom:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table{--label-2: "Followers";--label-3: "Following";--label-4: "Mutuals"}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(2):before{content:var(--label-2) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(3):before{content:var(--label-3) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(4):before{content:var(--label-4) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill{display:inline-flex;align-items:center;padding:1px 6px;margin-left:4px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;background:#94a3b824;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill.is-positive{background:var(--iga-success-subtle);color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-scans-pill{display:inline-flex;align-items:center;padding:0 5px;margin-left:6px;border-radius:var(--iga-radius-sm);font-size:9.5px;font-weight:700;font-variant-numeric:tabular-nums;background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-muted{color:var(--iga-text-dim);font-weight:500}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-header-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-clear-nominal{padding:3px 9px;font-size:10.5px;font-weight:600;color:var(--iga-danger);background:var(--iga-danger-subtle);border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-clear-nominal:hover{color:#fff;background:var(--iga-danger);border-color:var(--iga-danger);box-shadow:0 2px 6px #ef444447}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-text-col{display:flex;flex-direction:column;min-width:0;line-height:1.25;gap:2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-title-line{display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-fullname{font-size:11px;color:var(--iga-text-muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-flow{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-old{color:var(--iga-text-muted);font-family:var(--iga-font-mono);font-size:11px;text-decoration:line-through;text-decoration-color:#ef444473}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-arrow{display:inline-flex;align-items:center;color:var(--iga-accent);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-new{color:var(--iga-text-bright);font-weight:700;font-size:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-repeat{background:var(--iga-warning-subtle);color:var(--iga-warning);border:1px solid rgba(245,158,11,.3)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-prev-user{background:#6366f124;color:#818cf8;border:1px solid rgba(99,102,241,.3)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-badge-prev-user{background:#4f46e51a;color:#4f46e5;border-color:#4f46e540}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-following,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-public{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.25)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-churn{background:var(--iga-danger-subtle);color:var(--iga-danger);border:1px solid rgba(239,68,68,.28)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-new-mutual-solid{background:var(--iga-success)!important;color:#fff!important;font-weight:700!important;border:none!important}#ig-analyzer-panel,#ig-target-subpanel,.ig-backup-overlay .ig-backup-dialog{color-scheme:dark;background:var(--iga-bg-primary);color:var(--iga-text-main)}#ig-safety-modal .ig-modal-content,#ig-hd-modal .ig-hd-modal-card{color-scheme:dark;background:var(--iga-bg-primary);color:var(--iga-text-bright)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,.ig-backup-overlay.ig-light-theme .ig-backup-dialog{color-scheme:light;background:var(--iga-bg-primary);color:var(--iga-text-main)}#ig-safety-modal.ig-light-theme .ig-modal-content,#ig-hd-modal.ig-light-theme .ig-hd-modal-card{color-scheme:light;background:var(--iga-bg-primary);color:var(--iga-text-bright)}#ig-hd-modal.ig-light-theme .ig-hd-modal-card{box-shadow:var(--iga-shadow-lg)}#ig-hd-modal.ig-light-theme .ig-hd-avatar-frame{box-shadow:0 8px 24px #0f172a24}#ig-analyzer-panel.ig-light-theme .ig-target-card-avatar{background:#e2e8f0;color:#334155}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-btn-spy-story{background:#9333ea1a!important;border-color:#9333ea47!important;color:#7e22ce!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-btn-spy-story:hover:not(:disabled){background:#7e22ce!important;border-color:#7e22ce!important;color:#fff!important}.ig-spy-btn-busy{opacity:.65;cursor:wait!important}#ig-safety-modal .ig-spy-hero{margin-bottom:12px;padding:12px 14px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);background:var(--iga-surface);text-align:center}#ig-safety-modal .ig-spy-hero.is-safe,#ig-safety-modal .ig-spy-hero:has(.is-safe){background:var(--iga-success-subtle);border-color:#10b98159;--ig-spy-tone: var(--iga-success)}#ig-safety-modal .ig-spy-hero.is-warn,#ig-safety-modal .ig-spy-hero:has(.is-warn){background:var(--iga-warning-subtle);border-color:#f59e0b59;--ig-spy-tone: var(--iga-warning)}#ig-safety-modal .ig-spy-hero.is-danger,#ig-safety-modal .ig-spy-hero:has(.is-danger){background:var(--iga-danger-subtle);border-color:#ef444459;--ig-spy-tone: var(--iga-danger)}#ig-safety-modal .ig-spy-badge{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:var(--ig-spy-tone, var(--iga-accent));margin-bottom:4px}#ig-safety-modal .ig-spy-badge.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-badge.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-badge.is-danger{color:var(--iga-danger)}#ig-safety-modal .ig-spy-prob{font-size:28px;font-weight:800;color:var(--iga-text-bright);line-height:1.1;font-variant-numeric:tabular-nums}#ig-safety-modal .ig-spy-prob.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-prob.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-prob.is-danger{color:var(--iga-danger)}#ig-safety-modal .ig-spy-prob-label{font-size:11px;font-weight:600;color:var(--iga-text-muted);margin-top:2px}#ig-safety-modal .ig-spy-reason-card{text-align:left;font-size:12px;line-height:1.55;color:var(--iga-text-main);background:var(--iga-bg-secondary);padding:11px 13px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);margin-bottom:10px}#ig-safety-modal .ig-spy-meta-card{text-align:left;font-size:11px;color:var(--iga-text-muted);background:var(--iga-surface);padding:9px 12px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);display:flex;flex-direction:column;gap:5px}#ig-safety-modal .ig-spy-meta-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:4px;border-bottom:1px solid var(--iga-border)}#ig-safety-modal .ig-spy-meta-row.is-last,#ig-safety-modal .ig-spy-meta-row:last-child{padding-bottom:0;border-bottom:none}#ig-safety-modal .ig-spy-meta-label{color:var(--iga-text-muted)}#ig-safety-modal .ig-spy-meta-val{font-weight:600;color:var(--iga-text-bright);display:inline-flex;align-items:center;gap:5px}#ig-safety-modal .ig-spy-meta-val.is-strong{font-weight:700;color:var(--iga-text-bright)}#ig-safety-modal .ig-spy-val-muted{color:var(--iga-text-muted);font-weight:500}#ig-safety-modal .ig-spy-val-safe,#ig-safety-modal .ig-spy-val-success{color:var(--iga-success);font-weight:600}#ig-safety-modal .ig-spy-val-warn{color:var(--iga-warning);font-weight:600}#ig-safety-modal .ig-spy-val-danger{color:var(--iga-danger);font-weight:600}#ig-safety-modal .ig-spy-val-story,#ig-safety-modal .ig-spy-val-accent{color:#e1306c;font-weight:700}#ig-safety-modal .ig-spy-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);flex-shrink:0}#ig-safety-modal .ig-spy-dot.is-current{background:var(--iga-accent);box-shadow:0 0 6px #3b82f673}#ig-safety-modal .ig-spy-dot.is-story{background:#e1306c;box-shadow:0 0 6px #e1306c80}#ig-safety-modal .ig-spy-dot.is-empty{background:transparent;border:1.5px solid var(--iga-text-dim)}#ig-safety-modal .ig-spy-timeline{margin-top:10px;text-align:left;background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:9px 11px}#ig-safety-modal .ig-spy-timeline-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--iga-text-muted);margin-bottom:6px}#ig-safety-modal .ig-spy-timeline-list{max-height:110px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:4px}#ig-safety-modal .ig-spy-timeline-row{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:10.5px;padding:4px 7px;border-radius:4px;background:var(--iga-surface)}#ig-safety-modal .ig-spy-timeline-row.is-current{border:1px solid var(--iga-border-focus)}#ig-safety-modal .ig-spy-timeline-when{color:var(--iga-text-muted);font-family:var(--iga-font-mono);font-size:10px;display:inline-flex;align-items:center;gap:5px;flex-shrink:0}#ig-safety-modal .ig-spy-timeline-summary{font-weight:600;color:var(--iga-text-main);text-align:right}#ig-safety-modal .ig-spy-timeline-summary.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-timeline-summary.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-timeline-summary.is-danger{color:var(--iga-danger)}';
+  const mainCss = '#ig-analyzer-panel,#ig-target-subpanel,#ig-safety-modal,#ig-hd-modal,.ig-backup-overlay{--iga-bg-primary: rgba(15, 23, 42, .92);--iga-bg-secondary: rgba(30, 41, 59, .7);--iga-surface: rgba(30, 41, 59, .55);--iga-surface-hover: rgba(51, 65, 85, .6);--iga-surface-active: rgba(51, 65, 85, .85);--iga-border: rgba(255, 255, 255, .08);--iga-border-hover: rgba(255, 255, 255, .16);--iga-border-focus: rgba(59, 130, 246, .5);--iga-text-bright: #f8fafc;--iga-text-main: #cbd5e1;--iga-text-muted: #94a3b8;--iga-text-dim: #64748b;--iga-accent: #3b82f6;--iga-accent-hover: #2563eb;--iga-accent-active: #1d4ed8;--iga-accent-subtle: rgba(59, 130, 246, .14);--iga-accent-glow: 0 0 16px rgba(59, 130, 246, .35);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .14);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #ef4444;--iga-danger-hover: #dc2626;--iga-danger-subtle: rgba(239, 68, 68, .14);--iga-warning: #f59e0b;--iga-warning-subtle: rgba(245, 158, 11, .14);--iga-shadow-sm: 0 1px 3px rgba(0, 0, 0, .35);--iga-shadow-md: 0 6px 16px -2px rgba(0, 0, 0, .4);--iga-shadow-lg: 0 24px 64px -12px rgba(0, 0, 0, .65), 0 0 0 1px rgba(255, 255, 255, .08);--iga-radius-sm: 6px;--iga-radius-md: 10px;--iga-radius-lg: 14px;--iga-radius-xl: 18px;--iga-radius-full: 9999px;--iga-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;--iga-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Monaco, Consolas, monospace;--iga-ease-spring: cubic-bezier(.16, 1, .3, 1);--iga-ease-default: cubic-bezier(.4, 0, .2, 1);--ig-panel-bg: var(--iga-bg-primary);--ig-panel-border: var(--iga-border);--ig-text-main: var(--iga-text-main);--ig-text-muted: var(--iga-text-muted);--ig-text-bright: var(--iga-text-bright);--ig-bg-input: var(--iga-surface);--ig-bg-hover: var(--iga-surface-hover);--ig-bg-active: var(--iga-surface-active);--ig-scrollbar-thumb: rgba(255, 255, 255, .15);--ig-scrollbar-thumb-hover: rgba(255, 255, 255, .25);--ig-shadow: var(--iga-shadow-lg);--ig-shadow-sm: var(--iga-shadow-sm);--ig-accent: var(--iga-accent);--ig-accent-hover: var(--iga-accent-hover);--ig-accent-soft: var(--iga-accent-subtle);--ig-success: var(--iga-success);--ig-success-hover: var(--iga-success-hover);--ig-danger: var(--iga-danger);--ig-danger-hover: var(--iga-danger-hover);--ig-warning: var(--iga-warning);--ig-btn-bg: var(--iga-surface);--ig-btn-border: var(--iga-border);--ig-btn-text: var(--iga-text-bright);--ig-btn-disabled-bg: rgba(255, 255, 255, .03);--ig-btn-disabled-border: rgba(255, 255, 255, .05);--ig-btn-disabled-text: rgba(255, 255, 255, .25);--ig-radius-sm: var(--iga-radius-sm);--ig-radius-md: var(--iga-radius-md);--ig-radius-lg: var(--iga-radius-lg);--ig-radius-full: var(--iga-radius-full)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,#ig-safety-modal.ig-light-theme,#ig-hd-modal.ig-light-theme,.ig-backup-overlay.ig-light-theme{--iga-bg-primary: rgba(255, 255, 255, .96);--iga-bg-secondary: #f8fafc;--iga-surface: #f1f5f9;--iga-surface-hover: #e2e8f0;--iga-surface-active: #cbd5e1;--iga-border: #e2e8f0;--iga-border-hover: #cbd5e1;--iga-border-focus: rgba(37, 99, 235, .4);--iga-text-bright: #0f172a;--iga-text-main: #334155;--iga-text-muted: #64748b;--iga-text-dim: #94a3b8;--iga-accent: #2563eb;--iga-accent-hover: #1d4ed8;--iga-accent-active: #1e40af;--iga-accent-subtle: rgba(37, 99, 235, .08);--iga-accent-glow: 0 0 16px rgba(37, 99, 235, .2);--iga-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);--iga-success: #10b981;--iga-success-hover: #059669;--iga-success-subtle: rgba(16, 185, 129, .1);--iga-success-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);--iga-danger: #dc2626;--iga-danger-hover: #b91c1c;--iga-danger-subtle: rgba(220, 38, 38, .08);--iga-warning: #d97706;--iga-warning-subtle: rgba(217, 119, 6, .08);--iga-shadow-sm: 0 1px 3px rgba(15, 23, 42, .08);--iga-shadow-md: 0 6px 16px -2px rgba(15, 23, 42, .1);--iga-shadow-lg: 0 24px 64px -12px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .06);--ig-scrollbar-thumb: rgba(15, 23, 42, .15);--ig-scrollbar-thumb-hover: rgba(15, 23, 42, .25);--ig-btn-disabled-bg: rgba(15, 23, 42, .03);--ig-btn-disabled-border: rgba(15, 23, 42, .06);--ig-btn-disabled-text: rgba(15, 23, 42, .3)}#ig-analyzer-panel{position:fixed;top:80px;right:20px;width:717px;min-width:440px;max-width:calc(100vw - 40px);height:560px;min-height:260px;max-height:calc(100vh - 40px);background:var(--iga-bg-primary);border:1px solid var(--iga-border);color:var(--iga-text-main);box-shadow:var(--iga-shadow-lg);-webkit-backdrop-filter:blur(28px) saturate(190%);backdrop-filter:blur(28px) saturate(190%);font-family:var(--iga-font-sans);font-size:13px;line-height:1.5;padding:16px;z-index:999999;border-radius:var(--iga-radius-xl);display:flex;flex-direction:column;resize:both;overflow:hidden;transform-origin:center center;transition:background .3s var(--iga-ease-default),border-color .3s var(--iga-ease-default),box-shadow .28s cubic-bezier(.34,1.56,.64,1),transform .28s cubic-bezier(.34,1.56,.64,1),height .25s var(--iga-ease-spring);box-sizing:border-box}#ig-analyzer-panel.is-dragging{transform:scale(.985);box-shadow:0 35px 80px -15px #000c,0 0 0 1px #ffffff1f;-webkit-backdrop-filter:blur(36px) saturate(210%);backdrop-filter:blur(36px) saturate(210%);transition:transform .18s cubic-bezier(.16,1,.3,1),box-shadow .18s cubic-bezier(.16,1,.3,1);cursor:grabbing!important}#ig-analyzer-panel.ig-light-theme.is-dragging{box-shadow:0 35px 80px -15px #0f172a40,0 0 0 1px #0f172a14}#ig-analyzer-panel *{box-sizing:border-box}#ig-analyzer-panel.is-minimized{height:64px!important;min-height:64px!important;resize:none!important;padding-bottom:0;overflow:hidden}#ig-analyzer-panel.is-minimized>*:not(#ig-header){display:none!important}#ig-analyzer-panel.is-minimized #ig-header{margin-bottom:0;padding-bottom:0;border-bottom:none}#ig-analyzer-panel #ig-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--iga-border);cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-analyzer-panel #ig-header:active{cursor:grabbing}#ig-analyzer-panel .ig-header-left{display:flex;align-items:center;gap:10px}#ig-analyzer-panel .ig-logo{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--iga-accent-subtle);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);color:var(--iga-accent);box-shadow:var(--iga-shadow-sm);transition:transform .2s var(--iga-ease-spring)}#ig-analyzer-panel .ig-logo:hover{transform:scale(1.06)}#ig-analyzer-panel .ig-title{font-size:14px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px;line-height:1}#ig-analyzer-panel .ig-header-right{display:flex;align-items:center;gap:8px}#ig-analyzer-panel #ig-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;background:var(--iga-surface);padding:4px 10px;border-radius:var(--iga-radius-full);color:var(--iga-text-muted);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default)}#ig-analyzer-panel .ig-status-dot{width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);display:inline-block;flex-shrink:0;position:relative}#ig-analyzer-panel #ig-status.is-active .ig-status-dot,#ig-analyzer-panel #ig-status:not(:empty) .ig-status-dot{background:var(--iga-success);box-shadow:0 0 8px var(--iga-success);animation:iga-pulse 2s cubic-bezier(.4,0,.6,1) infinite}@keyframes iga-pulse{0%,to{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(1.15)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-actions{display:flex;align-items:center;gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:var(--iga-radius-sm);background:transparent;border:1px solid transparent;color:var(--iga-text-muted);cursor:pointer;transition:all .15s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn:active{transform:scale(.94)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-header-btn-close:hover{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-actions-bar{display:flex;gap:8px;margin-bottom:12px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-bright);border:1px solid var(--iga-border);transition:all .2s var(--iga-ease-default);flex:1;white-space:nowrap;line-height:1;position:relative;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-sm{padding:6px 12px;font-size:11px;flex:initial}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-icon svg{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--iga-shadow-md);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:active:not(:disabled){transform:translateY(0);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn:disabled{opacity:.45;cursor:not-allowed;background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important;transform:none!important;box-shadow:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary){background:linear-gradient(90deg,#1d4ed8,#3b82f6 28%,#60a5fa,#3b82f6 72%,#1d4ed8);background-size:200% 100%;background-position:0% 50%;border-color:#ffffff2e;color:#fff;box-shadow:0 4px 12px #2563eb4d;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background-position .3s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-run,#ig-target-run,.ig-btn-primary):hover:not(:disabled){animation:iga-gradient-move 2s linear infinite;box-shadow:0 6px 20px #2563eb73;transform:translateY(-1px)}@keyframes iga-gradient-move{0%{background-position:200% 50%}to{background-position:0% 50%}}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled){background:var(--iga-success-gradient)!important;border-color:#ffffff26!important;color:#fff!important;box-shadow:0 4px 12px #10b98140}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):not(:disabled):hover{background:linear-gradient(135deg,#059669,#047857)!important;box-shadow:0 6px 18px #10b98166}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-export-csv,#ig-target-export-csv,.ig-btn-success):disabled{background:var(--ig-btn-disabled-bg)!important;border-color:var(--ig-btn-disabled-border)!important;color:var(--ig-btn-disabled-text)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger{background:transparent;border-color:#ef444459;color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) #ig-reset:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn.ig-btn-danger:hover:not(:disabled){background:var(--iga-danger-subtle);border-color:var(--iga-danger);color:var(--iga-danger-hover);box-shadow:0 4px 12px #ef444433}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-container,#ig-target-progress-container,.ig-progress-container){width:100%;background:var(--iga-surface);border-radius:var(--iga-radius-full);height:5px;margin-bottom:12px;overflow:hidden;display:none;border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar){width:0%;background:linear-gradient(90deg,var(--iga-accent),#a855f7);height:100%;border-radius:var(--iga-radius-full);transition:width .35s var(--iga-ease-default);position:relative}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar):after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);animation:iga-shimmer 1.5s infinite}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-progress-bar,#ig-target-progress-bar,.ig-progress-bar).is-indeterminate{width:35%!important;animation:iga-indeterminate 1.5s cubic-bezier(.4,0,.2,1) infinite}@keyframes iga-shimmer{0%{transform:translate(-100%)}to{transform:translate(100%)}}@keyframes iga-indeterminate{0%{transform:translate(-100%)}50%{transform:translate(180%)}to{transform:translate(350%)}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-wrapper{position:relative;margin-bottom:8px;flex-shrink:0;display:flex;align-items:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container{position:relative;display:flex;flex-wrap:nowrap;gap:4px;padding:4px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;scrollbar-width:none;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tabs-container::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-indicator{position:absolute;top:0;left:0;height:0;width:0;opacity:0;border-radius:var(--iga-radius-md);background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm);pointer-events:none;z-index:1;transition:transform .3s cubic-bezier(.16,1,.3,1),width .3s cubic-bezier(.16,1,.3,1),height .3s cubic-bezier(.16,1,.3,1),opacity .2s ease;transform:translateZ(0)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-indicator{background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn{position:relative!important;z-index:2!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;padding:6px 12px!important;flex:0 0 auto!important;background:transparent!important;border:1px solid transparent!important;color:var(--iga-text-muted)!important;font-size:11px!important;font-weight:600!important;border-radius:var(--iga-radius-md)!important;cursor:pointer!important;transition:color .2s var(--iga-ease-default),background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default)!important;white-space:nowrap!important;line-height:1!important;-webkit-user-select:none!important;user-select:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important;background:var(--iga-surface-hover)!important;border-color:var(--iga-border)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active{background:transparent!important;border-color:transparent!important;box-shadow:none!important;color:var(--iga-accent)!important;font-weight:600!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-btn.active{color:var(--iga-accent)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:14px;height:14px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-label{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn{color:var(--iga-text-muted)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-backup-tab-btn:hover:not(.active){color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view){display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(.ig-view,.ig-target-view).active{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;container-type:inline-size;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:14px;font-size:12px;color:var(--iga-text-main);box-shadow:inset 0 1px 3px #0000001a}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar{width:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-track{background:transparent}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-container::-webkit-scrollbar-thumb:hover{background:var(--ig-scrollbar-thumb-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) :is(#ig-log,#ig-target-view-logs){font-family:var(--iga-font-mono);font-size:11px;line-height:1.6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry{display:flex;align-items:baseline;gap:8px;padding:4px 6px;color:var(--iga-text-main);border-bottom:1px solid rgba(255,255,255,.03);border-radius:var(--iga-radius-sm);transition:background .15s ease;word-break:break-word}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-log-entry{border-bottom:1px solid rgba(0,0,0,.03)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:last-child{border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-entry:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-log-time{color:var(--iga-accent);font-weight:600;font-size:10px;background:var(--iga-accent-subtle);padding:1px 6px;border-radius:var(--iga-radius-sm);flex-shrink:0;font-variant-numeric:tabular-nums;letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-section-title{display:flex;align-items:center;font-weight:700;font-size:13px;margin-bottom:12px;color:var(--iga-text-bright);letter-spacing:-.2px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;background:var(--iga-accent-subtle);color:var(--iga-accent);padding:0 8px;border-radius:var(--iga-radius-full);font-size:11px;font-weight:700;margin-left:8px;border:1px solid rgba(59,130,246,.2)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-toolbar{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-box{position:relative;display:flex;align-items:center;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-icon{position:absolute;left:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--iga-text-dim);pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input{width:100%;height:32px;padding:0 30px 0 32px;font-size:11px;font-family:var(--iga-font-sans);color:var(--iga-text-bright);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);outline:none;box-sizing:border-box;transition:border-color .18s var(--iga-ease-default),box-shadow .18s var(--iga-ease-default),background .18s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input:focus{border-color:var(--iga-border-focus);background:var(--iga-surface-hover);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-input::placeholder{color:var(--iga-text-dim);font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear{position:absolute;right:6px;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--iga-text-dim);cursor:pointer;border-radius:50%;padding:0;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear svg,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-search-clear line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:3px 2px;scrollbar-width:none;-ms-overflow-style:none;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chips::-webkit-scrollbar{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:600;font-family:var(--iga-font-sans);color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);cursor:pointer;transition:all .15s var(--iga-ease-default);-webkit-user-select:none;user-select:none;white-space:nowrap;line-height:1.2;box-sizing:border-box}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active{background:#3b82f62e;color:var(--iga-accent);border-color:var(--iga-accent);font-weight:700;box-shadow:0 1px 4px #3b82f640}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-count{font-size:9px;padding:0 4px;border-radius:6px;background:#ffffff14;color:var(--iga-text-dim);margin-left:2px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-chip-count{background:#0000000f}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-filter-chip.is-active .ig-chip-count{background:var(--iga-accent);color:#fff}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chip-icon{display:inline-flex;align-items:center;justify-content:center}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-list{display:flex;flex-direction:column;flex:1;min-height:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--iga-text-muted);font-size:12px;padding:40px 16px;text-align:center;margin:auto 0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon{display:flex;align-items:center;justify-content:center;width:44px;height:44px;color:var(--iga-text-dim);background:var(--iga-surface-hover);border-radius:var(--iga-radius-full);padding:10px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-empty-icon svg{width:100%;height:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin-bottom:6px;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-surface);min-height:48px;flex-shrink:0;box-sizing:border-box;content-visibility:auto;contain-intrinsic-size:auto 300px auto 52px;transition:background .2s var(--iga-ease-default),border-color .2s var(--iga-ease-default),transform .28s cubic-bezier(.4,0,.2,1),opacity .25s ease,max-height .28s ease,min-height .28s ease,margin .28s ease,padding .28s ease}@supports not (content-visibility: auto){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row{contain:layout style paint}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-row.ig-row-slide-out{content-visibility:visible;contain-intrinsic-size:none;transform:translate(100%);opacity:0;max-height:0;min-height:0;padding-top:0;padding-bottom:0;margin-bottom:0;border-color:transparent;pointer-events:none;overflow:hidden}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-info{display:flex;align-items:center;gap:10px;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:12px;font-weight:700;flex-shrink:0;border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram{position:relative;overflow:hidden;user-select:none;-webkit-user-select:none;background:linear-gradient(135deg,#2a2a2a,#1a1a1a);color:#e4e4e7}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram .ig-monogram-letter{display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:.5px;color:#f4f4f5;transition:opacity .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-img-loaded{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;opacity:0;transition:opacity .22s cubic-bezier(.4,0,.2,1)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-avatar-monogram.is-loaded .ig-avatar-img-loaded{opacity:1}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-username{color:var(--iga-text-bright);font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-badges{display:inline-flex;align-items:center;gap:4px;margin-left:6px;flex-wrap:wrap;vertical-align:middle}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;border-radius:var(--iga-radius-sm);font-size:10px;font-weight:600;line-height:1.3;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-private{background:#94a3b81f;color:var(--iga-text-muted);border:1px solid rgba(148,163,184,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-bestie{background:#22c55e26;color:#22c55e;border:1px solid rgba(34,197,94,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-pending{background:#f59e0b26;color:#f59e0b;border:1px solid rgba(245,158,11,.35)}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-bestie-ring{outline:2px solid #22c55e!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .has-story-ring{outline:2px solid #e1306c!important;outline-offset:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600;font-size:11px;padding:4px 8px;border-radius:var(--iga-radius-sm);background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.2);transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-link:hover{background:var(--iga-accent);color:#fff;text-decoration:none}#ig-analyzer-panel .btn-whitelist,#ig-analyzer-panel .ig-btn-whitelist{background:var(--iga-surface)!important;border:1px solid var(--iga-border)!important;color:var(--iga-text-muted)!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .15s ease!important}#ig-analyzer-panel .btn-whitelist:hover,#ig-analyzer-panel .ig-btn-whitelist:hover{background:var(--iga-surface-active)!important;border-color:var(--iga-border-hover)!important;color:var(--iga-text-bright)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story{display:inline-flex!important;align-items:center!important;gap:4px!important;background:#a855f71f!important;border:1px solid rgba(168,85,247,.3)!important;color:#c084fc!important;padding:4px 8px!important;font-size:10px!important;font-weight:600!important;border-radius:var(--iga-radius-sm)!important;cursor:pointer;transition:all .2s var(--iga-ease-default)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-spy-story:hover:not(:disabled){background:#a855f740!important;border-color:#c084fc!important;color:#fff!important;transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table{width:100%;text-align:left;border-collapse:separate;border-spacing:0;margin-top:4px;font-size:11px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table thead th{color:var(--iga-text-muted);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.6px;padding:8px 10px;border-bottom:1px solid var(--iga-border);position:sticky;top:0;background:var(--iga-surface);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table td{padding:8px 10px;border-bottom:1px solid var(--iga-border);color:var(--iga-text-main)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr{transition:background .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table tbody tr:hover{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-user{font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-date{color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link{display:inline-flex;align-items:center;gap:4px;color:var(--iga-accent);text-decoration:none;font-weight:600}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-link:hover{text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-value{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:600;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-pagination{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 0;margin-top:8px;border-top:1px solid var(--iga-border);font-size:11px;color:var(--iga-text-muted);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn{display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:var(--iga-radius-sm);font-size:11px;font-weight:600;cursor:pointer;background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);transition:all .2s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:hover:not(:disabled){background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-accent)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-btn:disabled{opacity:.35;cursor:not-allowed}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-page-info{font-weight:600;letter-spacing:.02em}.ig-modal-overlay{position:fixed;inset:0;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:2147483647;display:none;justify-content:center;align-items:center;animation:iga-fade-in .2s var(--iga-ease-default);padding:20px;box-sizing:border-box}.ig-modal-overlay *{box-sizing:border-box}@keyframes iga-fade-in{0%{opacity:0}to{opacity:1}}.ig-modal-content{background:var(--iga-bg-primary);border:1px solid var(--iga-border);padding:28px 24px;border-radius:var(--iga-radius-xl);width:440px;max-width:92vw;max-height:85vh;text-align:center;color:var(--iga-text-bright);box-shadow:var(--iga-shadow-lg);display:flex;flex-direction:column;align-items:center;animation:iga-modal-slide .25s var(--iga-ease-spring)}@keyframes iga-modal-slide{0%{opacity:0;transform:scale(.95) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}.ig-modal-icon{width:52px;height:52px;color:var(--iga-warning);margin-bottom:16px;padding:12px;background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.25);border-radius:50%}.ig-modal-icon svg{width:100%;height:100%}.ig-modal-title{font-size:17px;font-weight:700;margin-bottom:8px;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-modal-text{font-size:13px;line-height:1.6;color:var(--iga-text-muted);margin-bottom:24px;width:100%;max-height:58vh;overflow-y:auto;padding-right:2px}.ig-modal-actions{display:flex;gap:10px;width:100%}.ig-btn-cancel-modal,.ig-btn-confirm-modal{flex:1;padding:10px 16px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-btn-cancel-modal{background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted)}.ig-btn-cancel-modal:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-btn-confirm-modal{background:var(--iga-accent-gradient);border:1px solid rgba(255,255,255,.15);color:#fff;box-shadow:0 4px 12px #2563eb59}.ig-btn-confirm-modal:hover{box-shadow:0 6px 18px #2563eb80;transform:translateY(-1px)}#ig-safety-modal .ig-modal-content.is-engine-modal{width:500px;padding:22px}#ig-safety-modal .ig-modal-content.is-engine-modal .ig-modal-icon{width:44px;height:44px;padding:10px;margin-bottom:10px}#ig-safety-modal .ig-modal-content.is-engine-modal .ig-modal-text{max-height:64vh;text-align:left;margin-bottom:18px}.ig-engine-intro{text-align:center;line-height:1.5}.ig-engine-selector{display:flex;flex-direction:column;gap:8px;margin-top:12px}.ig-engine-selector-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--iga-text-dim);margin-bottom:2px}.ig-engine-card{border:1px solid var(--iga-border);background:var(--iga-surface);border-radius:var(--iga-radius-md);padding:10px 12px;cursor:pointer;transition:border-color .16s var(--iga-ease-default),background .16s var(--iga-ease-default),box-shadow .16s var(--iga-ease-default);-webkit-user-select:none;user-select:none}.ig-engine-card:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}.ig-engine-card:focus-visible{outline:2px solid var(--iga-accent);outline-offset:2px}.ig-engine-card.is-selected{border-color:var(--iga-accent);background:var(--iga-accent-subtle);box-shadow:0 0 0 1px #3b82f640}.ig-engine-card-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ig-engine-radio{position:relative;width:14px;height:14px;border-radius:50%;border:2px solid var(--iga-text-dim);flex-shrink:0;transition:border-color .16s var(--iga-ease-default)}.ig-engine-card.is-selected .ig-engine-radio{border-color:var(--iga-accent)}.ig-engine-card.is-selected .ig-engine-radio:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--iga-accent)}.ig-engine-name{font-size:12.5px;font-weight:700;color:var(--iga-text-bright)}.ig-engine-badge{margin-left:auto;font-size:10px;font-weight:700;padding:2px 7px;border-radius:var(--iga-radius-full);letter-spacing:.01em}.ig-engine-badge.is-recommended{background:var(--iga-success-subtle);color:var(--iga-success);border:1px solid rgba(16,185,129,.3)}.ig-engine-badge.is-accent{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.3)}.ig-engine-badge.is-neutral{background:#94a3b824;color:var(--iga-text-main);border:1px solid var(--iga-border)}.ig-engine-desc{font-size:11.5px;line-height:1.45;color:var(--iga-text-muted);margin-top:5px;padding-left:22px}.ig-engine-desc b{color:var(--iga-text-bright);font-weight:600}.ig-engine-desc code{font-family:var(--iga-font-mono);font-size:10.5px;padding:1px 4px;border-radius:4px;background:#ffffff12;color:var(--iga-text-bright)}#ig-safety-modal.ig-light-theme .ig-engine-desc code{background:#0f172a12}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger{position:relative;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;transition:transform .18s var(--iga-ease-default);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:hover{transform:scale(1.08)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-avatar-trigger:active{transform:scale(.96)}.ig-hd-modal-overlay{display:none;position:fixed;inset:0;background:#000000d1;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:20000000;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:ig-hd-fade-in .2s ease forwards}@keyframes ig-hd-fade-in{0%{opacity:0}to{opacity:1}}.ig-hd-modal-card{background:var(--iga-bg-primary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-xl);padding:24px 20px 20px;width:100%;max-width:360px;display:flex;flex-direction:column;align-items:center;position:relative;box-shadow:0 24px 64px -12px #000000bf;color:var(--iga-text-bright);animation:iga-modal-slide .25s var(--iga-ease-spring);box-sizing:border-box}.ig-hd-modal-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-dim);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease;padding:0}.ig-hd-modal-close:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright)}.ig-hd-avatar-frame{position:relative;width:190px;height:190px;border-radius:50%;margin:8px 0 14px;display:flex;align-items:center;justify-content:center;background:var(--iga-surface);box-shadow:0 8px 32px #00000073;flex-shrink:0;border:2px solid var(--iga-border);box-sizing:border-box}.ig-hd-avatar-frame.has-bestie-ring{outline:4px solid #22c55e!important;outline-offset:3px;box-shadow:0 0 28px #22c55e73,0 8px 32px #00000073}.ig-hd-avatar-frame.has-story-ring{outline:4px solid #e1306c!important;outline-offset:3px;box-shadow:0 0 28px #e1306c73,0 8px 32px #00000073}.ig-hd-avatar-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;background:var(--iga-surface);transition:filter .25s ease,opacity .25s ease}.ig-hd-avatar-fallback{width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:700;background:var(--iga-accent-subtle);color:var(--iga-accent)}.ig-hd-res-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;letter-spacing:.3px;background:#94a3b826;color:var(--iga-text-muted);border:1px solid var(--iga-border);margin-bottom:12px}.ig-hd-res-pill.is-hd{background:#2563eb29;color:#3b82f6;border-color:#3b82f666;box-shadow:0 0 12px #3b82f633}.ig-hd-spinner{width:10px;height:10px;border:2px solid rgba(148,163,184,.3);border-top-color:var(--iga-accent);border-radius:50%;animation:ig-hd-spin .7s linear infinite;display:inline-block}@keyframes ig-hd-spin{to{transform:rotate(360deg)}}.ig-hd-user-details{display:flex;flex-direction:column;align-items:center;text-align:center;width:100%;margin-bottom:18px}.ig-hd-username-row{display:flex;align-items:center;justify-content:center;gap:5px;flex-wrap:wrap;margin-bottom:2px}.ig-hd-username{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}.ig-hd-fullname{font-size:12px;color:var(--iga-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px}.ig-hd-badges{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}.ig-hd-actions{display:flex;flex-direction:column;gap:8px;width:100%}.ig-hd-actions-row{display:flex;gap:8px;width:100%}.ig-btn-download-hd{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px 16px;border-radius:var(--iga-radius-md);background:var(--iga-accent-gradient);color:#fff;font-size:12px;font-weight:700;border:none;cursor:pointer;transition:all .18s var(--iga-ease-default);box-shadow:0 2px 10px #3b82f659}.ig-btn-download-hd:hover{transform:translateY(-1px);box-shadow:0 4px 16px #3b82f673}.ig-btn-open-tab,.ig-btn-view-profile{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:1;padding:8px 12px;border-radius:var(--iga-radius-md);background:var(--iga-surface);color:var(--iga-text-main);border:1px solid var(--iga-border);font-size:11px;font-weight:600;text-decoration:none!important;cursor:pointer;transition:all .15s ease}.ig-btn-open-tab:hover,.ig-btn-view-profile:hover{background:var(--iga-surface-hover);color:var(--iga-text-bright);border-color:var(--iga-border-hover)}.ig-backup-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:#000000a6;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);z-index:15000000;box-sizing:border-box}.ig-backup-overlay *{box-sizing:border-box}.ig-backup-overlay.is-open{display:flex;animation:iga-fade-in .2s var(--iga-ease-default)}.ig-backup-dialog{width:min(480px,100%);border-radius:var(--iga-radius-xl);background:var(--iga-bg-primary);border:1px solid var(--iga-border);box-shadow:var(--iga-shadow-lg);padding:20px;display:flex;flex-direction:column;gap:14px;color:var(--iga-text-main);animation:iga-modal-slide .25s var(--iga-ease-spring)}.ig-backup-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ig-backup-dialog-title{font-size:16px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.3px}.ig-backup-close-btn{border:none;background:transparent;color:var(--iga-text-muted);border-radius:var(--iga-radius-sm);padding:4px;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s ease}.ig-backup-close-btn:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover)}.ig-backup-close-btn svg{width:18px;height:18px;display:block}.ig-backup-dialog-description{margin:0;font-size:13px;line-height:1.5;color:var(--iga-text-muted)}.ig-backup-dialog-actions{display:flex;gap:10px}.ig-backup-dialog .ig-backup-btn{flex:1;padding:10px 14px;border-radius:var(--iga-radius-md);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s var(--iga-ease-default)}.ig-backup-btn-export{background:var(--iga-accent-subtle);border:1px solid rgba(59,130,246,.35);color:var(--iga-text-bright)}.ig-backup-btn-export:hover:not(:disabled){background:var(--iga-accent);color:#fff;border-color:var(--iga-accent);box-shadow:0 4px 12px #3b82f659}.ig-backup-btn-import{background:var(--iga-warning-subtle);border:1px solid rgba(245,158,11,.35);color:var(--iga-text-bright)}.ig-backup-btn-import:hover:not(:disabled){background:var(--iga-warning);color:#fff;border-color:var(--iga-warning);box-shadow:0 4px 12px #f59e0b59}.ig-backup-status{font-size:11px;line-height:1.4;color:var(--iga-text-muted);min-height:16px;padding:6px 10px;background:var(--iga-surface);border-radius:var(--iga-radius-sm);border:1px solid var(--iga-border)}.ig-backup-status[data-state=success]{color:var(--iga-success);border-color:#10b9814d;background:var(--iga-success-subtle)}.ig-backup-status[data-state=error]{color:var(--iga-danger);border-color:#ef44444d;background:var(--iga-danger-subtle)}.ig-backup-file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}#ig-analyzer-panel #ig-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid var(--iga-border);flex-shrink:0}#ig-analyzer-panel .ig-bmc-btn{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:var(--iga-radius-full);background:#fd0;color:#000!important;font-family:var(--iga-font-sans);font-size:11px;font-weight:700;text-decoration:none!important;letter-spacing:-.2px;border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px #ffdd0040;transition:transform .2s var(--iga-ease-default),box-shadow .2s var(--iga-ease-default),background .2s var(--iga-ease-default);line-height:1;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-bmc-btn:hover{background:#ffea47;transform:translateY(-1px);box-shadow:0 4px 14px #fd06;text-decoration:none!important;color:#000!important}#ig-analyzer-panel .ig-bmc-btn:active{transform:translateY(0);box-shadow:0 2px 6px #fd03}#ig-analyzer-panel .ig-bmc-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#000}#ig-analyzer-panel .ig-bmc-icon svg{display:block}#ig-analyzer-panel .ig-bmc-text{font-weight:700;color:#000}#ig-analyzer-panel .ig-footer-meta{font-size:11px;color:var(--iga-text-dim);font-weight:500;display:inline-flex;align-items:center;gap:4px;-webkit-user-select:none;user-select:none}#ig-analyzer-panel .ig-footer-dot{opacity:.5}.ig-quick-card{max-width:390px!important;max-height:88vh;overflow-y:auto;padding:22px 18px 18px!important;scrollbar-width:thin;scrollbar-color:var(--ig-scrollbar-thumb) transparent}@supports not (scrollbar-color: auto){.ig-quick-card::-webkit-scrollbar{width:5px}.ig-quick-card::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:4px}}.ig-qc-header{display:flex;flex-direction:column;align-items:center;width:100%}.ig-qc-rel-bar{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:12px;width:100%}.ig-qc-rel-pill{font-size:11px;font-weight:600;padding:3px 10px;border-radius:var(--iga-radius-full);display:inline-flex;align-items:center;gap:4px;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}.ig-qc-rel-pill.is-positive{background:#10b98124;color:#10b981;border-color:#10b9814d}.ig-qc-rel-pill.is-neutral{background:#3b82f624;color:#3b82f6;border-color:#3b82f64d}.ig-qc-rel-pill.is-negative{background:#ef44441f;color:#f87171;border-color:#ef444440}.ig-qc-rel-pill.is-pending{background:#f59e0b24;color:#f59e0b;border-color:#f59e0b4d}.ig-qc-stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;margin-bottom:12px}.ig-qc-stat-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 6px;text-align:center;display:flex;flex-direction:column;align-items:center}.ig-qc-stat-value{font-size:15px;font-weight:700;color:var(--iga-text-bright);line-height:1.2}.ig-qc-stat-label{font-size:10px;color:var(--iga-text-muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px}.ig-qc-bio-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-bio-text{font-size:12px;line-height:1.45;color:var(--iga-text-main);white-space:pre-wrap;word-break:break-word;max-height:75px;overflow-y:auto}.ig-qc-bio-link{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--iga-accent);margin-top:6px;text-decoration:none;word-break:break-all}.ig-qc-bio-link:hover{text-decoration:underline;color:var(--iga-accent-hover)}.ig-qc-mutuals-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:8px 12px;margin-bottom:12px;width:100%;box-sizing:border-box;text-align:left}.ig-qc-mutuals-header{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--iga-text-main);margin-bottom:6px}.ig-qc-facepile-container{display:flex;align-items:center}.ig-facepile-avatar{width:22px;height:22px;border-radius:50%;object-fit:cover;border:2px solid var(--iga-bg-primary);margin-left:-6px;box-shadow:0 1px 3px #0000004d}.ig-facepile-avatar.ig-facepile-fallback{display:inline-flex;align-items:center;justify-content:center;background:var(--iga-accent-subtle);color:var(--iga-accent);font-size:10px;font-weight:700;-webkit-user-select:none;user-select:none}.ig-facepile-avatar:first-child{margin-left:0}.ig-badge-business{background:#9333ea26!important;color:#a855f7!important;border:1px solid rgba(147,51,234,.3)!important}.ig-badge-creator{background:#ec489926!important;color:#ec4899!important;border:1px solid rgba(236,72,153,.3)!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user{padding:4px 8px;font-size:11px;font-weight:500;color:var(--iga-text-muted);background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .btn-inspect-user:hover,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-inspect-user:hover{color:var(--iga-text-bright);background:var(--iga-surface-hover);border-color:var(--iga-border-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:10px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;box-shadow:var(--iga-shadow-sm);transition:transform .15s ease,border-color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-card:hover{border-color:var(--iga-border-hover);transform:translateY(-1px)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-label{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--iga-text-muted);margin-bottom:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value{font-size:18px;font-weight:700;color:var(--iga-text-bright);line-height:1.2;margin-bottom:4px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-negative{color:#ef4444}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub{font-size:10px;color:var(--iga-text-muted);display:inline-flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:3px;line-height:1.25;text-align:center;white-space:normal}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-positive{color:#22c55e}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-negative{color:#ef4444}#ig-analyzer-panel .btn-unwhitelist,#ig-analyzer-panel .ig-btn-unwhitelist{padding:4px 8px;font-size:11px;font-weight:600;color:#3b82f6;background:#3b82f614;border:1px solid rgba(59,130,246,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-unwhitelist:hover,#ig-analyzer-panel .ig-btn-unwhitelist:hover{color:#fff;background:#3b82f6;border-color:#3b82f6;box-shadow:0 2px 6px #3b82f659}#ig-analyzer-panel .btn-clear-whitelist,#ig-analyzer-panel .ig-btn-clear-whitelist{padding:3px 8px;font-size:10.5px;font-weight:600;color:#ef4444;background:#ef444414;border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}#ig-analyzer-panel .btn-clear-whitelist:hover,#ig-analyzer-panel .ig-btn-clear-whitelist:hover{color:#fff;background:#ef4444;border-color:#ef4444;box-shadow:0 2px 6px #ef44444d}.ig-badge-mutual{background:#22c55e1f!important;color:#22c55e!important;border:1px solid rgba(34,197,94,.25)!important}.ig-badge-fan{background:#f59e0b1f!important;color:#f59e0b!important;border:1px solid rgba(245,158,11,.25)!important}.ig-badge-date{background:#94a3b81f!important;color:#94a3b8!important;border:1px solid rgba(148,163,184,.2)!important}.ig-btn-target-audit,.btn-target-audit{display:inline-flex;align-items:center;gap:4px;padding:3.5px 8px;font-size:11px;font-weight:600;border-radius:var(--iga-radius-sm, 6px);background:#6366f11f;color:#818cf8;border:1px solid rgba(99,102,241,.25);cursor:pointer;transition:all .15s ease}.ig-btn-target-audit:hover,.btn-target-audit:hover{background:#6366f1;color:#fff;border-color:#6366f1;box-shadow:0 2px 8px #6366f159}.ig-badge-new-mutual{background:#10b98126!important;color:#10b981!important;border:1px solid rgba(16,185,129,.3)!important;box-shadow:0 0 8px #10b98126}.ig-target-search-card{background:#ffffff08;border:1px solid var(--iga-border, rgba(255, 255, 255, .08));border-radius:var(--iga-radius-lg, 12px);padding:16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px}.ig-target-search-title{font-size:13.5px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:6px}.ig-target-search-desc{font-size:11.5px;line-height:1.45;color:var(--iga-text-muted, #94a3b8)}.ig-target-search-input-group{display:flex;align-items:center;gap:8px;background:#0f172a99;border:1px solid var(--iga-border, rgba(255, 255, 255, .1));border-radius:var(--iga-radius-md, 8px);padding:3px 6px 3px 12px;transition:border-color .15s ease}.ig-target-search-input-group:focus-within{border-color:#6366f1;box-shadow:0 0 0 2px #6366f133}.ig-input-prefix{font-size:13px;font-weight:600;color:var(--iga-text-muted, #94a3b8)}.ig-target-input{flex:1;background:transparent;border:none;outline:none;color:var(--iga-text-bright, #f8fafc);font-size:12.5px;padding:6px 0}.ig-target-input::placeholder{color:#94a3b899}.ig-target-feedback{font-size:11.5px;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);margin-top:4px}.ig-target-feedback.is-error{background:#ef44441f;color:#ef4444;border:1px solid rgba(239,68,68,.25)}.ig-target-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:12px}.ig-target-card{background:#ffffff06;border:1px solid var(--iga-border, rgba(255, 255, 255, .07));border-radius:var(--iga-radius-md, 10px);padding:12px 14px;display:flex;flex-direction:column;gap:10px;transition:all .18s ease;cursor:pointer}.ig-target-card:hover{border-color:#6366f14d;background:#ffffff0a;transform:translateY(-1px)}.ig-target-card-top{display:flex;align-items:center;gap:10px}.ig-target-card-avatar{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#ffffff14;display:flex;align-items:center;justify-content:center;font-weight:700;color:#cbd5e1;flex-shrink:0}.ig-target-card-info{flex:1;min-width:0}.ig-target-card-name-row{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ig-target-card-user{font-weight:700;font-size:13px;color:var(--iga-text-bright, #f8fafc)}.ig-target-card-fullname{font-size:11px;color:var(--iga-text-muted, #94a3b8);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-btn-target-delete{background:transparent;border:none;color:var(--iga-text-muted, #94a3b8);cursor:pointer;padding:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all .15s ease}.ig-btn-target-delete:hover{color:#ef4444;background:#ef44441a}.ig-target-card-metrics{display:flex;align-items:center;justify-content:space-between;background:#0003;padding:8px 12px;border-radius:var(--iga-radius-sm, 6px);border:1px solid rgba(255,255,255,.04)}.ig-target-metric{display:flex;flex-direction:column;align-items:center;gap:2px}.ig-target-metric-label{font-size:10px;color:var(--iga-text-muted, #94a3b8);text-transform:uppercase;letter-spacing:.4px}.ig-target-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright, #f8fafc);display:flex;align-items:center;gap:4px}.ig-target-card-diff{font-size:10.5px;font-weight:700;padding:1px 4px;border-radius:4px}.ig-target-card-diff.is-positive{background:#22c55e26;color:#22c55e}.ig-target-card-diff.is-negative{background:#ef444426;color:#ef4444}.ig-target-card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:2px}.ig-target-card-time{font-size:10.5px;color:var(--iga-text-muted, #94a3b8)}.ig-target-card-actions{display:flex;align-items:center;gap:6px}#ig-target-subpanel{position:fixed;z-index:10000000;width:580px;min-width:440px;max-width:95vw;height:700px;min-height:420px;max-height:95vh;display:flex;flex-direction:column;resize:both;overflow:hidden;background:#0f172af0;border:1px solid rgba(255,255,255,.12);border-radius:var(--iga-radius-lg, 12px);box-shadow:0 20px 50px #000000a6,0 0 0 1px #6366f126;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);color:var(--iga-text-bright, #f8fafc);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;transition:height .2s cubic-bezier(.16,1,.3,1),box-shadow .2s ease}#ig-target-subpanel.is-minimized{height:48px!important;min-height:48px!important;resize:none!important;overflow:hidden!important}#ig-target-subpanel.is-minimized .ig-target-actions-bar,#ig-target-subpanel.is-minimized .ig-progress-container,#ig-target-subpanel.is-minimized .ig-target-tabs-wrapper,#ig-target-subpanel.is-minimized .ig-target-view,#ig-target-subpanel.is-minimized .ig-target-resize-grip{display:none!important}#ig-target-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#ffffff08;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .08));cursor:grab;-webkit-user-select:none;user-select:none;flex-shrink:0}#ig-target-subpanel.is-dragging #ig-target-header{cursor:grabbing}.ig-target-header-left{display:flex;align-items:center;gap:8px;min-width:0}.ig-target-header-icon{display:inline-flex;align-items:center;color:#818cf8}.ig-target-header-title{font-weight:700;font-size:13.5px;color:var(--iga-text-bright, #f8fafc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ig-target-header-right{display:flex;align-items:center;gap:10px;flex-shrink:0}#ig-target-status{font-size:11px;color:var(--iga-text-muted, #94a3b8);display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:12px;background:#ffffff0a}#ig-target-status.is-active{color:#60a5fa}#ig-target-status.is-active .ig-status-dot{background:#60a5fa;box-shadow:0 0 6px #60a5fa}.ig-target-header-actions{display:flex;align-items:center;gap:4px}.ig-target-actions-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:#0003;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0;gap:8px}.ig-target-meta-summary{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.ig-target-meta-user{font-weight:700;font-size:12.5px;color:var(--iga-text-bright, #f8fafc)}.ig-target-meta-name{font-size:11px;color:var(--iga-text-muted, #94a3b8)}.ig-target-meta-pill{font-size:10.5px;padding:1.5px 6px;border-radius:4px;background:#ffffff0f;color:var(--iga-text-muted, #94a3b8)}.ig-target-actions-buttons{display:flex;align-items:center;gap:6px;flex-shrink:0}.ig-target-tabs-wrapper{background:transparent;border-bottom:1px solid var(--iga-border, rgba(255, 255, 255, .06));flex-shrink:0}.ig-target-view{flex:1;overflow-y:auto;overflow-x:hidden;container-type:inline-size;padding:14px;display:none}.ig-target-view.active{display:block}.ig-target-ready-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 20px;gap:12px}.ig-target-ready-icon{color:#818cf8;transform:scale(1.6);margin-bottom:8px}.ig-target-ready-title{font-size:16px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-ready-desc{font-size:12px;line-height:1.5;color:var(--iga-text-muted, #94a3b8);max-width:380px}.ig-target-overview-header{display:flex;align-items:center;gap:14px;padding:14px;background:#ffffff08;border-radius:var(--iga-radius-lg, 12px);border:1px solid var(--iga-border, rgba(255, 255, 255, .08))}.ig-target-overview-avatar-wrap .ig-user-avatar{width:52px;height:52px;font-size:18px}.ig-target-overview-meta{flex:1;min-width:0}.ig-target-overview-title-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ig-target-overview-username{font-size:15px;font-weight:700;color:var(--iga-text-bright, #f8fafc)}.ig-target-overview-fullname{font-size:12px;color:var(--iga-text-muted, #94a3b8);margin-top:2px}.ig-target-overview-timestamps{font-size:10.5px;color:var(--iga-text-muted, #94a3b8);margin-top:4px}.ig-target-restricted-alert{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--iga-radius-md, 8px);background:#f59e0b1a;border:1px solid rgba(245,158,11,.3);color:#fbbf24;margin-top:12px;line-height:1.45;font-size:12px}.ig-target-alert-icon{color:#fbbf24;flex-shrink:0;margin-top:1px}.ig-target-resize-grip{position:absolute;bottom:2px;right:2px;width:14px;height:14px;cursor:se-resize;pointer-events:none}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme #ig-target-subpanel){background:#fffffff5;border-color:#0000001f;box-shadow:0 20px 50px #0003;color:#0f172a}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) #ig-target-header{background:#00000005;border-bottom-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-actions-bar{background:#00000008;border-bottom-color:#0000000f}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-overview-header,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-card,:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card{background:#f8fafc;border-color:#00000014}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-search-input-group{background:#fff;border-color:#00000026}:is(#ig-target-subpanel.ig-light-theme,.ig-light-theme) .ig-target-card-metrics{background:#f1f5f9;border-color:#0000000d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-count{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:15px;padding:0 5px;border-radius:var(--iga-radius-full);font-size:9.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;background:#94a3b829;color:var(--iga-text-muted);pointer-events:none;transition:background .2s var(--iga-ease-default),color .2s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-tab-count{background:#0f172a14}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-btn.active .ig-tab-count{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.25)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-tab-count.is-empty{display:none!important}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-value.is-neutral,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub.is-neutral{color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sub-split{gap:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-sep{color:var(--iga-text-dim);font-weight:500;-webkit-user-select:none;user-select:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn{appearance:none;-webkit-appearance:none;background:transparent;border:1px solid transparent;padding:1px 5px;border-radius:5px;font-family:var(--iga-font-sans);font-size:10px;font-weight:700;line-height:1.25;color:var(--iga-text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:3px;font-variant-numeric:tabular-nums;transition:background .15s ease,border-color .15s ease,transform .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-positive{color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-negative{color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn:hover{background:var(--iga-surface-hover);border-color:var(--iga-border-hover);text-decoration:underline}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-positive:hover{background:var(--iga-success-subtle);border-color:#10b9814d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn.is-negative:hover{background:var(--iga-danger-subtle);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-kpi-jump-btn:focus-visible{outline:2px solid var(--iga-border-focus);outline-offset:1px}@media(max-width:560px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@supports (container-type: inline-size){@media(max-width:560px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}}@container (max-width: 480px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-kpi-grid>.ig-kpi-card:nth-child(3):last-child{grid-column:1 / -1}}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-chart-mount{margin-bottom:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-chart-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:12px 14px;box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-title-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;background:var(--iga-surface);color:var(--iga-text-muted);border:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill.is-positive{background:var(--iga-success-subtle);color:var(--iga-success);border-color:#10b9814d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-window-pill.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger);border-color:#ef44444d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-group{display:inline-flex;align-items:center;gap:2px;padding:2px;background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn{appearance:none;-webkit-appearance:none;background:transparent;border:none;padding:3px 7px;border-radius:4px;font-family:var(--iga-font-sans);font-size:10px;font-weight:600;line-height:1.2;color:var(--iga-text-muted);cursor:pointer;transition:background .15s ease,color .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn:hover:not(.is-active){color:var(--iga-text-bright);background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-seg-btn.is-active{background:var(--iga-accent);color:#fff;box-shadow:0 1px 3px #2563eb4d}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:22px;padding:4px 8px;margin-bottom:6px;border-radius:var(--iga-radius-sm);background:var(--iga-surface);border:1px solid var(--iga-border);font-size:11px;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-date{font-family:var(--iga-font-mono);font-size:10.5px;font-weight:600;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-val{font-weight:700;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-unit{font-weight:500;font-size:10px;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta{display:inline-flex;align-items:center;padding:1px 6px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;background:#94a3b824;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta.is-positive{background:var(--iga-success-subtle);color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-delta.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-readout-intra{font-size:10px;color:var(--iga-text-dim);margin-left:auto}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-stage{position:relative;width:100%;height:158px;user-select:none;-webkit-user-select:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-trend-svg{width:100%;height:100%;display:block;overflow:visible}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-grid-line{stroke:var(--iga-border);stroke-width:1;vector-effect:non-scaling-stroke}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-grid-line.is-mid{stroke-dasharray:3 3}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-axis-text{fill:var(--iga-text-dim);font-size:9.5px;font-family:var(--iga-font-mono);font-variant-numeric:tabular-nums;pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-area,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-line{pointer-events:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-dot{pointer-events:none;stroke:var(--iga-bg-primary);stroke-width:1.5}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-active-dot{pointer-events:none;stroke:var(--iga-text-bright);stroke-width:2;transition:opacity .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-crosshair{stroke:var(--iga-text-dim);stroke-width:1;stroke-dasharray:3 3;pointer-events:none;transition:opacity .12s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-hit{fill:transparent;cursor:crosshair;outline:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-hit:focus-visible{fill:#3b82f614}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tooltip{position:absolute;top:6px;transform:translate(-14%);pointer-events:none;z-index:6;background:var(--iga-bg-primary);border:1px solid var(--iga-border-hover);border-radius:var(--iga-radius-sm);padding:5px 8px;box-shadow:var(--iga-shadow-md);font-size:10.5px;line-height:1.3;white-space:nowrap;font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tooltip.is-right{transform:translate(-86%)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-date{font-size:9.5px;font-family:var(--iga-font-mono);color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-val{font-size:12px;font-weight:700;color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta{font-size:10px;font-weight:600;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta.is-positive{color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-chart-tt-delta.is-negative{color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-composition-card{background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-lg);padding:12px 14px;margin-bottom:12px;box-shadow:var(--iga-shadow-sm)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--iga-text-bright);letter-spacing:-.2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-ratio-pill{font-size:10.5px;padding:2px 8px;border-radius:var(--iga-radius-full);background:var(--iga-surface);border:1px solid var(--iga-border);color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-ratio-pill strong{color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-bar{display:flex;width:100%;height:9px;border-radius:var(--iga-radius-full);overflow:hidden;background:var(--iga-surface);gap:2px;margin:9px 0 8px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg{height:100%;min-width:4px;transition:width .35s var(--iga-ease-default)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-mutuals,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-mutuals{background:#10b981}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-fans,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-fans{background:#3b82f6}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-seg.is-notback,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot.is-notback{background:#f59e0b}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:10.5px;color:var(--iga-text-muted);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend-item{display:inline-flex;align-items:center;gap:5px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-legend-item strong{color:var(--iga-text-bright)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-box{background:var(--iga-surface);border:1px solid var(--iga-border);border-radius:var(--iga-radius-sm);padding:6px 8px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:1px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-comp-metric-val{font-size:12px;font-weight:700;color:var(--iga-text-bright);font-variant-numeric:tabular-nums}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-target-card-sparkline{display:inline-flex;align-items:center;justify-content:center;padding:2px 6px;border-radius:var(--iga-radius-sm);background:var(--iga-surface);border:1px solid var(--iga-border);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-sparkline-svg{display:block;overflow:visible}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region{overflow:auto;max-inline-size:100%;max-block-size:min(340px,55vh);container-type:inline-size;border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);background:var(--iga-bg-secondary);outline:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region:focus-visible{border-color:var(--iga-border-focus);box-shadow:0 0 0 2px var(--iga-accent-subtle)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar{width:6px;height:6px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-table-scroll-region::-webkit-scrollbar-thumb{background:var(--ig-scrollbar-thumb);border-radius:var(--iga-radius-full)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table{margin-top:0;border-collapse:separate;border-spacing:0;width:100%}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead{position:sticky;inset-block-start:0;z-index:2}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead th{position:sticky;inset-block-start:0;z-index:2;background:var(--iga-bg-secondary)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody th{position:sticky;inset-inline-start:0;z-index:1;background:var(--iga-bg-secondary);padding:8px 10px;border-bottom:1px solid var(--iga-border);font-weight:600;text-align:left;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:hover th{background:var(--iga-surface-hover)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:last-child th,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody tr:last-child td{border-bottom:none}@container (width < 380px){:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tr,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table th,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td{display:block}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table thead{display:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tr{border-bottom:1px solid var(--iga-border);padding-block-end:4px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table tbody th{position:sticky;inset-block-start:0;z-index:2;background:var(--iga-surface);border-bottom:1px solid var(--iga-border)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table{--label-2: "Followers";--label-3: "Following";--label-4: "Mutuals"}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:none}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(2):before{content:var(--label-2) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(3):before{content:var(--label-3) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-history-table td:nth-child(4):before{content:var(--label-4) ": ";color:var(--iga-text-muted);font-weight:600;font-size:10px;text-transform:uppercase}}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill{display:inline-flex;align-items:center;padding:1px 6px;margin-left:4px;border-radius:var(--iga-radius-full);font-size:10px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;background:#94a3b824;color:var(--iga-text-muted)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill.is-positive{background:var(--iga-success-subtle);color:var(--iga-success)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-delta-pill.is-negative{background:var(--iga-danger-subtle);color:var(--iga-danger)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-scans-pill{display:inline-flex;align-items:center;padding:0 5px;margin-left:6px;border-radius:var(--iga-radius-sm);font-size:9.5px;font-weight:700;font-variant-numeric:tabular-nums;background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.22)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-metric-muted{color:var(--iga-text-dim);font-weight:500}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-view-header-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-clear-nominal{padding:3px 9px;font-size:10.5px;font-weight:600;color:var(--iga-danger);background:var(--iga-danger-subtle);border:1px solid rgba(239,68,68,.25);border-radius:var(--iga-radius-sm);cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all .15s ease}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-btn-clear-nominal:hover{color:#fff;background:var(--iga-danger);border-color:var(--iga-danger);box-shadow:0 2px 6px #ef444447}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-text-col{display:flex;flex-direction:column;min-width:0;line-height:1.25;gap:2px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-title-line{display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-user-fullname{font-size:11px;color:var(--iga-text-muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-flow{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-old{color:var(--iga-text-muted);font-family:var(--iga-font-mono);font-size:11px;text-decoration:line-through;text-decoration-color:#ef444473}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-arrow{display:inline-flex;align-items:center;color:var(--iga-accent);flex-shrink:0}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-rename-new{color:var(--iga-text-bright);font-weight:700;font-size:12px}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-repeat{background:var(--iga-warning-subtle);color:var(--iga-warning);border:1px solid rgba(245,158,11,.3)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-prev-user{background:#6366f124;color:#818cf8;border:1px solid rgba(99,102,241,.3)}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-badge-prev-user{background:#4f46e51a;color:#4f46e5;border-color:#4f46e540}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-following,:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-public{background:var(--iga-accent-subtle);color:var(--iga-accent);border:1px solid rgba(59,130,246,.25)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-churn{background:var(--iga-danger-subtle);color:var(--iga-danger);border:1px solid rgba(239,68,68,.28)}:is(#ig-analyzer-panel,#ig-target-subpanel) .ig-badge-new-mutual-solid{background:var(--iga-success)!important;color:#fff!important;font-weight:700!important;border:none!important}#ig-analyzer-panel,#ig-target-subpanel,.ig-backup-overlay .ig-backup-dialog{color-scheme:dark;background:var(--iga-bg-primary);color:var(--iga-text-main)}#ig-safety-modal .ig-modal-content,#ig-hd-modal .ig-hd-modal-card{color-scheme:dark;background:var(--iga-bg-primary);color:var(--iga-text-bright)}#ig-analyzer-panel.ig-light-theme,#ig-target-subpanel.ig-light-theme,.ig-backup-overlay.ig-light-theme .ig-backup-dialog{color-scheme:light;background:var(--iga-bg-primary);color:var(--iga-text-main)}#ig-safety-modal.ig-light-theme .ig-modal-content,#ig-hd-modal.ig-light-theme .ig-hd-modal-card{color-scheme:light;background:var(--iga-bg-primary);color:var(--iga-text-bright)}#ig-hd-modal.ig-light-theme .ig-hd-modal-card{box-shadow:var(--iga-shadow-lg)}#ig-hd-modal.ig-light-theme .ig-hd-avatar-frame{box-shadow:0 8px 24px #0f172a24}#ig-analyzer-panel.ig-light-theme .ig-target-card-avatar{background:#e2e8f0;color:#334155}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .btn-spy-story,:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-btn-spy-story{background:#9333ea1a!important;border-color:#9333ea47!important;color:#7e22ce!important}:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .btn-spy-story:hover:not(:disabled),:is(#ig-analyzer-panel,#ig-target-subpanel).ig-light-theme .ig-btn-spy-story:hover:not(:disabled){background:#7e22ce!important;border-color:#7e22ce!important;color:#fff!important}.ig-spy-btn-busy{opacity:.65;cursor:wait!important}#ig-safety-modal .ig-spy-hero{margin-bottom:12px;padding:12px 14px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);background:var(--iga-surface);text-align:center}#ig-safety-modal .ig-spy-hero.is-safe,#ig-safety-modal .ig-spy-hero:has(.is-safe){background:var(--iga-success-subtle);border-color:#10b98159;--ig-spy-tone: var(--iga-success)}#ig-safety-modal .ig-spy-hero.is-warn,#ig-safety-modal .ig-spy-hero:has(.is-warn){background:var(--iga-warning-subtle);border-color:#f59e0b59;--ig-spy-tone: var(--iga-warning)}#ig-safety-modal .ig-spy-hero.is-danger,#ig-safety-modal .ig-spy-hero:has(.is-danger){background:var(--iga-danger-subtle);border-color:#ef444459;--ig-spy-tone: var(--iga-danger)}#ig-safety-modal .ig-spy-badge{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:var(--ig-spy-tone, var(--iga-accent));margin-bottom:4px}#ig-safety-modal .ig-spy-badge.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-badge.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-badge.is-danger{color:var(--iga-danger)}#ig-safety-modal .ig-spy-prob{font-size:28px;font-weight:800;color:var(--iga-text-bright);line-height:1.1;font-variant-numeric:tabular-nums}#ig-safety-modal .ig-spy-prob.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-prob.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-prob.is-danger{color:var(--iga-danger)}#ig-safety-modal .ig-spy-prob-label{font-size:11px;font-weight:600;color:var(--iga-text-muted);margin-top:2px}#ig-safety-modal .ig-spy-reason-card{text-align:left;font-size:12px;line-height:1.55;color:var(--iga-text-main);background:var(--iga-bg-secondary);padding:11px 13px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);margin-bottom:10px}#ig-safety-modal .ig-spy-meta-card{text-align:left;font-size:11px;color:var(--iga-text-muted);background:var(--iga-surface);padding:9px 12px;border-radius:var(--iga-radius-md);border:1px solid var(--iga-border);display:flex;flex-direction:column;gap:5px}#ig-safety-modal .ig-spy-meta-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:4px;border-bottom:1px solid var(--iga-border)}#ig-safety-modal .ig-spy-meta-row.is-last,#ig-safety-modal .ig-spy-meta-row:last-child{padding-bottom:0;border-bottom:none}#ig-safety-modal .ig-spy-meta-label{color:var(--iga-text-muted)}#ig-safety-modal .ig-spy-meta-val{font-weight:600;color:var(--iga-text-bright);display:inline-flex;align-items:center;gap:5px}#ig-safety-modal .ig-spy-meta-val.is-strong{font-weight:700;color:var(--iga-text-bright)}#ig-safety-modal .ig-spy-val-muted{color:var(--iga-text-muted);font-weight:500}#ig-safety-modal .ig-spy-val-safe,#ig-safety-modal .ig-spy-val-success{color:var(--iga-success);font-weight:600}#ig-safety-modal .ig-spy-val-warn{color:var(--iga-warning);font-weight:600}#ig-safety-modal .ig-spy-val-danger{color:var(--iga-danger);font-weight:600}#ig-safety-modal .ig-spy-val-story,#ig-safety-modal .ig-spy-val-accent{color:#e1306c;font-weight:700}#ig-safety-modal .ig-spy-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--iga-text-dim);flex-shrink:0}#ig-safety-modal .ig-spy-dot.is-current{background:var(--iga-accent);box-shadow:0 0 6px #3b82f673}#ig-safety-modal .ig-spy-dot.is-story{background:#e1306c;box-shadow:0 0 6px #e1306c80}#ig-safety-modal .ig-spy-dot.is-empty{background:transparent;border:1.5px solid var(--iga-text-dim)}#ig-safety-modal .ig-spy-timeline{margin-top:10px;text-align:left;background:var(--iga-bg-secondary);border:1px solid var(--iga-border);border-radius:var(--iga-radius-md);padding:9px 11px}#ig-safety-modal .ig-spy-timeline-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--iga-text-muted);margin-bottom:6px}#ig-safety-modal .ig-spy-timeline-list{max-height:110px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:4px}#ig-safety-modal .ig-spy-timeline-row{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:10.5px;padding:4px 7px;border-radius:4px;background:var(--iga-surface)}#ig-safety-modal .ig-spy-timeline-row.is-current{border:1px solid var(--iga-border-focus)}#ig-safety-modal .ig-spy-timeline-when{color:var(--iga-text-muted);font-family:var(--iga-font-mono);font-size:10px;display:inline-flex;align-items:center;gap:5px;flex-shrink:0}#ig-safety-modal .ig-spy-timeline-summary{font-weight:600;color:var(--iga-text-main);text-align:right}#ig-safety-modal .ig-spy-timeline-summary.is-safe{color:var(--iga-success)}#ig-safety-modal .ig-spy-timeline-summary.is-warn{color:var(--iga-warning)}#ig-safety-modal .ig-spy-timeline-summary.is-danger{color:var(--iga-danger)}';
   importCSS(mainCss);
   const App = {
 isRunning: false,
@@ -8224,16 +8871,24 @@ targetRunning: false,
         App.abort();
         return;
       }
-      const userConfirmed = await UI.confirmAction(
-        "Safety Precaution",
-        "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
-        "Yes, Continue"
-      );
-      if (!userConfirmed) {
+      const confirmRes = typeof UI.confirmExtractionModal === "function" ? await UI.confirmExtractionModal({
+        title: "Safety Precaution",
+        message: "Excessive use of automation tools may result in temporary account restrictions.<br>It is recommended to run this analysis <b>only once per hour</b>.",
+        confirmBtnText: "Yes, Continue"
+      }) : {
+        confirmed: await UI.confirmAction(
+          "Safety Precaution",
+          "Excessive use of automation tools may result in temporary account restrictions.<br><br>It is recommended to run this analysis <b>only once per hour</b>.",
+          "Yes, Continue"
+        ),
+        engine: Storage.getExtractionEngine()
+      };
+      if (!confirmRes || !confirmRes.confirmed) {
         UI.log("Analysis cancelled by user.");
         console.log("Analysis cancelled by user.");
         return;
       }
+      const selectedEngine = confirmRes.engine || Storage.getExtractionEngine();
       App.isRunning = true;
       App.abortController = new AbortController();
       const signal = App.abortController.signal;
@@ -8241,6 +8896,8 @@ targetRunning: false,
       UI.setStatus("Analyzing...");
       try {
         UI.log("Starting deep analysis...");
+        const engineLabel = typeof UI.getEngineDisplayName === "function" ? UI.getEngineDisplayName(selectedEngine) : selectedEngine;
+        UI.log(`[Engine] Selected extraction mode: ${engineLabel}`);
         const logTab = document.querySelector('[data-target="ig-log"]');
         if (logTab) logTab.click();
         const userId = await Utils.getUserIdAsync(signal);
@@ -8262,14 +8919,107 @@ targetRunning: false,
         const expectedFollowing = userInfo?.followingCount || 0;
         const expectedFollowers = userInfo?.followerCount || 0;
         UI.log("Fetching 'Following'...");
-        const followingDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWING_HASH, "following", { signal }, expectedFollowing);
+        const followingRes = await API.extractCompleteUserList(userId, CONFIG.FOLLOWING_HASH, "following", { signal, engine: selectedEngine }, expectedFollowing);
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-        await Utils.sleep(1800 + Math.random() * 1e3, signal);
-        UI.log("Fetching 'Followers'...");
-        const followersDetailedRaw = await API.getAllUsers(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal }, expectedFollowers);
-        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-        const followingDetailed = Utils.toDetailedUserArray(followingDetailedRaw);
-        const followersDetailed = Utils.toDetailedUserArray(followersDetailedRaw);
+        UI.log(`Total following: ${followingRes.users.length} (with IDs: ${followingRes.users.filter((u) => !!u.id).length})`);
+        if (expectedFollowing > 0 && followingRes.users.length < expectedFollowing) {
+          UI.log(`[Info] Profile header counter: ${expectedFollowing} following | Accessible accounts returned by list API: ${followingRes.users.length}.`);
+        }
+        let followersRes;
+        if (followingRes.rateLimited) {
+          UI.log("[Anti-Ban Guard] Skipping 'Followers' extraction because rate limit (429) was detected during 'Following'.");
+          followersRes = {
+            users: [],
+            isPartial: true,
+            rateLimited: true,
+            limitedByMeta: false
+          };
+        } else {
+          await Utils.sleep(3500 + Math.random() * 1500, signal);
+          UI.log("Fetching 'Followers'...");
+          followersRes = await API.extractCompleteUserList(userId, CONFIG.FOLLOWERS_HASH, "followers", { signal, engine: selectedEngine }, expectedFollowers);
+          if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+          UI.log(`Total followers: ${followersRes.users.length} (with IDs: ${followersRes.users.filter((u) => !!u.id).length})`);
+          if (expectedFollowers > 0 && followersRes.users.length < expectedFollowers) {
+            UI.log(`[Info] Profile header counter: ${expectedFollowers} followers | Accessible accounts returned by list API: ${followersRes.users.length}.`);
+          }
+        }
+        const prev = Storage.load();
+        let prevFollowersDetailed = [];
+        let prevFollowingDetailed = [];
+        let followerRenames = [];
+        let followingRenames = [];
+        let allRenames = [];
+        if (prev) {
+          prevFollowersDetailed = Utils.toDetailedUserArray(
+            Array.isArray(prev.followersDetailed) ? prev.followersDetailed : prev.followers || []
+          );
+          prevFollowingDetailed = Utils.toDetailedUserArray(
+            Array.isArray(prev.followingDetailed) ? prev.followingDetailed : prev.following || []
+          );
+        }
+        let followingDetailed = Storage.hydrateUsersFromMemory(followingRes.users || [], prevFollowingDetailed, {
+          friendshipCache: API.friendshipCache,
+          prevScanAt: prev?.lastRun
+        });
+        let followersDetailed = Storage.hydrateUsersFromMemory(followersRes.users || [], prevFollowersDetailed, {
+          friendshipCache: API.friendshipCache,
+          prevScanAt: prev?.lastRun
+        });
+        let prevHeaderFollowers = 0;
+        let prevHeaderFollowing = 0;
+        let followersTruncatedGuard = false;
+        let followersCumulativeGuard = false;
+        let followingTruncatedGuard = false;
+        let followingCumulativeGuard = false;
+        if (prev) {
+          followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, followersDetailed);
+          followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, followingDetailed);
+          prevHeaderFollowers = Number(prev.headerFollowerCount || prevFollowersDetailed.length || 0);
+          prevHeaderFollowing = Number(prev.headerFollowingCount || prevFollowingDetailed.length || 0);
+          followersTruncatedGuard = Boolean(followersRes.isPartial && prevFollowersDetailed.length > followersDetailed.length);
+          followersCumulativeGuard = Boolean(
+            !followersTruncatedGuard && expectedFollowers > 0 && followersDetailed.length < expectedFollowers && prevFollowersDetailed.length > followersDetailed.length && (prevHeaderFollowers === 0 || expectedFollowers >= prevHeaderFollowers)
+          );
+          if (followersTruncatedGuard || followersCumulativeGuard) {
+            const beforeLen = followersDetailed.length;
+            const followerRenamedOldInit = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+            const unrenamedPrevFollowers = prevFollowersDetailed.filter((u) => !followerRenamedOldInit.has(u.username.toLowerCase()));
+            let mergedFollowers = Utils.toDetailedUserArray(API.mergeExtractedUsers(followersDetailed, unrenamedPrevFollowers));
+            if (followersCumulativeGuard && expectedFollowers > 0 && mergedFollowers.length > expectedFollowers) {
+              mergedFollowers = mergedFollowers.slice(0, expectedFollowers);
+            }
+            followersDetailed = mergedFollowers;
+            if (followersRes.rateLimited) {
+              UI.log(`[Anti-Ban Guard] Rate limit active on 'followers'. Preserved ${followersDetailed.length} known followers from memory & suppressed false Unfollowers.`);
+            } else if (followersTruncatedGuard) {
+              UI.log(`[Safety Guard] Meta returned a partial followers subset (${beforeLen}/${expectedFollowers || "?"}). Preserving baseline & suppressing false Unfollowers.`);
+            } else if (followersDetailed.length > beforeLen) {
+              UI.log(`[Cumulative Memory] Reconciled +${followersDetailed.length - beforeLen} previously discovered follower(s) (${followersDetailed.length}/${expectedFollowers} total).`);
+            }
+          }
+          followingTruncatedGuard = Boolean(followingRes.isPartial && prevFollowingDetailed.length > followingDetailed.length);
+          followingCumulativeGuard = Boolean(
+            !followingTruncatedGuard && expectedFollowing > 0 && followingDetailed.length < expectedFollowing && prevFollowingDetailed.length > followingDetailed.length && (prevHeaderFollowing === 0 || expectedFollowing >= prevHeaderFollowing)
+          );
+          if (followingTruncatedGuard || followingCumulativeGuard) {
+            const beforeLen = followingDetailed.length;
+            const followingRenamedOldInit = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+            const unrenamedPrevFollowing = prevFollowingDetailed.filter((u) => !followingRenamedOldInit.has(u.username.toLowerCase()));
+            let mergedFollowing = Utils.toDetailedUserArray(API.mergeExtractedUsers(followingDetailed, unrenamedPrevFollowing));
+            if (followingCumulativeGuard && expectedFollowing > 0 && mergedFollowing.length > expectedFollowing) {
+              mergedFollowing = mergedFollowing.slice(0, expectedFollowing);
+            }
+            followingDetailed = mergedFollowing;
+            if (followingRes.rateLimited) {
+              UI.log(`[Anti-Ban Guard] Rate limit active on 'following'. Preserved ${followingDetailed.length} known following from memory & suppressed false lost following.`);
+            } else if (followingTruncatedGuard) {
+              UI.log(`[Safety Guard] Meta returned a partial following subset (${beforeLen}/${expectedFollowing || "?"}). Preserving baseline & suppressing false lost following.`);
+            } else if (followingDetailed.length > beforeLen) {
+              UI.log(`[Cumulative Memory] Reconciled +${followingDetailed.length - beforeLen} previously discovered following account(s) (${followingDetailed.length}/${expectedFollowing} total).`);
+            }
+          }
+        }
         const following = followingDetailed.map((u) => u.username);
         const followers = followersDetailed.map((u) => u.username);
         const currFollowingLowerSet = new Set(following.map((u) => u.toLowerCase()));
@@ -8287,27 +9037,18 @@ targetRunning: false,
               ...u,
               id: u.id || existing.id || null,
               fullName: u.fullName || existing.fullName || "",
-              profilePicUrl: u.profilePicUrl || existing.profilePicUrl || null
+              profilePicUrl: u.profilePicUrl || existing.profilePicUrl || null,
+              isPrivate: u.isPrivateKnown ? u.isPrivate : existing.isPrivate,
+              isPrivateKnown: Boolean(u.isPrivateKnown || existing.isPrivateKnown),
+              isBestie: Boolean(u.isBestie || existing.isBestie),
+              outgoingRequest: Boolean(u.outgoingRequest || existing.outgoingRequest),
+              latestReelMedia: Math.max(Number(u.latestReelMedia || 0), Number(existing.latestReelMedia || 0))
             });
           }
         });
         UI.hideProgress();
         UI.setStatus("Calculating Metrics...");
-        const prev = Storage.load();
-        let prevFollowersDetailed = [];
-        let prevFollowingDetailed = [];
-        let followerRenames = [];
-        let followingRenames = [];
-        let allRenames = [];
         if (prev) {
-          prevFollowersDetailed = Utils.toDetailedUserArray(
-            Array.isArray(prev.followersDetailed) ? prev.followersDetailed : prev.followers || []
-          );
-          prevFollowingDetailed = Utils.toDetailedUserArray(
-            Array.isArray(prev.followingDetailed) ? prev.followingDetailed : prev.following || []
-          );
-          followerRenames = Utils.detectRenamedUsers(prevFollowersDetailed, followersDetailed);
-          followingRenames = Utils.detectRenamedUsers(prevFollowingDetailed, followingDetailed);
           const renameMapById = new Map();
           followerRenames.forEach((r) => {
             const isMutualNow = currFollowingLowerSet.has(r.newUsername.toLowerCase());
@@ -8381,10 +9122,28 @@ targetRunning: false,
           }
           const followerRenamedNewLowerSet = new Set(followerRenames.map((r) => r.newUsername.toLowerCase()));
           const rawNewFollowers = followers.filter((u) => !prevFollowersLowerSet.has(u.toLowerCase()));
-          const newFollowers = rawNewFollowers.filter((u) => {
+          let newFollowers = rawNewFollowers.filter((u) => {
             const lower = u.toLowerCase();
             return !followerRenamedNewLowerSet.has(lower) && !reactivatedFollowersLowerSet.has(lower);
           });
+          const followerRenamedOldLowerSet = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
+          const followingRenamedOldLowerSet = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
+          const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
+          const rawLostFollowers = prevFollowers.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
+          const lostFollowers = followersTruncatedGuard || followersCumulativeGuard ? [] : rawLostFollowers.filter((u) => !followerRenamedOldLowerSet.has(u.toLowerCase()));
+          const rawLostFollowing = prevFollowing.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
+          const lostFollowing = followingTruncatedGuard || followingCumulativeGuard ? [] : rawLostFollowing.filter((u) => !followingRenamedOldLowerSet.has(u.toLowerCase()));
+          const lostFollowingLowerSet = new Set(lostFollowing.map((u) => u.toLowerCase()));
+          const prevExtractedF = Number(prev.extractedFollowersCount) || prevFollowersDetailed.length;
+          const prevMissingFollowers = prevHeaderFollowers > 0 && prevFollowersDetailed.length > 0 ? Math.max(0, prevHeaderFollowers - Math.min(prevFollowersDetailed.length, prevExtractedF)) : 0;
+          if (prevMissingFollowers >= 4 && expectedFollowers > 0) {
+            const maxPossibleRealNew = Math.max(0, expectedFollowers - prevHeaderFollowers) + lostFollowers.length;
+            if (newFollowers.length > maxPossibleRealNew) {
+              const reconciledCount = newFollowers.length - maxPossibleRealNew;
+              newFollowers = newFollowers.slice(0, maxPossibleRealNew);
+              UI.log(`[Baseline Reconciled] Absorbed +${reconciledCount} previously unindexed follower(s) into baseline without false 'New Followers' alert.`);
+            }
+          }
           UI.log("New followers since last run: " + newFollowers.length);
           const newFollowersDetailed = mapToDetailed(newFollowers).map((u) => ({
             ...u,
@@ -8395,14 +9154,6 @@ targetRunning: false,
             Storage.addNewFollowersEntries(newFollowersDetailed);
           }
           scanSummary.gained = newFollowersDetailed.length;
-          const followerRenamedOldLowerSet = new Set(followerRenames.map((r) => r.oldUsername.toLowerCase()));
-          const followingRenamedOldLowerSet = new Set(followingRenames.map((r) => r.oldUsername.toLowerCase()));
-          const followingRenamedByOldLower = new Map(followingRenames.map((r) => [r.oldUsername.toLowerCase(), r]));
-          const rawLostFollowers = prevFollowers.filter((u) => !currFollowersLowerSet.has(u.toLowerCase()));
-          const lostFollowers = rawLostFollowers.filter((u) => !followerRenamedOldLowerSet.has(u.toLowerCase()));
-          const rawLostFollowing = prevFollowing.filter((u) => !currFollowingLowerSet.has(u.toLowerCase()));
-          const lostFollowing = rawLostFollowing.filter((u) => !followingRenamedOldLowerSet.has(u.toLowerCase()));
-          const lostFollowingLowerSet = new Set(lostFollowing.map((u) => u.toLowerCase()));
           const missingUsers = lostFollowers.filter((u) => lostFollowingLowerSet.has(u.toLowerCase()));
           const missingLowerSet = new Set(missingUsers.map((u) => u.toLowerCase()));
           const buildLostEntry = (rawHandle) => {
@@ -8495,7 +9246,9 @@ targetRunning: false,
         } else {
           UI.log("First run: Initial state established.");
         }
-        Storage.addHistoryEntry(followers.length, following.length, null, {
+        const authoritativeFollowersCount = Math.max(expectedFollowers || 0, followers.length);
+        const authoritativeFollowingCount = Math.max(expectedFollowing || 0, following.length);
+        Storage.addHistoryEntry(authoritativeFollowersCount, authoritativeFollowingCount, null, {
           mutuals: mutualsDetailed.length,
           fans: fansDetailed.length,
           notFollowingBack: notFollowingBackDetailed.length,
@@ -8505,6 +9258,10 @@ targetRunning: false,
         Storage.save({
           version: 4,
           lastRun: Utils.now(),
+          headerFollowerCount: expectedFollowers || authoritativeFollowersCount,
+          headerFollowingCount: expectedFollowing || authoritativeFollowingCount,
+          extractedFollowersCount: (followersRes.users || []).length,
+          extractedFollowingCount: (followingRes.users || []).length,
           followers,
           following,
           followersDetailed,
@@ -8902,14 +9659,22 @@ targetRunning: false,
           if (overviewTab2) overviewTab2.click();
           return;
         }
-        const userConfirmed = await UI.confirmAction(
-          "Target Network Audit",
-          `Account <b>@${Utils.escapeHtml(validatedUser.username)}</b> found with <b>${Utils.formatNumber(validatedUser.followerCount)}</b> followers and <b>${Utils.formatNumber(validatedUser.followingCount)}</b> following.<br><br>Network extraction will query their audience with safe anti-detection pacing. Proceed with network extraction?`,
-          "Yes, Extract Network",
-          true,
-          Icons.target
-        );
-        if (!userConfirmed) {
+        const confirmRes = typeof UI.confirmExtractionModal === "function" ? await UI.confirmExtractionModal({
+          title: "Target Network Audit",
+          message: `Account <b>@${Utils.escapeHtml(validatedUser.username)}</b> found with <b>${Utils.formatNumber(validatedUser.followerCount)}</b> followers and <b>${Utils.formatNumber(validatedUser.followingCount)}</b> following.<br>Select an extraction engine below to query their audience with safe anti-detection pacing:`,
+          confirmBtnText: "Yes, Extract Network",
+          customIcon: Icons.target
+        }) : {
+          confirmed: await UI.confirmAction(
+            "Target Network Audit",
+            `Account <b>@${Utils.escapeHtml(validatedUser.username)}</b> found with <b>${Utils.formatNumber(validatedUser.followerCount)}</b> followers and <b>${Utils.formatNumber(validatedUser.followingCount)}</b> following.<br><br>Network extraction will query their audience with safe anti-detection pacing. Proceed with network extraction?`,
+            "Yes, Extract Network",
+            true,
+            Icons.target
+          ),
+          engine: Storage.getExtractionEngine()
+        };
+        if (!confirmRes || !confirmRes.confirmed) {
           UI.targetLog("[INFO] Extraction skipped by user. Saved profile metrics.");
           const hasExtractedBaseline = Array.isArray(prevData.followers) && prevData.followers.length > 0 || Array.isArray(prevData.following) && prevData.following.length > 0;
           const history2 = hasExtractedBaseline ? Storage.normalizeHistoryRecords(prevData.history || []).list : Storage.upsertHistoryRecord(prevData.history || [], {
@@ -8941,10 +9706,13 @@ targetRunning: false,
           if (overviewTab2) overviewTab2.click();
           return;
         }
+        const selectedEngine = confirmRes.engine || Storage.getExtractionEngine();
+        const engineLabel = typeof UI.getEngineDisplayName === "function" ? UI.getEngineDisplayName(selectedEngine) : selectedEngine;
+        UI.targetLog(`[Engine] Selected extraction mode: ${engineLabel}`);
         UI.setTargetStatus("Extracting Network...");
         const network = await API.fetchTargetNetwork(
           validatedUser,
-          { signal },
+          { signal, engine: selectedEngine },
           (curr, total, label) => UI.setTargetProgress(curr, total, label),
           (msg) => UI.targetLog(msg)
         );
@@ -8952,27 +9720,52 @@ targetRunning: false,
         UI.hideTargetProgress();
         UI.setTargetStatus("Calculating Diffs...");
         UI.targetLog("[Diffing] Calculating changes and mutual connections...");
-        let currFollowers = Utils.toDetailedUserArray(network.followers || []);
-        let currFollowing = Utils.toDetailedUserArray(network.following || []);
-        let currMutuals = Utils.toDetailedUserArray(network.mutuals || []);
-        const viewerSnapshot = Storage.load();
-        if (viewerSnapshot && Array.isArray(viewerSnapshot.followers) && Array.isArray(viewerSnapshot.following)) {
-          const viewerFollowersLower = new Set(viewerSnapshot.followers.map((u) => String(u || "").toLowerCase()));
-          const viewerFollowingLower = new Set(viewerSnapshot.following.map((u) => String(u || "").toLowerCase()));
-          const tagShared = (u) => {
-            const lower = String(u.username || "").toLowerCase();
-            u.isViewerMutual = viewerFollowersLower.has(lower) && viewerFollowingLower.has(lower);
-          };
-          currMutuals.forEach(tagShared);
-          currFollowers.forEach(tagShared);
-          currFollowing.forEach(tagShared);
-        }
-        let currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
-        let currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
-        let currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
         const prevFollowersDetailed = Utils.toDetailedUserArray(prevData.followers || []);
         const prevFollowingDetailed = Utils.toDetailedUserArray(prevData.following || []);
         const prevMutualsDetailed = Utils.toDetailedUserArray(prevData.mutuals || []);
+        let currFollowers = Storage.hydrateUsersFromMemory(network.followers || [], prevFollowersDetailed, {
+          friendshipCache: API.friendshipCache,
+          prevScanAt: prevData.lastAuditAt
+        });
+        let currFollowing = Storage.hydrateUsersFromMemory(network.following || [], prevFollowingDetailed, {
+          friendshipCache: API.friendshipCache,
+          prevScanAt: prevData.lastAuditAt
+        });
+        const viewerSnapshot = Storage.load();
+        const tagSharedViewerMutuals = (list) => {
+          if (!viewerSnapshot || !Array.isArray(viewerSnapshot.followers) || !Array.isArray(viewerSnapshot.following)) return;
+          const viewerFollowersLower = new Set(viewerSnapshot.followers.map((u) => String(u || "").toLowerCase()));
+          const viewerFollowingLower = new Set(viewerSnapshot.following.map((u) => String(u || "").toLowerCase()));
+          list.forEach((u) => {
+            const lower = String(u.username || "").toLowerCase();
+            u.isViewerMutual = viewerFollowersLower.has(lower) && viewerFollowingLower.has(lower);
+          });
+        };
+        tagSharedViewerMutuals(currFollowers);
+        tagSharedViewerMutuals(currFollowing);
+        let currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
+        let currFollowersById = new Map(currFollowers.filter((u) => u.id).map((u) => [String(u.id), u]));
+        let currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
+        const computeMutualsList = (followingList, fById, fByLower) => {
+          return followingList.filter((u) => u.id && fById.has(String(u.id)) || fByLower.has(u.username.toLowerCase())).map((u) => {
+            const matchF = u.id && fById.get(String(u.id)) || fByLower.get(u.username.toLowerCase());
+            if (!matchF) return u;
+            return {
+              ...matchF,
+              ...u,
+              id: u.id || matchF.id || null,
+              fullName: u.fullName || matchF.fullName || "",
+              profilePicUrl: u.profilePicUrl || matchF.profilePicUrl || null,
+              isPrivate: u.isPrivateKnown ? u.isPrivate : matchF.isPrivate,
+              isPrivateKnown: Boolean(u.isPrivateKnown || matchF.isPrivateKnown),
+              isBestie: Boolean(u.isBestie || matchF.isBestie),
+              outgoingRequest: Boolean(u.outgoingRequest || matchF.outgoingRequest),
+              latestReelMedia: Math.max(Number(u.latestReelMedia || 0), Number(matchF.latestReelMedia || 0))
+            };
+          });
+        };
+        let currMutuals = computeMutualsList(currFollowing, currFollowersById, currFollowersByLower);
+        let currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
         const hasPreviousNetwork = prevFollowersDetailed.length > 0 || prevFollowingDetailed.length > 0;
         const todayLocalStr = Utils.localDateStr();
         const MAX_TRACKED_DIFF_ITEMS = 500;
@@ -9011,14 +9804,14 @@ targetRunning: false,
           const prevFollowingIdsSet = new Set(prevFollowingDetailed.map((u) => u.id ? String(u.id) : null).filter(Boolean));
           const prevMutualsLowerSet = new Set(prevMutualsDetailed.map((u) => u.username.toLowerCase()));
           const prevMutualIdsSet = new Set(prevMutualsDetailed.map((u) => u.id ? String(u.id) : null).filter(Boolean));
-          const scanNewFollowers = currFollowers.filter((u) => {
+          let scanNewFollowers = currFollowers.filter((u) => {
             const lower = u.username.toLowerCase();
             if (u.id && prevFollowerIdsSet.has(String(u.id))) return false;
             return !prevFollowersByLower.has(lower) && !followerRenamedNewLower.has(lower);
           }).map((u) => ({ ...u, date: todayLocalStr }));
-          const prevHeaderFollowers = Number(prevData?.user?.followerCount || 0);
+          const prevHeaderFollowers = Number(prevData?.user?.headerFollowerCount || prevData?.user?.followerCount || 0);
           const currHeaderFollowers = Number(validatedUser.followerCount || 0);
-          const prevHeaderFollowing = Number(prevData?.user?.followingCount || 0);
+          const prevHeaderFollowing = Number(prevData?.user?.headerFollowingCount || prevData?.user?.followingCount || 0);
           const currHeaderFollowing = Number(validatedUser.followingCount || 0);
           const followersTruncatedGuard = Boolean(network.isPartialFollowers && prevFollowersDetailed.length > currFollowers.length);
           const followingTruncatedGuard = Boolean(network.isPartialFollowing && prevFollowingDetailed.length > currFollowing.length);
@@ -9036,7 +9829,9 @@ targetRunning: false,
               mergedFollowers = mergedFollowers.slice(0, currHeaderFollowers);
             }
             currFollowers = mergedFollowers;
+            tagSharedViewerMutuals(currFollowers);
             currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
+            currFollowersById = new Map(currFollowers.filter((u) => u.id).map((u) => [String(u.id), u]));
             if (network.isRateLimitedFollowers) {
               UI.targetLog(`[Anti-Ban Guard] Rate limit active on 'followers'. Preserved ${currFollowers.length} known followers from audit memory & suppressed false Lost Followers.`);
             } else if (followersTruncatedGuard) {
@@ -9053,6 +9848,7 @@ targetRunning: false,
               mergedFollowing = mergedFollowing.slice(0, currHeaderFollowing);
             }
             currFollowing = mergedFollowing;
+            tagSharedViewerMutuals(currFollowing);
             currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
             if (network.isRateLimitedFollowing) {
               UI.targetLog(`[Anti-Ban Guard] Rate limit active on 'following'. Preserved ${currFollowing.length} known following from audit memory & suppressed false Lost Following.`);
@@ -9063,10 +9859,7 @@ targetRunning: false,
             }
           }
           if (followersTruncatedGuard || followingTruncatedGuard || followersCumulativeGuard || followingCumulativeGuard) {
-            const followerIds = new Set(currFollowers.map((u) => u.id).filter(Boolean));
-            currMutuals = currFollowing.filter(
-              (u) => u.id && followerIds.has(u.id) || currFollowersByLower.has(u.username.toLowerCase())
-            );
+            currMutuals = computeMutualsList(currFollowing, currFollowersById, currFollowersByLower);
             currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
           }
           const currFollowerIdsSet = new Set(currFollowers.map((u) => u.id ? String(u.id) : null).filter(Boolean));
@@ -9095,7 +9888,7 @@ targetRunning: false,
               date: todayLocalStr
             };
           });
-          const scanNewFollowing = currFollowing.filter((u) => {
+          let scanNewFollowing = currFollowing.filter((u) => {
             const lower = u.username.toLowerCase();
             if (u.id && prevFollowingIdsSet.has(String(u.id))) return false;
             return !prevFollowingByLower.has(lower) && !followingRenamedNewLower.has(lower);
@@ -9112,10 +9905,39 @@ targetRunning: false,
               date: todayLocalStr
             };
           });
+          let reconciledFollowerLowers = new Set();
+          let reconciledFollowingLowers = new Set();
+          const prevExtractedF = Number(prevData?.user?.extractedFollowersCount) || prevFollowersDetailed.length;
+          const prevMissingFollowers = prevHeaderFollowers > 0 && prevFollowersDetailed.length > 0 ? Math.max(0, prevHeaderFollowers - Math.min(prevFollowersDetailed.length, prevExtractedF)) : 0;
+          const maxPossibleRealNewF = prevHeaderFollowers > 0 && currHeaderFollowers > 0 ? Math.max(0, currHeaderFollowers - prevHeaderFollowers) + scanLostFollowers.length : scanNewFollowers.length;
+          if (prevMissingFollowers >= 4 && scanNewFollowers.length > maxPossibleRealNewF) {
+            const reconciledFollowers = scanNewFollowers.slice(maxPossibleRealNewF);
+            scanNewFollowers = scanNewFollowers.slice(0, maxPossibleRealNewF);
+            reconciledFollowerLowers = new Set(reconciledFollowers.map((u) => u.username.toLowerCase()));
+            if (reconciledFollowers.length > 0) {
+              UI.targetLog(`[Baseline Reconciled] Absorbed +${reconciledFollowers.length} previously unindexed follower(s) into @${validatedUser.username}'s baseline (suppressed false 'New Followers').`);
+            }
+          }
+          const prevExtractedIng = Number(prevData?.user?.extractedFollowingCount) || prevFollowingDetailed.length;
+          const prevMissingFollowing = prevHeaderFollowing > 0 && prevFollowingDetailed.length > 0 ? Math.max(0, prevHeaderFollowing - Math.min(prevFollowingDetailed.length, prevExtractedIng)) : 0;
+          const maxPossibleRealNewIng = prevHeaderFollowing > 0 && currHeaderFollowing > 0 ? Math.max(0, currHeaderFollowing - prevHeaderFollowing) + scanLostFollowing.length : scanNewFollowing.length;
+          if (prevMissingFollowing >= 4 && scanNewFollowing.length > maxPossibleRealNewIng) {
+            const reconciledFollowing = scanNewFollowing.slice(maxPossibleRealNewIng);
+            scanNewFollowing = scanNewFollowing.slice(0, maxPossibleRealNewIng);
+            reconciledFollowingLowers = new Set(reconciledFollowing.map((u) => u.username.toLowerCase()));
+            if (reconciledFollowing.length > 0) {
+              UI.targetLog(`[Baseline Reconciled] Absorbed +${reconciledFollowing.length} previously unindexed following account(s) into @${validatedUser.username}'s baseline.`);
+            }
+          }
+          const scanNewFollowersLowers = new Set(scanNewFollowers.map((u) => u.username.toLowerCase()));
+          const scanNewFollowingLowers = new Set(scanNewFollowing.map((u) => u.username.toLowerCase()));
           const scanNewMutuals = currMutuals.filter((u) => {
             const lower = u.username.toLowerCase();
             if (u.id && prevMutualIdsSet.has(String(u.id))) return false;
-            return !prevMutualsLowerSet.has(lower) && !mutualRenamedNewLower.has(lower);
+            if (prevMutualsLowerSet.has(lower) || mutualRenamedNewLower.has(lower)) return false;
+            if (reconciledFollowerLowers.has(lower) && !scanNewFollowingLowers.has(lower)) return false;
+            if (reconciledFollowingLowers.has(lower) && !scanNewFollowersLowers.has(lower)) return false;
+            return true;
           }).map((u) => ({ ...u, date: todayLocalStr }));
           lastAuditDelta = {
             gainedFollowers: scanNewFollowers.length,
@@ -9135,6 +9957,8 @@ targetRunning: false,
               mergedByLower.set(targetLower, {
                 ...item,
                 ...live,
+                isPrivate: live.isPrivateKnown ? live.isPrivate : Boolean(item.isPrivate),
+                isPrivateKnown: Boolean(live.isPrivateKnown || item.isPrivateKnown),
                 date: item.date ? Utils.localDateStr(item.date) : todayLocalStr
               });
             });
@@ -9797,7 +10621,7 @@ targetRunning: false,
         id: "welcome",
         popover: {
           title: "Welcome to IG Analyzer!",
-          description: "Welcome to version 3.13.2! This complete guided tour walks you through every feature of your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>Let's get started!"
+          description: "Welcome to version 3.14.0! This complete guided tour walks you through every feature of your Instagram Follower Analyzer. Safe, private, and enriched with deep audience analytics.<br><br>Let's get started!"
         }
       },
       {

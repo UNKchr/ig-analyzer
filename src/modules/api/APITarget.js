@@ -303,8 +303,8 @@ Object.assign(API, {
                 limitedByMeta: false
             };
         } else {
-            // Humanized pause simulating closing 'Followers' modal and opening 'Following' modal (2.0s - 3.2s)
-            await Utils.sleep(2000 + Math.random() * 1200, options.signal);
+            // Humanized cooldown pause simulating closing 'Followers' modal and opening 'Following' modal (3.5s - 5.0s)
+            await Utils.sleep(3500 + Math.random() * 1500, options.signal);
 
             log(`Extracting following for @${targetUser.username} (expected: ~${expectedFollowing})...`);
             followingRes = await API.extractCompleteUserList(

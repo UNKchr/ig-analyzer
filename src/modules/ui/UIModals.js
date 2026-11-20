@@ -18,6 +18,9 @@ Object.assign(UI, {
 
             if (!modal) return resolve(true);
 
+            const contentEl = modal.querySelector('.ig-modal-content');
+            if (contentEl) contentEl.classList.remove('is-engine-modal');
+
             titleEl.textContent = title;
             bodyEl.innerHTML = message;
             btnYes.textContent = confirmBtnText;
@@ -42,6 +45,145 @@ Object.assign(UI, {
                 btnYes.onclick = null;
                 if (btnNo) btnNo.onclick = null;
                 resolve(value);
+            };
+
+            btnYes.onclick = () => closeAndResolve(true);
+            if (btnNo) btnNo.onclick = () => closeAndResolve(false);
+        });
+    },
+
+    /**
+     * Returns a human-readable label for a given extraction engine identifier.
+     * @param {string} engine
+     * @returns {string}
+     */
+    getEngineDisplayName: (engine) => {
+        const mode = String(engine || "").toLowerCase();
+        if (mode === "graphql") return "GraphQL Relay (usePolarisGetFollowListQuery · batch 20)";
+        if (mode === "rest") return "REST Classic (Friendships API · batch 12)";
+        return "Smart Hybrid (REST + Auto GraphQL Rescue)";
+    },
+
+    /**
+     * Opens the confirmation modal with an interactive extraction engine selector,
+     * persisting the user's choice and resolving with { confirmed, engine }.
+     * @param {object} config
+     * @returns {Promise<{ confirmed: boolean, engine: string | null }>}
+     */
+    confirmExtractionModal: ({ title, message, confirmBtnText = "Yes, Continue", customIcon = null } = {}) => {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('ig-safety-modal');
+            const contentEl = modal ? modal.querySelector('.ig-modal-content') : null;
+            const titleEl = document.getElementById('ig-modal-title-text');
+            const bodyEl = document.getElementById('ig-modal-body-text');
+            const btnYes = document.getElementById('ig-modal-confirm');
+            const btnNo = document.getElementById('ig-modal-cancel');
+            const iconEl = modal ? modal.querySelector('.ig-modal-icon') : null;
+
+            let selectedEngine = typeof Storage.getExtractionEngine === 'function'
+                ? Storage.getExtractionEngine()
+                : (CONFIG.DEFAULT_EXTRACTION_ENGINE || 'hybrid');
+
+            if (!modal) {
+                return resolve({ confirmed: true, engine: selectedEngine });
+            }
+
+            const engineOptions = [
+                {
+                    id: 'hybrid',
+                    name: 'Smart Hybrid',
+                    badge: 'Recommended',
+                    badgeClass: 'is-recommended',
+                    desc: '<b>Gain:</b> 100% live 24h Story rings (<i>With Story</i>) &amp; instant <i>Private/Public</i> locks via REST, plus automatic GraphQL Relay rescue if REST truncates the list (&lt;92%).<br><b>Note:</b> Runs a second pass only when REST drops 6+ border accounts.'
+                },
+                {
+                    id: 'graphql',
+                    name: 'GraphQL Relay',
+                    badge: '-40% Requests · Max Accuracy',
+                    badgeClass: 'is-accent',
+                    desc: '<b>Gain:</b> Batch size 20 with opaque Base64 cursors (zero dropped border accounts), native <i>Besties</i> &amp; <i>Pending</i> flags, and page-level <i>Private</i> locks via <code>show_many</code>.<br><b>Lose:</b> Bulk 24h <i>With Story</i> filter in toolbar (row <i>Story</i> button still works). Auto-falls back to REST on error.'
+                },
+                {
+                    id: 'rest',
+                    name: 'REST Classic',
+                    badge: '100% Live Stories',
+                    badgeClass: 'is-neutral',
+                    desc: '<b>Gain:</b> Single-pass native modal endpoint (<code>?count=12</code>) with live <i>With Story</i> rings and <i>Private/Public</i> status in every page.<br><b>Lose:</b> Numeric <code>max_id</code> cursor may omit 5%–15% of accounts on some third-party profiles. Auto-falls back to GraphQL on error.'
+                }
+            ];
+
+            const cardsHtml = engineOptions.map((opt) => {
+                const isSelected = opt.id === selectedEngine;
+                return [
+                    `<div class="ig-engine-card${isSelected ? ' is-selected' : ''}" data-engine="${opt.id}" role="radio" tabindex="0" aria-checked="${isSelected ? 'true' : 'false'}">`,
+                    '  <div class="ig-engine-card-header">',
+                    '    <span class="ig-engine-radio" aria-hidden="true"></span>',
+                    `    <span class="ig-engine-name">${opt.name}</span>`,
+                    `    <span class="ig-engine-badge ${opt.badgeClass}">${opt.badge}</span>`,
+                    '  </div>',
+                    `  <div class="ig-engine-desc">${opt.desc}</div>`,
+                    '</div>'
+                ].join('\n');
+            }).join('\n');
+
+            if (contentEl) contentEl.classList.add('is-engine-modal');
+            titleEl.textContent = title || 'Confirm Extraction';
+            bodyEl.innerHTML = [
+                `<div class="ig-engine-intro">${message || ''}</div>`,
+                '<div class="ig-engine-selector" role="radiogroup" aria-label="Extraction Engine">',
+                '  <div class="ig-engine-selector-label">Extraction Engine</div>',
+                cardsHtml,
+                '</div>'
+            ].join('\n');
+            btnYes.textContent = confirmBtnText;
+
+            if (iconEl) {
+                iconEl.innerHTML = customIcon || Icons.warning;
+            }
+            if (btnNo) {
+                btnNo.style.display = 'inline-block';
+            }
+
+            if (typeof UI.applyCurrentTheme === 'function') {
+                UI.applyCurrentTheme();
+            }
+
+            const cards = Array.from(bodyEl.querySelectorAll('.ig-engine-card[data-engine]'));
+            const selectEngine = (nextEngine) => {
+                if (!nextEngine) return;
+                selectedEngine = typeof Storage.setExtractionEngine === 'function'
+                    ? Storage.setExtractionEngine(nextEngine)
+                    : nextEngine;
+                cards.forEach((card) => {
+                    const active = card.getAttribute('data-engine') === selectedEngine;
+                    card.classList.toggle('is-selected', active);
+                    card.setAttribute('aria-checked', active ? 'true' : 'false');
+                });
+            };
+
+            cards.forEach((card) => {
+                card.addEventListener('click', () => {
+                    selectEngine(card.getAttribute('data-engine'));
+                });
+                card.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        selectEngine(card.getAttribute('data-engine'));
+                    }
+                });
+            });
+
+            modal.style.display = 'flex';
+
+            const closeAndResolve = (confirmed) => {
+                modal.style.display = 'none';
+                if (contentEl) contentEl.classList.remove('is-engine-modal');
+                if (btnNo) btnNo.style.display = 'inline-block';
+                if (iconEl) iconEl.innerHTML = Icons.warning;
+                bodyEl.innerHTML = '';
+                btnYes.onclick = null;
+                if (btnNo) btnNo.onclick = null;
+                resolve({ confirmed, engine: confirmed ? selectedEngine : null });
             };
 
             btnYes.onclick = () => closeAndResolve(true);

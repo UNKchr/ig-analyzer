@@ -119,6 +119,9 @@ Object.assign(UI, {
                     if (typeof UI.loadAvatarsProgressively === 'function') {
                         UI.loadAvatarsProgressively(targetView);
                     }
+                    if (typeof UI.hydrateVisibleTargetPageFriendships === 'function') {
+                        UI.hydrateVisibleTargetPageFriendships(targetId);
+                    }
                 }
                 updateIndicator(target, true);
 
@@ -810,6 +813,10 @@ Object.assign(UI, {
 
     renderTargetSingleList: (containerId, rawList, title, emptyMsg, options = {}) => {
         const safeList = Utils.toDetailedUserArray(rawList);
+        const container = document.getElementById(containerId);
+        if (container) {
+            container.innerHTML = "";
+        }
         UI.targetPaginationState[containerId] = {
             rawUsers: safeList,
             users: safeList,
@@ -823,6 +830,125 @@ Object.assign(UI, {
         };
 
         UI.renderTargetSingleListPage(containerId);
+    },
+
+    renderTargetRowBadgesHtml: (u, options = {}) => {
+        let badges = '';
+        if (u?.isPrivate) badges += '<span class="ig-badge-pill ig-badge-private" title="Private Account">' + Icons.lock + '</span>';
+        if (u?.isVerified) badges += '<span title="Verified">' + Icons.verified + '</span>';
+        if (u?.isBestie) badges += '<span class="ig-badge-pill ig-badge-bestie" title="Close Friends">' + Icons.star + ' Bestie</span>';
+        if (u?.outgoingRequest) badges += '<span class="ig-badge-pill ig-badge-pending" title="Follow Request Pending">' + Icons.clock + ' Pending</span>';
+        if (options?.isNewBadge) badges += '<span class="ig-badge-pill ig-badge-new-mutual">' + Icons.sparkles + ' New</span>';
+        if (options?.isLostBadge) badges += '<span class="ig-badge-pill ig-badge-churn">' + Icons.unfollowers + ' Lost</span>';
+        if (options?.newMutualsSet && options.newMutualsSet.has(u?.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual-solid">' + Icons.sparkles + ' New Mutual</span>';
+        if (u?.isViewerMutual) badges += '<span class="ig-badge-pill ig-badge-new-mutual" title="Shared mutual with you!">' + Icons.sparkles + ' Shared Mutual</span>';
+        return badges;
+    },
+
+    hydrateVisibleTargetPageFriendships: (containerId) => {
+        const state = UI.targetPaginationState[containerId];
+        if (!state) return;
+        const container = document.getElementById(containerId);
+        if (!container || !container.classList.contains('active')) return;
+
+        const pageSize = state.pageSize || 50;
+        const page = state.page || 1;
+        const startIndex = (page - 1) * pageSize;
+        const pageUsers = (state.users || []).slice(startIndex, startIndex + pageSize);
+
+        const userIdsToFetch = pageUsers
+            .map((u) => u.id)
+            .filter((id) => id && id !== "0" && id !== "null" && id !== "undefined");
+
+        if (userIdsToFetch.length === 0 || typeof API.fetchFriendshipStatusesMany !== 'function') return;
+
+        API.fetchFriendshipStatusesMany(userIdsToFetch)
+            .then((statusMap) => {
+                const currentState = UI.targetPaginationState[containerId];
+                if (!currentState || currentState.page !== page) return;
+
+                const updatedUsers = [];
+                const updatedById = new Map();
+
+                pageUsers.forEach((u, index) => {
+                    if (!u.id) return;
+                    const status = statusMap[u.id];
+                    if (!status) return;
+
+                    let rowDomChanged = false;
+                    let metaChanged = false;
+
+                    if (!u.isPrivateKnown) {
+                        u.isPrivateKnown = true;
+                        metaChanged = true;
+                    }
+                    if (u.isPrivate !== status.isPrivate) {
+                        u.isPrivate = status.isPrivate;
+                        rowDomChanged = true;
+                        metaChanged = true;
+                    }
+                    if (u.isBestie !== status.isBestie) {
+                        u.isBestie = status.isBestie;
+                        rowDomChanged = true;
+                        metaChanged = true;
+                    }
+                    if (u.outgoingRequest !== status.outgoingRequest) {
+                        u.outgoingRequest = status.outgoingRequest;
+                        rowDomChanged = true;
+                        metaChanged = true;
+                    }
+
+                    if (rowDomChanged) {
+                        const rowId = containerId + "-row-" + (startIndex + index);
+                        const badgeContainer = document.getElementById(rowId + "-badges");
+                        if (badgeContainer) {
+                            badgeContainer.innerHTML = UI.renderTargetRowBadgesHtml(u, currentState.options);
+                        }
+                        if (status.isBestie && u.latestReelMedia > 0) {
+                            const avatarEl = document.querySelector("#" + rowId + " .ig-user-avatar");
+                            if (avatarEl) {
+                                avatarEl.classList.add("has-bestie-ring");
+                                avatarEl.style.outlineColor = "#22c55e";
+                            }
+                        }
+                    }
+
+                    if (metaChanged) {
+                        updatedUsers.push(u);
+                        updatedById.set(String(u.id), status);
+                    }
+                });
+
+                if (updatedById.size > 0) {
+                    Object.entries(UI.targetPaginationState).forEach(([tabContainerId, tabState]) => {
+                        if (!tabState || !Array.isArray(tabState.rawUsers)) return;
+                        let tabChanged = false;
+                        tabState.rawUsers.forEach((item) => {
+                            if (!item?.id || !updatedById.has(String(item.id))) return;
+                            const st = updatedById.get(String(item.id));
+                            if (item.isPrivate !== st.isPrivate || !item.isPrivateKnown || item.isBestie !== st.isBestie || item.outgoingRequest !== st.outgoingRequest) {
+                                item.isPrivate = st.isPrivate;
+                                item.isPrivateKnown = true;
+                                item.isBestie = st.isBestie;
+                                item.outgoingRequest = st.outgoingRequest;
+                                tabChanged = true;
+                            }
+                        });
+                        if (tabChanged) {
+                            UI.updateTargetFilterChips(tabContainerId);
+                        }
+                    });
+
+                    UI.updateTargetFilterChips(containerId);
+
+                    if (typeof Storage.syncTargetUsersData === 'function') {
+                        Storage.syncTargetUsersData(UI.currentTargetUser?.username, updatedUsers);
+                    }
+                }
+            })
+            .catch((err) => {
+                console.warn("[IG Analyzer] Error updating target friendship statuses batch:", err);
+            });
     },
 
     renderTargetSingleListPage: (containerId) => {
@@ -906,7 +1032,9 @@ Object.assign(UI, {
                     if (clearBtn) clearBtn.style.display = val ? 'inline-flex' : 'none';
                     clearTimeout(searchTimeout);
                     searchTimeout = setTimeout(() => {
-                        state.searchQuery = val;
+                        const currentState = UI.targetPaginationState[containerId];
+                        if (!currentState) return;
+                        currentState.searchQuery = val;
                         UI.applyTargetFilters(containerId);
                     }, 120);
                 });
@@ -916,10 +1044,12 @@ Object.assign(UI, {
                         e.preventDefault();
                         e.stopPropagation();
                         e.stopImmediatePropagation();
-                        if (searchInput.value || state.searchQuery) {
+                        const currentState = UI.targetPaginationState[containerId];
+                        if (!currentState) return;
+                        if (searchInput.value || currentState.searchQuery) {
                             searchInput.value = '';
                             if (clearBtn) clearBtn.style.display = 'none';
-                            state.searchQuery = '';
+                            currentState.searchQuery = '';
                             UI.applyTargetFilters(containerId);
                         }
                     }
@@ -931,9 +1061,11 @@ Object.assign(UI, {
                     e.preventDefault();
                     e.stopPropagation();
                     e.stopImmediatePropagation();
+                    const currentState = UI.targetPaginationState[containerId];
+                    if (!currentState) return;
                     searchInput.value = '';
                     clearBtn.style.display = 'none';
-                    state.searchQuery = '';
+                    currentState.searchQuery = '';
                     searchInput.focus();
                     UI.applyTargetFilters(containerId);
                 });
@@ -948,10 +1080,12 @@ Object.assign(UI, {
                     const targetFilter = chipBtn.getAttribute('data-filter');
                     if (!targetFilter) return;
 
-                    if (state.filterType === targetFilter && targetFilter !== 'all') {
-                        state.filterType = 'all';
+                    const currentState = UI.targetPaginationState[containerId];
+                    if (!currentState) return;
+                    if (currentState.filterType === targetFilter && targetFilter !== 'all') {
+                        currentState.filterType = 'all';
                     } else {
-                        state.filterType = targetFilter;
+                        currentState.filterType = targetFilter;
                     }
                     UI.applyTargetFilters(containerId);
                 });
@@ -975,7 +1109,8 @@ Object.assign(UI, {
         if (totalFiltered === 0) {
             rowsHtml = '<div class="ig-empty-msg"><span class="ig-empty-icon">' + Icons.search + '</span>No accounts match your search or filter criteria.</div>';
         } else {
-            pageUsers.forEach((u) => {
+            pageUsers.forEach((u, index) => {
+                const uniqueId = containerId + "-row-" + (startIndex + index);
                 const safeUsername = Utils.escapeHtml(u.username || '');
                 const safeUserId = Utils.escapeHtml(u.id || '');
                 const safeUrl = Utils.sanitizeUrl(u.username, u.url);
@@ -988,20 +1123,14 @@ Object.assign(UI, {
 
                 const avatarTriggerHtml = `<span class="ig-user-avatar-trigger" data-user-id="${safeUserId}" data-username="${safeUsername}" data-container="${containerId}" title="Click to view HD Photo (1080p)">${avatarHtml}</span>`;
 
-                let badges = '';
-                if (u.isPrivate) badges += '<span class="ig-badge-pill ig-badge-private">' + Icons.lock + '</span>';
-                if (u.isVerified) badges += '<span title="Verified">' + Icons.verified + '</span>';
-                if (options.isNewBadge) badges += '<span class="ig-badge-pill ig-badge-new-mutual">' + Icons.sparkles + ' New</span>';
-                if (options.isLostBadge) badges += '<span class="ig-badge-pill ig-badge-churn">' + Icons.unfollowers + ' Lost</span>';
-                if (options.newMutualsSet && options.newMutualsSet.has(u.username)) badges += '<span class="ig-badge-pill ig-badge-new-mutual-solid">' + Icons.sparkles + ' New Mutual</span>';
-                if (u.isViewerMutual) badges += '<span class="ig-badge-pill ig-badge-new-mutual" title="Shared mutual with you!">' + Icons.sparkles + ' Shared Mutual</span>';
+                const badges = UI.renderTargetRowBadgesHtml(u, options);
 
-                rowsHtml += '<div class="ig-user-row" data-user-id="' + safeUserId + '">';
+                rowsHtml += '<div class="ig-user-row" id="' + uniqueId + '" data-user="' + safeUsername + '" data-user-id="' + safeUserId + '">';
                 rowsHtml += '  <div class="ig-user-info">' + avatarTriggerHtml;
                 rowsHtml += '    <div class="ig-user-text-col">';
                 rowsHtml += '      <div class="ig-user-title-line">';
                 rowsHtml += '        <span class="ig-username">' + safeUsername + '</span>';
-                rowsHtml += '        <span class="ig-user-badges">' + badges + '</span>';
+                rowsHtml += '        <span class="ig-user-badges" id="' + uniqueId + '-badges">' + badges + '</span>';
                 rowsHtml += '      </div>';
                 if (safeFullName) rowsHtml += '<span class="ig-user-fullname">' + safeFullName + '</span>';
                 rowsHtml += '    </div>';
@@ -1030,6 +1159,8 @@ Object.assign(UI, {
             paginationHtml += '</div>';
         }
         if (paginationEl) paginationEl.innerHTML = paginationHtml;
+
+        UI.hydrateVisibleTargetPageFriendships(containerId);
     },
 
     getTargetActiveList: () => {

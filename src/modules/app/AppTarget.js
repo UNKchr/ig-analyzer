@@ -189,15 +189,25 @@ Object.assign(App, {
             }
 
             // 3. Confirm network extraction for accessible public / mutual accounts
-            const userConfirmed = await UI.confirmAction(
-                "Target Network Audit",
-                `Account <b>@${Utils.escapeHtml(validatedUser.username)}</b> found with <b>${Utils.formatNumber(validatedUser.followerCount)}</b> followers and <b>${Utils.formatNumber(validatedUser.followingCount)}</b> following.<br><br>Network extraction will query their audience with safe anti-detection pacing. Proceed with network extraction?`,
-                "Yes, Extract Network",
-                true,
-                Icons.target
-            );
+            const confirmRes = typeof UI.confirmExtractionModal === 'function'
+                ? await UI.confirmExtractionModal({
+                    title: "Target Network Audit",
+                    message: `Account <b>@${Utils.escapeHtml(validatedUser.username)}</b> found with <b>${Utils.formatNumber(validatedUser.followerCount)}</b> followers and <b>${Utils.formatNumber(validatedUser.followingCount)}</b> following.<br>Select an extraction engine below to query their audience with safe anti-detection pacing:`,
+                    confirmBtnText: "Yes, Extract Network",
+                    customIcon: Icons.target
+                })
+                : {
+                    confirmed: await UI.confirmAction(
+                        "Target Network Audit",
+                        `Account <b>@${Utils.escapeHtml(validatedUser.username)}</b> found with <b>${Utils.formatNumber(validatedUser.followerCount)}</b> followers and <b>${Utils.formatNumber(validatedUser.followingCount)}</b> following.<br><br>Network extraction will query their audience with safe anti-detection pacing. Proceed with network extraction?`,
+                        "Yes, Extract Network",
+                        true,
+                        Icons.target
+                    ),
+                    engine: Storage.getExtractionEngine()
+                };
 
-            if (!userConfirmed) {
+            if (!confirmRes || !confirmRes.confirmed) {
                 UI.targetLog("[INFO] Extraction skipped by user. Saved profile metrics.");
                 const hasExtractedBaseline = (Array.isArray(prevData.followers) && prevData.followers.length > 0) ||
                     (Array.isArray(prevData.following) && prevData.following.length > 0);
@@ -237,10 +247,15 @@ Object.assign(App, {
             }
 
             // 4. Extract target network with anti-detection pacing
+            const selectedEngine = confirmRes.engine || Storage.getExtractionEngine();
+            const engineLabel = typeof UI.getEngineDisplayName === 'function'
+                ? UI.getEngineDisplayName(selectedEngine)
+                : selectedEngine;
+            UI.targetLog(`[Engine] Selected extraction mode: ${engineLabel}`);
             UI.setTargetStatus("Extracting Network...");
             const network = await API.fetchTargetNetwork(
                 validatedUser,
-                { signal },
+                { signal, engine: selectedEngine },
                 (curr, total, label) => UI.setTargetProgress(curr, total, label),
                 (msg) => UI.targetLog(msg)
             );
@@ -251,31 +266,60 @@ Object.assign(App, {
             UI.setTargetStatus("Calculating Diffs...");
             UI.targetLog("[Diffing] Calculating changes and mutual connections...");
 
-            let currFollowers = Utils.toDetailedUserArray(network.followers || []);
-            let currFollowing = Utils.toDetailedUserArray(network.following || []);
-            let currMutuals = Utils.toDetailedUserArray(network.mutuals || []);
-
-            // Cross-reference with viewer snapshot for shared mutuals BEFORE building derived lists
-            const viewerSnapshot = Storage.load();
-            if (viewerSnapshot && Array.isArray(viewerSnapshot.followers) && Array.isArray(viewerSnapshot.following)) {
-                const viewerFollowersLower = new Set(viewerSnapshot.followers.map((u) => String(u || '').toLowerCase()));
-                const viewerFollowingLower = new Set(viewerSnapshot.following.map((u) => String(u || '').toLowerCase()));
-                const tagShared = (u) => {
-                    const lower = String(u.username || '').toLowerCase();
-                    u.isViewerMutual = viewerFollowersLower.has(lower) && viewerFollowingLower.has(lower);
-                };
-                currMutuals.forEach(tagShared);
-                currFollowers.forEach(tagShared);
-                currFollowing.forEach(tagShared);
-            }
-
-            let currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
-            let currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
-            let currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
-
             const prevFollowersDetailed = Utils.toDetailedUserArray(prevData.followers || []);
             const prevFollowingDetailed = Utils.toDetailedUserArray(prevData.following || []);
             const prevMutualsDetailed = Utils.toDetailedUserArray(prevData.mutuals || []);
+
+            let currFollowers = Storage.hydrateUsersFromMemory(network.followers || [], prevFollowersDetailed, {
+                friendshipCache: API.friendshipCache,
+                prevScanAt: prevData.lastAuditAt
+            });
+            let currFollowing = Storage.hydrateUsersFromMemory(network.following || [], prevFollowingDetailed, {
+                friendshipCache: API.friendshipCache,
+                prevScanAt: prevData.lastAuditAt
+            });
+
+            // Cross-reference with viewer snapshot for shared mutuals BEFORE building derived lists
+            const viewerSnapshot = Storage.load();
+            const tagSharedViewerMutuals = (list) => {
+                if (!viewerSnapshot || !Array.isArray(viewerSnapshot.followers) || !Array.isArray(viewerSnapshot.following)) return;
+                const viewerFollowersLower = new Set(viewerSnapshot.followers.map((u) => String(u || '').toLowerCase()));
+                const viewerFollowingLower = new Set(viewerSnapshot.following.map((u) => String(u || '').toLowerCase()));
+                list.forEach((u) => {
+                    const lower = String(u.username || '').toLowerCase();
+                    u.isViewerMutual = viewerFollowersLower.has(lower) && viewerFollowingLower.has(lower);
+                });
+            };
+            tagSharedViewerMutuals(currFollowers);
+            tagSharedViewerMutuals(currFollowing);
+
+            let currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
+            let currFollowersById = new Map(currFollowers.filter((u) => u.id).map((u) => [String(u.id), u]));
+            let currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
+
+            const computeMutualsList = (followingList, fById, fByLower) => {
+                return followingList
+                    .filter((u) => (u.id && fById.has(String(u.id))) || fByLower.has(u.username.toLowerCase()))
+                    .map((u) => {
+                        const matchF = (u.id && fById.get(String(u.id))) || fByLower.get(u.username.toLowerCase());
+                        if (!matchF) return u;
+                        return {
+                            ...matchF,
+                            ...u,
+                            id: u.id || matchF.id || null,
+                            fullName: u.fullName || matchF.fullName || '',
+                            profilePicUrl: u.profilePicUrl || matchF.profilePicUrl || null,
+                            isPrivate: u.isPrivateKnown ? u.isPrivate : matchF.isPrivate,
+                            isPrivateKnown: Boolean(u.isPrivateKnown || matchF.isPrivateKnown),
+                            isBestie: Boolean(u.isBestie || matchF.isBestie),
+                            outgoingRequest: Boolean(u.outgoingRequest || matchF.outgoingRequest),
+                            latestReelMedia: Math.max(Number(u.latestReelMedia || 0), Number(matchF.latestReelMedia || 0))
+                        };
+                    });
+            };
+
+            let currMutuals = computeMutualsList(currFollowing, currFollowersById, currFollowersByLower);
+            let currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
 
             const hasPreviousNetwork = prevFollowersDetailed.length > 0 || prevFollowingDetailed.length > 0;
             const todayLocalStr = Utils.localDateStr();
@@ -323,7 +367,7 @@ Object.assign(App, {
                 const prevMutualIdsSet = new Set(prevMutualsDetailed.map((u) => u.id ? String(u.id) : null).filter(Boolean));
 
                 // 1. Scan-level diffs
-                const scanNewFollowers = currFollowers
+                let scanNewFollowers = currFollowers
                     .filter((u) => {
                         const lower = u.username.toLowerCase();
                         if (u.id && prevFollowerIdsSet.has(String(u.id))) return false;
@@ -331,9 +375,9 @@ Object.assign(App, {
                     })
                     .map((u) => ({ ...u, date: todayLocalStr }));
 
-                const prevHeaderFollowers = Number(prevData?.user?.followerCount || 0);
+                const prevHeaderFollowers = Number(prevData?.user?.headerFollowerCount || prevData?.user?.followerCount || 0);
                 const currHeaderFollowers = Number(validatedUser.followerCount || 0);
-                const prevHeaderFollowing = Number(prevData?.user?.followingCount || 0);
+                const prevHeaderFollowing = Number(prevData?.user?.headerFollowingCount || prevData?.user?.followingCount || 0);
                 const currHeaderFollowing = Number(validatedUser.followingCount || 0);
 
                 const followersTruncatedGuard = Boolean(network.isPartialFollowers && prevFollowersDetailed.length > currFollowers.length);
@@ -367,7 +411,9 @@ Object.assign(App, {
                         mergedFollowers = mergedFollowers.slice(0, currHeaderFollowers);
                     }
                     currFollowers = mergedFollowers;
+                    tagSharedViewerMutuals(currFollowers);
                     currFollowersByLower = new Map(currFollowers.map((u) => [u.username.toLowerCase(), u]));
+                    currFollowersById = new Map(currFollowers.filter((u) => u.id).map((u) => [String(u.id), u]));
 
                     if (network.isRateLimitedFollowers) {
                         UI.targetLog(`[Anti-Ban Guard] Rate limit active on 'followers'. Preserved ${currFollowers.length} known followers from audit memory & suppressed false Lost Followers.`);
@@ -385,6 +431,7 @@ Object.assign(App, {
                         mergedFollowing = mergedFollowing.slice(0, currHeaderFollowing);
                     }
                     currFollowing = mergedFollowing;
+                    tagSharedViewerMutuals(currFollowing);
                     currFollowingByLower = new Map(currFollowing.map((u) => [u.username.toLowerCase(), u]));
 
                     if (network.isRateLimitedFollowing) {
@@ -396,10 +443,7 @@ Object.assign(App, {
                     }
                 }
                 if (followersTruncatedGuard || followingTruncatedGuard || followersCumulativeGuard || followingCumulativeGuard) {
-                    const followerIds = new Set(currFollowers.map((u) => u.id).filter(Boolean));
-                    currMutuals = currFollowing.filter((u) =>
-                        (u.id && followerIds.has(u.id)) || currFollowersByLower.has(u.username.toLowerCase())
-                    );
+                    currMutuals = computeMutualsList(currFollowing, currFollowersById, currFollowersByLower);
                     currMutualsByLower = new Map(currMutuals.map((u) => [u.username.toLowerCase(), u]));
                 }
 
@@ -433,7 +477,7 @@ Object.assign(App, {
                         };
                     });
 
-                const scanNewFollowing = currFollowing
+                let scanNewFollowing = currFollowing
                     .filter((u) => {
                         const lower = u.username.toLowerCase();
                         if (u.id && prevFollowingIdsSet.has(String(u.id))) return false;
@@ -456,11 +500,55 @@ Object.assign(App, {
                         };
                     });
 
+                // Cross-engine conservation guard (prevents false New Followers/Following when jumping from partial REST to complete GraphQL)
+                let reconciledFollowerLowers = new Set();
+                let reconciledFollowingLowers = new Set();
+
+                const prevExtractedF = Number(prevData?.user?.extractedFollowersCount) || prevFollowersDetailed.length;
+                const prevMissingFollowers = (prevHeaderFollowers > 0 && prevFollowersDetailed.length > 0)
+                    ? Math.max(0, prevHeaderFollowers - Math.min(prevFollowersDetailed.length, prevExtractedF))
+                    : 0;
+                const maxPossibleRealNewF = (prevHeaderFollowers > 0 && currHeaderFollowers > 0)
+                    ? (Math.max(0, currHeaderFollowers - prevHeaderFollowers) + scanLostFollowers.length)
+                    : scanNewFollowers.length;
+
+                if (prevMissingFollowers >= 4 && scanNewFollowers.length > maxPossibleRealNewF) {
+                    const reconciledFollowers = scanNewFollowers.slice(maxPossibleRealNewF);
+                    scanNewFollowers = scanNewFollowers.slice(0, maxPossibleRealNewF);
+                    reconciledFollowerLowers = new Set(reconciledFollowers.map((u) => u.username.toLowerCase()));
+                    if (reconciledFollowers.length > 0) {
+                        UI.targetLog(`[Baseline Reconciled] Absorbed +${reconciledFollowers.length} previously unindexed follower(s) into @${validatedUser.username}'s baseline (suppressed false 'New Followers').`);
+                    }
+                }
+
+                const prevExtractedIng = Number(prevData?.user?.extractedFollowingCount) || prevFollowingDetailed.length;
+                const prevMissingFollowing = (prevHeaderFollowing > 0 && prevFollowingDetailed.length > 0)
+                    ? Math.max(0, prevHeaderFollowing - Math.min(prevFollowingDetailed.length, prevExtractedIng))
+                    : 0;
+                const maxPossibleRealNewIng = (prevHeaderFollowing > 0 && currHeaderFollowing > 0)
+                    ? (Math.max(0, currHeaderFollowing - prevHeaderFollowing) + scanLostFollowing.length)
+                    : scanNewFollowing.length;
+
+                if (prevMissingFollowing >= 4 && scanNewFollowing.length > maxPossibleRealNewIng) {
+                    const reconciledFollowing = scanNewFollowing.slice(maxPossibleRealNewIng);
+                    scanNewFollowing = scanNewFollowing.slice(0, maxPossibleRealNewIng);
+                    reconciledFollowingLowers = new Set(reconciledFollowing.map((u) => u.username.toLowerCase()));
+                    if (reconciledFollowing.length > 0) {
+                        UI.targetLog(`[Baseline Reconciled] Absorbed +${reconciledFollowing.length} previously unindexed following account(s) into @${validatedUser.username}'s baseline.`);
+                    }
+                }
+
+                const scanNewFollowersLowers = new Set(scanNewFollowers.map((u) => u.username.toLowerCase()));
+                const scanNewFollowingLowers = new Set(scanNewFollowing.map((u) => u.username.toLowerCase()));
+
                 const scanNewMutuals = currMutuals
                     .filter((u) => {
                         const lower = u.username.toLowerCase();
                         if (u.id && prevMutualIdsSet.has(String(u.id))) return false;
-                        return !prevMutualsLowerSet.has(lower) && !mutualRenamedNewLower.has(lower);
+                        if (prevMutualsLowerSet.has(lower) || mutualRenamedNewLower.has(lower)) return false;
+                        if (reconciledFollowerLowers.has(lower) && !scanNewFollowingLowers.has(lower)) return false;
+                        if (reconciledFollowingLowers.has(lower) && !scanNewFollowersLowers.has(lower)) return false;
+                        return true;
                     })
                     .map((u) => ({ ...u, date: todayLocalStr }));
 
@@ -484,6 +572,8 @@ Object.assign(App, {
                         mergedByLower.set(targetLower, {
                             ...item,
                             ...live,
+                            isPrivate: live.isPrivateKnown ? live.isPrivate : Boolean(item.isPrivate),
+                            isPrivateKnown: Boolean(live.isPrivateKnown || item.isPrivateKnown),
                             date: item.date ? Utils.localDateStr(item.date) : todayLocalStr
                         });
                     });

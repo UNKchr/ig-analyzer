@@ -7,7 +7,8 @@ let currentUserId = null;
 const GLOBAL_UI_KEYS = new Set([
     CONFIG.POSITION_KEY,
     CONFIG.TARGET_SUBPANEL_POSITION_KEY,
-    CONFIG.TOUR_KEY
+    CONFIG.TOUR_KEY,
+    CONFIG.EXTRACTION_ENGINE_KEY
 ]);
 
 const ACCOUNT_SCOPED_KEYS = [
@@ -142,6 +143,32 @@ export const Storage = {
         }
         const legacyVal = GM_getValue(baseKey, undefined);
         return legacyVal !== undefined && legacyVal !== null;
+    },
+
+    /**
+     * Returns the persisted extraction engine mode ("hybrid", "graphql", or "rest").
+     * @returns {string}
+     */
+    getExtractionEngine: () => {
+        const raw = String(Storage.getScopedValue(CONFIG.EXTRACTION_ENGINE_KEY, CONFIG.DEFAULT_EXTRACTION_ENGINE || "hybrid") || "").toLowerCase().trim();
+        if (raw === "graphql" || raw === "rest" || raw === "hybrid") {
+            return raw;
+        }
+        return CONFIG.DEFAULT_EXTRACTION_ENGINE || "hybrid";
+    },
+
+    /**
+     * Persists the selected extraction engine mode globally across accounts.
+     * @param {string} engine
+     * @returns {string}
+     */
+    setExtractionEngine: (engine) => {
+        const raw = String(engine || "").toLowerCase().trim();
+        const valid = (raw === "graphql" || raw === "rest" || raw === "hybrid")
+            ? raw
+            : (CONFIG.DEFAULT_EXTRACTION_ENGINE || "hybrid");
+        Storage.setScopedValue(CONFIG.EXTRACTION_ENGINE_KEY, valid);
+        return valid;
     },
 
     normalizeItemDates: (rawList) => {
@@ -794,7 +821,11 @@ export const Storage = {
             const liveFullName = inFollower.fullName || inFollowing?.fullName || entry.fullName || '';
             const livePic = inFollower.profilePicUrl || inFollowing?.profilePicUrl || entry.profilePicUrl || '';
             const liveVerified = Boolean(inFollower.isVerified ?? entry.isVerified);
-            const livePrivate = Boolean(inFollower.isPrivate ?? entry.isPrivate);
+            const livePrivate = (inFollower.isPrivateKnown !== false && inFollower.isPrivate !== undefined && inFollower.isPrivate !== null)
+                ? Boolean(inFollower.isPrivate)
+                : ((inFollowing?.isPrivateKnown !== false && typeof inFollowing?.isPrivate === 'boolean')
+                    ? inFollowing.isPrivate
+                    : Boolean(entry.isPrivate));
             const liveBestie = Boolean(inFollower.isBestie ?? inFollowing?.isBestie ?? entry.isBestie);
 
             if (
@@ -1283,6 +1314,112 @@ export const Storage = {
         return Storage.removeTargetData(username, userId, targetId);
     },
 
+    hydrateUsersFromMemory: (currentUsers = [], prevUsers = [], options = {}) => {
+        const normalized = Utils.toDetailedUserArray(currentUsers);
+        if (normalized.length === 0) return [];
+
+        const knownById = new Map();
+        const knownByLower = new Map();
+
+        const indexKnown = (candidate) => {
+            if (!candidate || typeof candidate !== 'object' || !candidate.username) return;
+            const idStr = (candidate.id && String(candidate.id) !== "0" && String(candidate.id) !== "null" && String(candidate.id) !== "undefined")
+                ? String(candidate.id).trim()
+                : null;
+            const lower = String(candidate.username).toLowerCase().trim();
+            if (!lower) return;
+
+            const existing = (idStr && knownById.get(idStr)) || knownByLower.get(lower) || null;
+            const incPrivKnown = candidate.isPrivateKnown !== false && typeof candidate.isPrivate === 'boolean';
+            const extPrivKnown = Boolean(existing && existing.isPrivateKnown !== false && typeof existing.isPrivate === 'boolean');
+
+            const merged = existing ? {
+                ...existing,
+                ...candidate,
+                id: idStr || existing.id || null,
+                isPrivate: incPrivKnown ? candidate.isPrivate : (extPrivKnown ? existing.isPrivate : Boolean(candidate.isPrivate ?? existing.isPrivate)),
+                isPrivateKnown: Boolean(incPrivKnown || extPrivKnown),
+                isBestie: Boolean(candidate.isBestie || existing.isBestie),
+                outgoingRequest: Boolean(candidate.outgoingRequest || existing.outgoingRequest),
+                latestReelMedia: Number(candidate.latestReelMedia) > 0
+                    ? Number(candidate.latestReelMedia)
+                    : (Number(existing.latestReelMedia) || 0),
+                isBusiness: candidate.isBusiness !== undefined ? candidate.isBusiness : existing.isBusiness,
+                isCreator: candidate.isCreator !== undefined ? candidate.isCreator : existing.isCreator,
+                category: candidate.category || existing.category
+            } : candidate;
+
+            if (idStr) knownById.set(idStr, merged);
+            knownByLower.set(lower, merged);
+        };
+
+        const snap = Storage.load(options.userId || null);
+        if (snap && typeof snap === 'object') {
+            [
+                snap.followersDetailed,
+                snap.followingDetailed,
+                snap.mutualsDetailed,
+                snap.fansDetailed,
+                snap.notFollowingBackDetailed,
+                snap.newFollowersDetailed
+            ].forEach((pool) => {
+                if (Array.isArray(pool)) pool.forEach(indexKnown);
+            });
+        }
+
+        if (Array.isArray(prevUsers)) {
+            Utils.toDetailedUserArray(prevUsers).forEach(indexKnown);
+        }
+
+        let preserveRecentStories = false;
+        if (options.prevScanAt) {
+            const prevMs = new Date(options.prevScanAt).getTime();
+            if (!Number.isNaN(prevMs) && prevMs > 0) {
+                const ageMs = Date.now() - prevMs;
+                preserveRecentStories = ageMs >= 0 && ageMs < (6 * 3600 * 1000);
+            }
+        }
+
+        const friendshipCache = options.friendshipCache instanceof Map ? options.friendshipCache : null;
+
+        return normalized.map((u) => {
+            const idStr = (u.id && String(u.id) !== "0") ? String(u.id) : null;
+            const prev = (idStr && knownById.get(idStr)) || knownByLower.get(u.username.toLowerCase()) || null;
+            const cachedStatus = (idStr && friendshipCache) ? friendshipCache.get(idStr) : null;
+
+            if (!u.isPrivateKnown) {
+                if (cachedStatus && typeof cachedStatus.isPrivate === 'boolean') {
+                    u.isPrivate = cachedStatus.isPrivate;
+                    u.isPrivateKnown = true;
+                } else if (prev && prev.isPrivateKnown !== false && typeof prev.isPrivate === 'boolean') {
+                    u.isPrivate = prev.isPrivate;
+                    u.isPrivateKnown = true;
+                }
+            }
+
+            if (!u.isBestie && (cachedStatus?.isBestie || prev?.isBestie)) {
+                u.isBestie = true;
+            }
+            if (!u.outgoingRequest && (cachedStatus?.outgoingRequest || prev?.outgoingRequest)) {
+                u.outgoingRequest = true;
+            }
+            if ((!u.latestReelMedia || u.latestReelMedia === 0) && preserveRecentStories && Number(prev?.latestReelMedia) > 0) {
+                u.latestReelMedia = Number(prev.latestReelMedia);
+            }
+            if (u.isBusiness === undefined && (cachedStatus?.isBusiness !== undefined || prev?.isBusiness !== undefined)) {
+                u.isBusiness = Boolean(cachedStatus?.isBusiness ?? prev?.isBusiness);
+            }
+            if (u.isCreator === undefined && (cachedStatus?.isCreator !== undefined || prev?.isCreator !== undefined)) {
+                u.isCreator = Boolean(cachedStatus?.isCreator ?? prev?.isCreator);
+            }
+            if (!u.category && prev?.category) {
+                u.category = String(prev.category);
+            }
+
+            return u;
+        });
+    },
+
     syncFreshUserData: (freshUsersArray, userId = null) => {
         if (!Array.isArray(freshUsersArray) || freshUsersArray.length === 0) return;
         const freshMap = new Map();
@@ -1313,7 +1450,8 @@ export const Storage = {
                         entry.isVerified = Boolean(fresh.isVerified);
                         newFollowersChanged = true;
                     }
-                    if (fresh.isPrivate !== undefined && entry.isPrivate !== Boolean(fresh.isPrivate)) {
+                    const hasFreshPrivate = (fresh.isPrivateKnown !== false && fresh.isPrivate !== undefined && fresh.isPrivate !== null) || fresh.isPrivate === true;
+                    if (hasFreshPrivate && entry.isPrivate !== Boolean(fresh.isPrivate)) {
                         entry.isPrivate = Boolean(fresh.isPrivate);
                         newFollowersChanged = true;
                     }
@@ -1351,6 +1489,19 @@ export const Storage = {
                             item.fullName = fresh.fullName;
                             snapChanged = true;
                         }
+                        if (fresh.isPrivateKnown !== false && fresh.isPrivate !== undefined && fresh.isPrivate !== null && item.isPrivate !== Boolean(fresh.isPrivate)) {
+                            item.isPrivate = Boolean(fresh.isPrivate);
+                            item.isPrivateKnown = true;
+                            snapChanged = true;
+                        }
+                        if (fresh.isBestie && !item.isBestie) {
+                            item.isBestie = true;
+                            snapChanged = true;
+                        }
+                        if (fresh.outgoingRequest && !item.outgoingRequest) {
+                            item.outgoingRequest = true;
+                            snapChanged = true;
+                        }
                     }
                 });
             };
@@ -1365,6 +1516,77 @@ export const Storage = {
             if (snapChanged) {
                 Storage.save(snap, userId);
             }
+        }
+    },
+
+    syncTargetUsersData: (targetUsername, freshUsersArray = [], userId = null) => {
+        if (!Array.isArray(freshUsersArray) || freshUsersArray.length === 0) return;
+        Storage.syncFreshUserData(freshUsersArray, userId);
+
+        const cleanTarget = String(targetUsername || '').replace(/^@+\s*/, '').toLowerCase().trim();
+        if (!cleanTarget) return;
+
+        const targetMap = Storage.getTargetTrackerMap(userId);
+        if (!targetMap || typeof targetMap !== 'object') return;
+
+        let matchedKey = targetMap[cleanTarget] ? cleanTarget : null;
+        if (!matchedKey) {
+            matchedKey = Object.keys(targetMap).find((k) => {
+                const entry = targetMap[k];
+                if (!entry) return false;
+                if (String(entry.username || '').toLowerCase().trim() === cleanTarget) return true;
+                if (String(entry.user?.username || '').toLowerCase().trim() === cleanTarget) return true;
+                return false;
+            }) || null;
+        }
+        const tData = matchedKey ? targetMap[matchedKey] : null;
+        if (!tData || typeof tData !== 'object') return;
+
+        const freshById = new Map();
+        const freshByLower = new Map();
+        freshUsersArray.forEach((u) => {
+            if (!u || typeof u !== 'object') return;
+            if (u.id && String(u.id) !== '0') freshById.set(String(u.id), u);
+            if (u.username) freshByLower.set(String(u.username).toLowerCase(), u);
+        });
+
+        let targetChanged = false;
+        const syncTargetList = (list) => {
+            if (!Array.isArray(list)) return;
+            list.forEach((item) => {
+                if (!item || typeof item !== 'object') return;
+                const match = (item.id && freshById.get(String(item.id))) ||
+                    (item.username ? freshByLower.get(String(item.username).toLowerCase()) : null);
+                if (!match) return;
+
+                if (match.isPrivateKnown !== false && typeof match.isPrivate === 'boolean') {
+                    if (item.isPrivate !== match.isPrivate || item.isPrivateKnown !== true) {
+                        item.isPrivate = match.isPrivate;
+                        item.isPrivateKnown = true;
+                        targetChanged = true;
+                    }
+                }
+                if (typeof match.isBestie === 'boolean' && item.isBestie !== match.isBestie) {
+                    item.isBestie = match.isBestie;
+                    targetChanged = true;
+                }
+                if (typeof match.outgoingRequest === 'boolean' && item.outgoingRequest !== match.outgoingRequest) {
+                    item.outgoingRequest = match.outgoingRequest;
+                    targetChanged = true;
+                }
+            });
+        };
+
+        syncTargetList(tData.followers);
+        syncTargetList(tData.following);
+        syncTargetList(tData.mutuals);
+        syncTargetList(tData.newFollowers);
+        syncTargetList(tData.lostFollowers);
+        syncTargetList(tData.newMutuals);
+
+        if (targetChanged) {
+            targetMap[matchedKey] = tData;
+            Storage.setScopedValue(CONFIG.TARGET_TRACKER_KEY, targetMap, userId);
         }
     },
 

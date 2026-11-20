@@ -68,7 +68,7 @@ Object.assign(UI, {
             '    <span class="ig-bmc-icon">' + Icons.coffee + '</span>',
             '    <span class="ig-bmc-text">Buy me a coffee</span>',
             '  </a>',
-            '  <span class="ig-footer-meta">v3.13.2</span>',
+            '  <span class="ig-footer-meta">v3.14.0</span>',
             '</div>'
         ].join("\n");
         document.body.appendChild(panel);
@@ -283,6 +283,9 @@ Object.assign(UI, {
                     targetView.classList.add("active");
                     if (typeof UI.loadAvatarsProgressively === 'function') {
                         UI.loadAvatarsProgressively(targetView);
+                    }
+                    if (typeof UI.hydrateVisibleMainPageFriendships === 'function') {
+                        UI.hydrateVisibleMainPageFriendships(targetId);
                     }
                 }
                 updateIndicator(target, true);
