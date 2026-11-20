@@ -14,3 +14,7 @@ yarn-error.log*
 # Carpetas de editores
 .vscode/
 .idea/
+
+# Carpetas de agentes y configuracion
+.github/
+.agents/
